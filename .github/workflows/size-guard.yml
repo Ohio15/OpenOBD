@@ -11,7 +11,9 @@ jobs:
   size-guard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout v4.1.7 — SHA-pinned, same ref as security-audit.yml
+      # and dep-auto-apply.yml (mutable tags are a supply-chain vector).
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
 
       - name: Reject tracked files larger than 10 MB
         shell: bash
@@ -19,8 +21,13 @@ jobs:
           set -euo pipefail
           MAX=$((10 * 1024 * 1024))
           violations=""
-          while IFS= read -r f; do
+          # ls-files -s yields "<mode> <sha> <stage>\t<path>"; gitlinks
+          # (mode 160000) are commit pointers with no blob to size — skip them.
+          # core.quotepath=off keeps non-ASCII paths resolvable.
+          while IFS=$'\t' read -r meta f; do
             [ -z "$f" ] && continue
+            mode="${meta%% *}"
+            [ "$mode" = "160000" ] && continue
             allow=0
             if [ -f ".large-files-allowlist" ]; then
               while IFS= read -r pat; do
@@ -29,12 +36,17 @@ jobs:
               done <".large-files-allowlist"
             fi
             [ "$allow" -eq 1 ] && continue
-            sz=$(git cat-file -s "HEAD:$f" 2>/dev/null || echo 0)
+            # Fail closed: an object the guard cannot measure is a failure,
+            # never an implicit 0-byte pass.
+            if ! sz=$(git cat-file -s "HEAD:$f" 2>&1); then
+              echo "::error file=$f::size guard could not read HEAD:$f — $sz" >&2
+              exit 1
+            fi
             if [ "$sz" -gt "$MAX" ]; then
               hr=$(awk -v b="$sz" 'BEGIN{s="BKMGT";v=b;i=1;while(v>=1024&&i<length(s)){v/=1024;i++}printf "%.1f%s",v,substr(s,i,1)}')
               violations="${violations}  ${f} (${hr})\n"
             fi
-          done < <(git ls-files)
+          done < <(git -c core.quotepath=off ls-files -s)
 
           if [ -n "$violations" ]; then
             {

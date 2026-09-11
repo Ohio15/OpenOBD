@@ -1,0 +1,222 @@
+name: Security Audit (Layer A)
+
+# Layer A of the dev-standards dependency hygiene model.
+# Always-on CI gate: runs on every PR, every push to main, and manually.
+# Fails the workflow if any high-or-critical vulnerability is found in the
+# dependency graph. Moderate / low findings are logged for visibility but
+# don't fail the build.
+#
+# Detect-and-dispatch: each ecosystem job is conditional on the presence of
+# its lockfile / manifest, so this template is safe to drop into any repo.
+#
+# Design ref: shared-brain decision 81b962de-3e94-4d67-9093-7dbb5644094d
+# Critique:   shared-brain knowledge 7b258d5c-dcf4-49e9-973a-5e92b951a019
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect:
+    name: Detect ecosystems
+    runs-on: ubuntu-latest
+    outputs:
+      has_npm: ${{ steps.detect.outputs.has_npm }}
+      has_go: ${{ steps.detect.outputs.has_go }}
+      has_python: ${{ steps.detect.outputs.has_python }}
+    steps:
+      # actions/checkout v4.1.7
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      - id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          has_npm=false
+          has_go=false
+          has_python=false
+          [ -f package.json ] && has_npm=true
+          [ -f go.mod ] && has_go=true
+          if compgen -G "requirements*.txt" > /dev/null || [ -f pyproject.toml ]; then
+            has_python=true
+          fi
+          echo "has_npm=$has_npm" >> "$GITHUB_OUTPUT"
+          echo "has_go=$has_go" >> "$GITHUB_OUTPUT"
+          echo "has_python=$has_python" >> "$GITHUB_OUTPUT"
+          echo "::notice::ecosystems: npm=$has_npm go=$has_go python=$has_python"
+
+  npm-audit:
+    name: npm audit
+    needs: detect
+    if: needs.detect.outputs.has_npm == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v4.1.7
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      # actions/setup-node v4.0.4
+      - uses: actions/setup-node@0a44ba7841725637a19e28fa30b79a866c81b0a6
+        with:
+          node-version: '20'
+
+      - name: Install (npm ci or pnpm install or yarn install)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f pnpm-lock.yaml ]; then
+            corepack enable
+            corepack prepare pnpm@latest --activate
+            pnpm install --frozen-lockfile
+          elif [ -f yarn.lock ]; then
+            corepack enable
+            corepack prepare yarn@stable --activate
+            yarn install --immutable
+          elif [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci
+          else
+            echo "::warning::No npm lockfile found; running 'npm install' (audit results may be less reliable)"
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Audit (low/moderate logged, high/critical fails)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Run informational audit (everything) — never fails the build.
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm audit --json > audit-info.json || true
+          else
+            npm audit --json > audit-info.json || true
+          fi
+          echo "----- audit summary (informational) -----"
+          if command -v jq > /dev/null; then
+            jq -r '
+              if .metadata?.vulnerabilities? then
+                .metadata.vulnerabilities | "info=\(.info // 0) low=\(.low // 0) moderate=\(.moderate // 0) high=\(.high // 0) critical=\(.critical // 0)"
+              elif .advisories? then
+                "advisories=\(.advisories | length)"
+              else
+                "audit produced no parseable summary"
+              end
+            ' audit-info.json || true
+          fi
+          echo "----- gating audit (high+critical) -----"
+          # Real gate.
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm audit --audit-level=high
+          else
+            npm audit --audit-level=high
+          fi
+
+  go-vulncheck:
+    name: govulncheck
+    needs: detect
+    if: needs.detect.outputs.has_go == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v4.1.7
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      # actions/setup-go v5.0.2
+      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck if absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v govulncheck > /dev/null; then
+            go install golang.org/x/vuln/cmd/govulncheck@latest
+          fi
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Run govulncheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          # govulncheck only reports vulns whose vulnerable symbols are
+          # actually called from your code, so any finding is high-signal —
+          # treat any non-zero exit as a fail.
+          govulncheck ./...
+
+  pip-audit:
+    name: pip-audit
+    needs: detect
+    if: needs.detect.outputs.has_python == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v4.1.7
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      # actions/setup-python v5.2.0
+      - uses: actions/setup-python@f677139bbe7f9c59b41e40162b753c062f5d49a3
+        with:
+          python-version: '3.x'
+
+      - name: Install pip-audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install pip-audit
+
+      - name: Run pip-audit (--strict gates the workflow)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Prefer pyproject if both exist; pip-audit will resolve from it.
+          if [ -f pyproject.toml ]; then
+            pip-audit --strict
+          else
+            # Audit every requirements*.txt found at repo root.
+            shopt -s nullglob
+            files=(requirements*.txt)
+            if [ ${#files[@]} -eq 0 ]; then
+              echo "::notice::python detected but no requirements*.txt or pyproject.toml at repo root — skipping"
+              exit 0
+            fi
+            for f in "${files[@]}"; do
+              echo "----- pip-audit -r $f -----"
+              pip-audit --strict -r "$f"
+            done
+          fi
+
+  summary:
+    name: Audit summary (always runs)
+    if: always()
+    needs: [detect, npm-audit, go-vulncheck, pip-audit]
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        run: |
+          set -euo pipefail
+          echo "## Security audit summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Ecosystem | Detected | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| npm    | ${{ needs.detect.outputs.has_npm }}    | ${{ needs.npm-audit.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| go     | ${{ needs.detect.outputs.has_go }}     | ${{ needs.go-vulncheck.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| python | ${{ needs.detect.outputs.has_python }} | ${{ needs.pip-audit.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          # Exit non-zero if any audit job failed, regardless of detect outcome.
+          fail=0
+          for r in "${{ needs.npm-audit.result }}" "${{ needs.go-vulncheck.result }}" "${{ needs.pip-audit.result }}"; do
+            case "$r" in
+              failure|cancelled|timed_out) fail=1 ;;
+            esac
+          done
+          if [ "$fail" -eq 1 ]; then
+            echo "::error::One or more audits failed — see job logs"
+            exit 1
+          fi

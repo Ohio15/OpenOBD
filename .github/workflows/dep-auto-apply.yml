@@ -1,0 +1,532 @@
+name: Dependency Auto-Apply (Layer B)
+
+# Layer B of the dev-standards dependency hygiene model.
+# Weekly cron that auto-APPLIES safe dep fixes, runs tests, opens a PR with
+# label `auto-apply` for human review. Auto-merge is NOT part of this layer
+# (it can be added later as a thin opt-in wrapper).
+#
+# Per-ecosystem behaviour:
+#   npm:    `npm audit fix` (never --force, never --include-major) + `npm test`
+#   go:     `govulncheck` enumerates fixes; `go get <mod>@<patched>`; gated
+#           by go.sum churn heuristic (>20 lines = abort, likely breaking).
+#   python: only if requirements*.txt is pinned (`==` or `~=`); pip-audit --fix.
+#   docker: only if every FROM line uses `@sha256:`; otherwise skipped + flagged.
+#   gh-actions: scan `.github/workflows/*.yml` for `uses:` lines; only propose
+#           SHA-pinned bumps within the same major (per tj-actions/changed-files
+#           supply-chain incident, Mar-2025).
+#
+# Outcomes:
+#   anything bumped + tests pass -> open PR labeled `auto-apply`
+#   anything bumped + tests fail -> open DRAFT PR labeled `auto-apply-broken`
+#   nothing bumped               -> silent exit 0
+#
+# Notifications:
+#   ntfy nexus-alerts on PR open or test failure (unauth topic; no secret).
+#   shared-brain ingest on PR open (Bearer SHARED_BRAIN_TOKEN; gracefully
+#   skipped if the secret isn't set).
+#
+# Enrollment: drop an empty `.github/auto-apply-enabled` file in the repo
+# (per-repo opt-in). Kill switch: `rm .github/auto-apply-enabled` and push.
+#
+# Design ref: shared-brain decision 81b962de-3e94-4d67-9093-7dbb5644094d
+# Critique:   shared-brain knowledge 7b258d5c-dcf4-49e9-973a-5e92b951a019
+
+on:
+  schedule:
+    # Sundays 06:00 UTC. Pairs with the existing weekly hygiene cron at 05:00.
+    - cron: "0 6 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dep-auto-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    # Per-repo opt-in via .github/auto-apply-enabled. Implemented as a step
+    # check (not job-level if:) so we can reach the brain ingest path from
+    # within one job.
+    steps:
+      # actions/checkout v4.1.7
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify enrollment (.github/auto-apply-enabled present)
+        id: enroll
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f .github/auto-apply-enabled ]; then
+            echo "::notice::This repo is not enrolled in Layer B (no .github/auto-apply-enabled file). Exiting silently."
+            echo "enrolled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "enrolled=true" >> "$GITHUB_OUTPUT"
+
+      - name: Detect ecosystems
+        if: steps.enroll.outputs.enrolled == 'true'
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          has_npm=false; has_go=false; has_python=false; has_docker=false; has_actions=false
+          [ -f package.json ] && has_npm=true
+          [ -f go.mod ] && has_go=true
+          if compgen -G "requirements*.txt" > /dev/null; then has_python=true; fi
+          if [ -f Dockerfile ] || compgen -G "**/Dockerfile" > /dev/null 2>&1; then has_docker=true; fi
+          if compgen -G ".github/workflows/*.yml" > /dev/null || compgen -G ".github/workflows/*.yaml" > /dev/null; then has_actions=true; fi
+          {
+            echo "has_npm=$has_npm"
+            echo "has_go=$has_go"
+            echo "has_python=$has_python"
+            echo "has_docker=$has_docker"
+            echo "has_actions=$has_actions"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::ecosystems npm=$has_npm go=$has_go python=$has_python docker=$has_docker gh-actions=$has_actions"
+
+      # actions/setup-node v4.0.4
+      - name: Setup Node
+        if: steps.enroll.outputs.enrolled == 'true' && steps.detect.outputs.has_npm == 'true'
+        uses: actions/setup-node@0a44ba7841725637a19e28fa30b79a866c81b0a6
+        with:
+          node-version: '20'
+
+      # actions/setup-go v5.0.2
+      - name: Setup Go
+        if: steps.enroll.outputs.enrolled == 'true' && steps.detect.outputs.has_go == 'true'
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # actions/setup-python v5.2.0
+      - name: Setup Python
+        if: steps.enroll.outputs.enrolled == 'true' && steps.detect.outputs.has_python == 'true'
+        uses: actions/setup-python@f677139bbe7f9c59b41e40162b753c062f5d49a3
+        with:
+          python-version: '3.x'
+
+      # ---------------------------------------------------------------- npm
+      - name: npm — audit fix + test
+        if: steps.enroll.outputs.enrolled == 'true' && steps.detect.outputs.has_npm == 'true'
+        id: npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed=false
+          notes=""
+          if [ -f pnpm-lock.yaml ]; then
+            corepack enable
+            corepack prepare pnpm@latest --activate
+            pnpm install --frozen-lockfile
+            # pnpm has no exact `audit fix`; closest safe equivalent is
+            # `pnpm update --latest=false` against vulnerable packages only.
+            # Capture the audit list, then update.
+            pnpm audit --json > /tmp/pnpm-audit.json || true
+            if [ -s /tmp/pnpm-audit.json ]; then
+              vuln_pkgs=$(jq -r '.advisories // {} | to_entries[].value.module_name' /tmp/pnpm-audit.json 2>/dev/null | sort -u | tr '\n' ' ' || true)
+              if [ -n "$vuln_pkgs" ]; then
+                # update only those packages, no major bumps
+                # shellcheck disable=SC2086
+                pnpm update $vuln_pkgs || true
+              fi
+            fi
+          elif [ -f yarn.lock ]; then
+            corepack enable
+            corepack prepare yarn@stable --activate
+            yarn install --immutable
+            yarn npm audit --recursive --json > /tmp/yarn-audit.json || true
+            # yarn 4 has no built-in `audit fix`; we rely on the npm path
+            # only when the project is npm-native. Skip auto-apply on yarn.
+            notes="yarn detected — skipping auto-apply (yarn 4 has no safe 'audit fix' equivalent)"
+          else
+            if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi
+            npm audit fix
+          fi
+
+          if ! git diff --quiet -- package-lock.json pnpm-lock.yaml yarn.lock 2>/dev/null; then
+            changed=true
+          fi
+          # Run tests if a test script is defined.
+          if [ "$changed" = "true" ] && jq -e '.scripts.test' package.json > /dev/null 2>&1; then
+            if [ -f pnpm-lock.yaml ]; then
+              pnpm test || { echo "tests_failed=true" >> "$GITHUB_OUTPUT"; exit 0; }
+            else
+              npm test || { echo "tests_failed=true" >> "$GITHUB_OUTPUT"; exit 0; }
+            fi
+          fi
+          {
+            echo "changed=$changed"
+            echo "notes<<EOF"
+            echo "$notes"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # ----------------------------------------------------------------- go
+      - name: Go — govulncheck-driven bumps
+        if: steps.enroll.outputs.enrolled == 'true' && steps.detect.outputs.has_go == 'true'
+        id: go
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed=false
+          if ! command -v govulncheck > /dev/null; then
+            go install golang.org/x/vuln/cmd/govulncheck@latest
+          fi
+          export PATH="$(go env GOPATH)/bin:$PATH"
+
+          # Capture vulnerabilities + suggested fixed versions.
+          govulncheck -json ./... > /tmp/gov.json || true
+          # Extract module bumps: { "Module": "<mod>", "FixedVersion": "<ver>" }
+          # govulncheck's JSON format streams "Vuln" frames with OSV references.
+          mapfile -t bumps < <(jq -r '
+            select(.osv? | type == "object")
+            | .osv.affected[]?
+            | select(.package?.ecosystem == "Go")
+            | .ranges[]?.events[]?
+            | select(.fixed?)
+            | "\(.fixed)"
+          ' /tmp/gov.json 2>/dev/null | sort -u || true)
+
+          # Without a clean module->fixed mapping, fall back to running
+          # `go get -u=patch` on each module govulncheck names.
+          mapfile -t mods < <(jq -r '
+            select(.finding? != null)
+            | .finding.trace[0].module // empty
+          ' /tmp/gov.json 2>/dev/null | sort -u || true)
+
+          before_sum=$(wc -l < go.sum 2>/dev/null || echo 0)
+
+          for m in "${mods[@]}"; do
+            [ -z "$m" ] && continue
+            echo "::notice::go get -u=patch $m"
+            go get -u=patch "$m" || true
+          done
+          go mod tidy
+
+          after_sum=$(wc -l < go.sum 2>/dev/null || echo 0)
+          delta=$(( after_sum - before_sum ))
+          delta=${delta#-}  # absolute value
+          echo "go.sum line delta: $delta"
+
+          if [ "$delta" -gt 20 ]; then
+            echo "::warning::go.sum changed by $delta lines (>20 threshold) — reverting and skipping go bumps"
+            git checkout -- go.mod go.sum
+            changed=false
+          else
+            if ! git diff --quiet -- go.mod go.sum; then
+              changed=true
+              go build ./...
+              if compgen -G "**/*_test.go" > /dev/null 2>&1; then
+                go test ./... || { echo "tests_failed=true" >> "$GITHUB_OUTPUT"; exit 0; }
+              fi
+            fi
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------- python
+      - name: Python — pip-audit --fix (pinned reqs only)
+        if: steps.enroll.outputs.enrolled == 'true' && steps.detect.outputs.has_python == 'true'
+        id: python
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip pip-audit
+          changed=false
+          notes=""
+          shopt -s nullglob
+          for f in requirements*.txt; do
+            # Only auto-apply if every non-comment line is pinned with == or ~=.
+            unpinned=$(grep -Ev '^\s*(#|$)' "$f" | grep -Ev '(==|~=)' || true)
+            if [ -n "$unpinned" ]; then
+              notes="${notes}skipped $f (unpinned lines present)\n"
+              continue
+            fi
+            echo "----- preview: pip-audit --fix --strict --dry-run -r $f -----"
+            pip-audit --fix --strict --dry-run -r "$f" || true
+            echo "----- apply: pip-audit --fix --strict -r $f -----"
+            pip-audit --fix --strict -r "$f" || true
+            if ! git diff --quiet -- "$f"; then
+              changed=true
+            fi
+          done
+          if [ "$changed" = "true" ]; then
+            # Run pytest if available.
+            if python -c "import pytest" > /dev/null 2>&1; then
+              pip install -r requirements.txt 2>/dev/null || true
+              pytest || { echo "tests_failed=true" >> "$GITHUB_OUTPUT"; exit 0; }
+            fi
+          fi
+          {
+            echo "changed=$changed"
+            echo "notes<<EOF"
+            printf "%b" "$notes"
+            echo
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------- docker
+      - name: Docker — note on FROM digest pinning
+        if: steps.enroll.outputs.enrolled == 'true' && steps.detect.outputs.has_docker == 'true'
+        id: docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          # We don't auto-bump base images: digest resolution requires
+          # network access to the registry and a trusted source-of-truth for
+          # "the new digest of the same tag". We only validate that every
+          # FROM line is digest-pinned, and surface a warning if not.
+          notes=""
+          unpinned=""
+          while IFS= read -r df; do
+            while IFS= read -r line; do
+              if [[ "$line" =~ ^[Ff][Rr][Oo][Mm][[:space:]] ]]; then
+                if ! [[ "$line" =~ @sha256: ]]; then
+                  unpinned="${unpinned}${df}: ${line}\n"
+                fi
+              fi
+            done < "$df"
+          done < <(git ls-files | grep -E '(^|/)Dockerfile(\..+)?$' || true)
+          if [ -n "$unpinned" ]; then
+            notes="Dockerfiles with un-digest-pinned FROM lines (auto-apply skipped):\n${unpinned}"
+            echo "::warning::$notes"
+          fi
+          {
+            echo "changed=false"
+            echo "notes<<EOF"
+            printf "%b" "$notes"
+            echo
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # ---------------------------------------------------------- gh-actions
+      - name: GitHub Actions — flag non-SHA-pinned uses
+        if: steps.enroll.outputs.enrolled == 'true' && steps.detect.outputs.has_actions == 'true'
+        id: actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Auto-bumping SHA-pinned actions safely requires resolving the
+          # latest SHA for the same major from the GitHub API for each one,
+          # which is best done by Dependabot's own action-bump grouping.
+          # We simply audit + warn here. (Within-major SHA bumps can be
+          # added in a follow-up when Dependabot evidence shows demand.)
+          notes=""
+          while IFS= read -r f; do
+            while IFS= read -r line; do
+              # match "uses: owner/repo@<ref>" — we want refs that aren't 40-char SHAs
+              if [[ "$line" =~ uses:[[:space:]]+([A-Za-z0-9._/-]+)@([A-Za-z0-9._-]+) ]]; then
+                ref="${BASH_REMATCH[2]}"
+                action="${BASH_REMATCH[1]}"
+                # local actions (./...) skip; reusable workflow paths skip.
+                [[ "$action" == ./* || "$action" == .github/* ]] && continue
+                if ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+                  notes="${notes}${f}: ${action}@${ref} (not SHA-pinned)\n"
+                fi
+              fi
+            done < "$f"
+          done < <(git ls-files .github/workflows/ | grep -E '\.(yml|yaml)$' || true)
+          if [ -n "$notes" ]; then
+            echo "::warning::Non-SHA-pinned GitHub Actions found (auto-apply skipped — fix manually):"
+            printf "%b" "$notes"
+          fi
+          {
+            echo "changed=false"
+            echo "notes<<EOF"
+            printf "%b" "$notes"
+            echo
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # ----------------------------------------------------------- aggregate
+      - name: Aggregate result
+        if: steps.enroll.outputs.enrolled == 'true'
+        id: agg
+        shell: bash
+        run: |
+          set -euo pipefail
+          any_changed=false
+          tests_failed=false
+          for c in \
+            "${{ steps.npm.outputs.changed }}" \
+            "${{ steps.go.outputs.changed }}" \
+            "${{ steps.python.outputs.changed }}"; do
+            if [ "$c" = "true" ]; then any_changed=true; fi
+          done
+          for t in \
+            "${{ steps.npm.outputs.tests_failed }}" \
+            "${{ steps.go.outputs.tests_failed }}" \
+            "${{ steps.python.outputs.tests_failed }}"; do
+            if [ "$t" = "true" ]; then tests_failed=true; fi
+          done
+
+          date_str=$(date -u +%Y-%m-%d)
+          branch="auto-apply/${date_str}"
+
+          {
+            echo "any_changed=$any_changed"
+            echo "tests_failed=$tests_failed"
+            echo "date_str=$date_str"
+            echo "branch=$branch"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$any_changed" = "false" ]; then
+            echo "::notice::No dependency changes this run — exiting silently."
+          fi
+
+      # --------------------------------------------------------- compose PR
+      # peter-evans/create-pull-request v7.0.5
+      - name: Open PR (success path)
+        if: steps.enroll.outputs.enrolled == 'true' && steps.agg.outputs.any_changed == 'true' && steps.agg.outputs.tests_failed != 'true'
+        id: pr_ok
+        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f
+        with:
+          branch: ${{ steps.agg.outputs.branch }}
+          base: ${{ github.event.repository.default_branch }}
+          commit-message: |
+            chore: weekly auto-apply ${{ steps.agg.outputs.date_str }}
+
+            Auto-applied by dep-auto-apply.yml (Layer B). Per-ecosystem notes
+            are in the PR body. Tests passed locally inside the workflow run.
+
+            Co-Authored-By: dev-standards-bot <noreply@anthropic.com>
+          title: "chore: weekly auto-apply ${{ steps.agg.outputs.date_str }}"
+          body: |
+            ## Weekly auto-apply (Layer B)
+
+            Automated weekly bumps for safe (non-major) dependency fixes.
+
+            ### Per-ecosystem notes
+            - **npm:** changed=`${{ steps.npm.outputs.changed }}`
+              ${{ steps.npm.outputs.notes }}
+            - **go:** changed=`${{ steps.go.outputs.changed }}`
+            - **python:** changed=`${{ steps.python.outputs.changed }}`
+              ${{ steps.python.outputs.notes }}
+            - **docker:** ${{ steps.docker.outputs.notes }}
+            - **gh-actions:** ${{ steps.actions.outputs.notes }}
+
+            ### Reviewer checklist
+            - [ ] Lockfile diff is present and reasonable
+            - [ ] No major version bumps slipped through
+            - [ ] CVE / GHSA list (if any) maps to the bumps
+            - [ ] CI is green on this PR
+            - [ ] Layer A `security-audit` workflow passes
+
+            ---
+            Design: shared-brain decision `81b962de-3e94-4d67-9093-7dbb5644094d`
+            Critique: shared-brain knowledge `7b258d5c-dcf4-49e9-973a-5e92b951a019`
+          labels: |
+            auto-apply
+            dependencies
+          delete-branch: true
+          sign-commits: false
+
+      - name: Open PR (broken path — tests failed)
+        if: steps.enroll.outputs.enrolled == 'true' && steps.agg.outputs.any_changed == 'true' && steps.agg.outputs.tests_failed == 'true'
+        id: pr_broken
+        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f
+        with:
+          branch: ${{ steps.agg.outputs.branch }}-broken
+          base: ${{ github.event.repository.default_branch }}
+          commit-message: |
+            chore(broken): weekly auto-apply ${{ steps.agg.outputs.date_str }} — tests failed
+
+            Auto-applied by dep-auto-apply.yml (Layer B). Tests failed inside
+            the workflow run; this PR is opened as a DRAFT for human triage.
+
+            Co-Authored-By: dev-standards-bot <noreply@anthropic.com>
+          title: "chore(broken): weekly auto-apply ${{ steps.agg.outputs.date_str }} — tests failed"
+          draft: true
+          body: |
+            ## Weekly auto-apply — TESTS FAILED
+
+            Layer B applied dependency bumps but the resulting test run
+            failed. Marked draft so a human can decide whether to:
+            - investigate + fix the test, then mark ready
+            - revert the bumps (close + delete branch)
+            - cherry-pick the safe subset
+
+            ### Per-ecosystem
+            - **npm:**    changed=`${{ steps.npm.outputs.changed }}` tests_failed=`${{ steps.npm.outputs.tests_failed }}`
+              ${{ steps.npm.outputs.notes }}
+            - **go:**     changed=`${{ steps.go.outputs.changed }}` tests_failed=`${{ steps.go.outputs.tests_failed }}`
+            - **python:** changed=`${{ steps.python.outputs.changed }}` tests_failed=`${{ steps.python.outputs.tests_failed }}`
+              ${{ steps.python.outputs.notes }}
+
+            See workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          labels: |
+            auto-apply-broken
+            dependencies
+          delete-branch: false
+          sign-commits: false
+
+      # ------------------------------------------------------ notifications
+      - name: Notify ntfy (PR opened or test failure)
+        if: steps.enroll.outputs.enrolled == 'true' && (steps.pr_ok.outputs.pull-request-url || steps.pr_broken.outputs.pull-request-url)
+        shell: bash
+        env:
+          PR_OK_URL: ${{ steps.pr_ok.outputs.pull-request-url }}
+          PR_BROKEN_URL: ${{ steps.pr_broken.outputs.pull-request-url }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PR_BROKEN_URL:-}" ]; then
+            title="auto-apply BROKEN: ${REPO}"
+            body="Tests failed on weekly auto-apply. Draft PR: ${PR_BROKEN_URL}"
+            tags="warning,auto-apply-broken"
+            prio="urgent"
+          else
+            title="auto-apply PR: ${REPO}"
+            body="Weekly auto-apply opened a PR: ${PR_OK_URL}"
+            tags="white_check_mark,auto-apply"
+            prio="default"
+          fi
+          curl -fsS -X POST \
+            -H "Title: ${title}" \
+            -H "Tags: ${tags}" \
+            -H "Priority: ${prio}" \
+            -d "${body}" \
+            https://ntfy.sh/nexus-alerts || \
+            echo "::warning::ntfy publish failed (non-fatal)"
+
+      - name: Brain ingest (PR opened only)
+        if: steps.enroll.outputs.enrolled == 'true' && (steps.pr_ok.outputs.pull-request-url || steps.pr_broken.outputs.pull-request-url)
+        shell: bash
+        env:
+          BRAIN_TOKEN: ${{ secrets.SHARED_BRAIN_TOKEN }}
+          PR_OK_URL: ${{ steps.pr_ok.outputs.pull-request-url }}
+          PR_BROKEN_URL: ${{ steps.pr_broken.outputs.pull-request-url }}
+          REPO: ${{ github.repository }}
+          DATE_STR: ${{ steps.agg.outputs.date_str }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BRAIN_TOKEN:-}" ]; then
+            echo "::notice::SHARED_BRAIN_TOKEN secret not set — skipping brain ingest"
+            exit 0
+          fi
+          if [ -n "${PR_BROKEN_URL:-}" ]; then
+            kind="auto-apply-broken"
+            url="${PR_BROKEN_URL}"
+          else
+            kind="auto-apply"
+            url="${PR_OK_URL}"
+          fi
+          payload=$(jq -nc \
+            --arg c "${kind} PR opened on ${REPO} (${DATE_STR}): ${url}" \
+            --arg p "dev-standards" \
+            --arg t "$kind" \
+            --arg s "github-actions:dep-auto-apply" \
+            '{action:"ingest", content:$c, project:$p, source:$s, tags:[$t,"weekly","layer-b"]}')
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${BRAIN_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            https://shared-brain.us/api/memory/ingest || \
+            echo "::warning::brain ingest failed (non-fatal)"
