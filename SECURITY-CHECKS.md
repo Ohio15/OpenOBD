@@ -326,6 +326,29 @@ drop-oldest on evidence.
 **Since.** 2026-09-09.
 **Origin.** audit-cortex-hooks-2026-09-09.
 
+### SC-22 · A plain-object map indexed by attacker-chosen text
+**Shape.** A lookup table (`{}` literal, `Record<K, …>` under any key type,
+or `x in obj`) keyed by a program name, verb, subcommand, tool name or any
+other string the guarded party supplies. `__proto__`, `constructor`,
+`toString` and every other `Object.prototype` name resolve to a truthy
+non-handler; the code then calls it (throw → every fail-open consumer allows)
+or interpolates it (a native-function body reaches a message). The canon
+lexer had two, and one word took the whole shell-side plane down.
+**Check.** `grep -nE "\[(program|programName\(|verb|sub|name|key|tool)[A-Za-z]*\]" hooks/*.ts`
+and `grep -nE "\bin [A-Z_]+\b" hooks/*.ts`; every hit keyed by external text
+must be a `Map`, an `Object.create(null)` table, or guarded by
+`Object.hasOwn` on the read. A fixture that feeds `__proto__`, `constructor`,
+`toString`, `hasOwnProperty` as the program/verb/sub to every detector and
+asserts the plain-command verdict, plus a derived scan over every
+module-level table read with a variable key, in every spelling of the
+declaration and in every module that reads it (SC-20 applies to the scan
+itself). Reference fixture: cortex-hooks `hooks/hostile-program-names.test.ts`.
+**Fix form.** Null-prototype tables or a `Map`; `hasOwn` at the lookup; the
+lexer asserts the resolved handler is a function.
+**Since.** 2026-09-16.
+**Origin.** audit-cortex-hooks-2026-09-15 (CRITICAL; approved by Ron
+2026-09-16).
+
 ---
 
 ## Proposed additions (from the routine audit; operator approval required)
