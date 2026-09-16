@@ -94,6 +94,43 @@ def coerce_enum_bool(raw: str | None):
     return ENUM_BOOL.get(str(raw).strip().lower())
 
 
+
+def parse_cell(raw):
+    """Cell text -> float, or None. Never guesses: an unparseable cell stays None."""
+    if raw is None:
+        return None
+    t = str(raw).strip().replace(",", "")
+    if t == "":
+        return None
+    try:
+        return float(t)
+    except ValueError:
+        return None
+
+
+def split_grid(grid):
+    """Split a swept C1FlexGrid into axes + data.
+
+    Layout confirmed live: row 0 holds the X axis, column 0 holds the Y axis,
+    cell (0,0) is a corner label. Anything that does not fit that shape is
+    returned with axes None and the raw grid preserved -- the caller still emits
+    the grid, so nothing is lost, but no axis is fabricated.
+    """
+    if not grid or not isinstance(grid, list) or len(grid) < 1:
+        return None, None, None
+    n_rows = len(grid)
+    n_cols = max(len(r) for r in grid)
+    if n_rows < 2 or n_cols < 2:
+        return None, None, None
+    x_axis = [parse_cell(c) for c in grid[0][1:]]
+    y_axis = [parse_cell(r[0]) if len(r) > 0 else None for r in grid[1:]]
+    values = [[parse_cell(c) for c in r[1:]] for r in grid[1:]]
+    # A 1-D table has a degenerate Y axis (a single unlabelled row).
+    if len(y_axis) == 1 and y_axis[0] is None:
+        y_axis = None
+    return x_axis, y_axis, values
+
+
 def build(sweep_dir: Path, data_dir: Path, out_path: Path, report_path: Path) -> int:
     scalars_raw = read_jsonl(sweep_dir / "scalars.jsonl")
     anomalies = read_jsonl(sweep_dir / "anomalies.jsonl")
@@ -131,6 +168,10 @@ def build(sweep_dir: Path, data_dir: Path, out_path: Path, report_path: Path) ->
     ref_scalar_by_id: dict[int, list[dict]] = {}
     for s in ref["scalars"]:
         ref_scalar_by_id.setdefault(int(s["param_id"]), []).append(s)
+    ref_table_by_id: dict[int, list[dict]] = {}
+    for t in ref["tables"]:
+        if t.get("param_id") is not None:
+            ref_table_by_id.setdefault(int(t["param_id"]), []).append(t)
     best_scalar_by_id: dict[int, list[dict]] = {}
     for s in best["scalars"]:
         if s.get("param_id") is not None:
@@ -172,20 +213,46 @@ def build(sweep_dir: Path, data_dir: Path, out_path: Path, report_path: Path) ->
         })
 
     out_tables = []
+    tables_by_key: dict[str, dict] = {}
+    incomplete_tables: list[dict] = []
     for rec in tables_raw:
+        key = str(rec.get("key"))
+        if key in tables_by_key:
+            continue
+        tables_by_key[key] = rec
+        grid = rec.get("grid")
+        x_axis, y_axis, values = split_grid(grid)
+        complete = bool(rec.get("complete", True))
+        if not complete:
+            incomplete_tables.append({
+                "key": key, "name": rec.get("name"),
+                "cells_read": rec.get("cells_read"),
+                "declared_rows": rec.get("declared_rows"),
+                "declared_cols": rec.get("declared_cols"),
+            })
+        ref_hits = ref_table_by_id.get(rec.get("param_id"), [])
+        category = rec.get("segment") or ""
+        if ref_hits:
+            category = ref_hits[0].get("category") or category
         out_tables.append({
             "name": rec.get("name"),
             "unit": norm_unit(rec.get("unit")),
-            "category": rec.get("segment") or "",
+            "category": category,
             "param_id": rec.get("param_id"),
             "module": rec.get("module"),
             "note": rec.get("desc") or "",
-            "x_axis": rec.get("x_axis"),
-            "y_axis": rec.get("y_axis"),
-            "values": rec.get("values"),
+            "tab_path": rec.get("tab_path"),
+            "x_axis": x_axis,
+            "y_axis": y_axis,
+            "values": values,
+            "raw_grid": grid,
+            "n_rows": rec.get("n_rows"),
+            "n_cols": rec.get("n_cols"),
+            "cells_read": rec.get("cells_read"),
+            "complete": complete,
             "provenance": {
                 "source": "stock-sweep",
-                "rule": f"offline VCM Editor Copy-with-Axis of {STOCK_TUNE_NAME}",
+                "rule": f"offline VCM Editor UIA grid read of {STOCK_TUNE_NAME}",
                 "tune_sha256": STOCK_TUNE_SHA256,
             },
         })
@@ -282,8 +349,12 @@ def build(sweep_dir: Path, data_dir: Path, out_path: Path, report_path: Path) ->
         "tables": {
             "swept_total": len(out_tables),
             "reference_population_best_cal": len(best["tables"]),
+            "reference_with_param_id": len(best_table_ids),
             "covered": len(best_table_ids & swept_table_ids),
             "missing": len(best_table_ids - swept_table_ids),
+            "coverage_pct": round(100.0 * len(best_table_ids & swept_table_ids) / max(1, len(best_table_ids)), 1),
+            "swept_not_in_reference": len(swept_table_ids - best_table_ids),
+            "incomplete_grids": len(incomplete_tables),
         },
         "integrity": {
             "duplicate_value_conflicts": len(conflicts),
@@ -292,6 +363,12 @@ def build(sweep_dir: Path, data_dir: Path, out_path: Path, report_path: Path) ->
             "anomaly_reasons": dict(Counter(a.get("reason", "?") for a in anomalies)),
         },
         "enums_not_coerced_to_number": enum_uncoerced,
+        "incomplete_tables": incomplete_tables,
+        "missing_tables": [
+            {"param_id": pid,
+             "name": next((t.get("name") for t in best["tables"] if t.get("param_id") == pid), None)}
+            for pid in sorted(best_table_ids - swept_table_ids)
+        ],
         "missing_scalars": missing_detail,
         "reference_scalars_without_param_id": [
             {"name": s.get("name"), "category": s.get("category")} for s in best_scalar_no_id
@@ -317,7 +394,9 @@ def build(sweep_dir: Path, data_dir: Path, out_path: Path, report_path: Path) ->
     print(f"  scalars : {sc['covered']}/{sc['reference_with_param_id']} with param_id ({sc['coverage_pct']}%)"
           f"; {sc['missing']} missing; {sc['swept_not_in_reference']} swept that reference lacks")
     tb = report["tables"]
-    print(f"  tables  : {tb['covered']}/{tb['reference_population_best_cal']}; {tb['missing']} missing")
+    print(f"  tables  : {tb['covered']}/{tb['reference_with_param_id']} ({tb['coverage_pct']}%); "
+          f"{tb['missing']} missing; {tb['swept_not_in_reference']} swept that reference lacks; "
+          f"{tb['incomplete_grids']} incomplete grids")
     print(f"  conflicts: {len(conflicts)}   anomalies: {len(anomalies)} {report['integrity']['anomaly_reasons']}")
     print(f"report written         : {report_path}")
 

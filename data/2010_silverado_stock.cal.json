@@ -10,7 +10,7 @@
     "base_tune": "stock-10.13.24.hpt",
     "base_tune_sha256": "0c108cea1fb037ac1b7e8c71edad4266b5eaa7a986d2ece3ba991825dfeeab16",
     "source": "offline VCM Editor UIA sweep on nexus-sweep-win11 (read-only, hover-identified)",
-    "generated_utc": "2026-09-16T21:10:31.612324+00:00",
+    "generated_utc": "2026-09-16T21:30:07.550228+00:00",
     "is_stock_baseline": true,
     "warning": "This file is the PRE-TUNING baseline. Parameters absent from it were not read by the sweep and must be treated as unknown, never as unchanged."
   },
