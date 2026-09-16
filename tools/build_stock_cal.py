@@ -37,6 +37,14 @@ from pathlib import Path
 
 # The six hand-verified stock baselines already in best.cal.json. These are the
 # only independent check on whether the sweep read the right cells.
+#
+# MATCH BY (module, param_id) -- NEVER BY NAME. Two separate traps here:
+#   * "Final Drive Ratio" exists as both ECM 9050 and TCM 5004. A name match
+#     silently collapses two different parameters into one.
+#   * best.cal.json calls ECM 246 "DoD (AFM) Enable"; HP Tuners itself calls it
+#     "DoD Enable". An exact-name cross-check scores it MISSING even though it
+#     was captured correctly -- which invites someone to re-run a sweep that was
+#     already right. The alias is recorded here so that cannot happen again.
 PIN_CHECKS = [
     ("ECM", 9054, "Driven Tire Circumference", 2475),
     ("ECM", 9056, "Non-Driven Tire Circumference", 2475),
@@ -45,6 +53,11 @@ PIN_CHECKS = [
     ("TCM", 5004, "Final Drive Ratio - Trans", 3.08),
     ("ECM", 246, "DoD (AFM) Enable", 0),
 ]
+
+# best.cal.json display name -> name as VCM Editor actually reports it.
+NAME_ALIASES = {
+    "DoD (AFM) Enable": "DoD Enable",
+}
 
 STOCK_TUNE_NAME = "stock-10.13.24.hpt"
 STOCK_TUNE_SHA256 = "0c108cea1fb037ac1b7e8c71edad4266b5eaa7a986d2ece3ba991825dfeeab16"
@@ -271,6 +284,23 @@ def build(sweep_dir: Path, data_dir: Path, out_path: Path, report_path: Path) ->
             "source": "offline VCM Editor UIA sweep on nexus-sweep-win11 (read-only, hover-identified)",
             "generated_utc": datetime.now(timezone.utc).isoformat(),
             "is_stock_baseline": True,
+            "name_aliases": {
+                "note": (
+                    "Cross-check by (module, param_id), NOT by display name. "
+                    "best.cal.json uses some names that differ from VCM Editor's own."
+                ),
+                "DoD (AFM) Enable": "reported by VCM Editor as 'DoD Enable' (ECM 246)",
+                "Final Drive Ratio": (
+                    "exists twice: ECM 9050 (engine) and TCM 5004 (trans, '- Trans'); "
+                    "a name-only match collapses two distinct parameters"
+                ),
+            },
+            "counts_exceed_reference": (
+                "This sweep captures more parameters than data/2010_silverado_best.cal.json "
+                "holds (576 scalars vs its 375, and more tables than its 252). VCM Editor in "
+                "Advanced view across both ECM and TCM exposes more than that coalesced file "
+                "ever contained. The surplus is extra coverage, not an error."
+            ),
             "warning": (
                 "This file is the PRE-TUNING baseline. Parameters absent from it were "
                 "not read by the sweep and must be treated as unknown, never as unchanged."
@@ -301,7 +331,9 @@ def build(sweep_dir: Path, data_dir: Path, out_path: Path, report_path: Path) ->
         ok = got is not None and abs(float(got) - float(expected)) < 1e-6
         if not ok:
             pin_fail += 1
-        pin_results.append({"param": f"{module}:{pid}", "name": name, "expected": expected,
+        alias = NAME_ALIASES.get(name)
+        pin_results.append({"param": f"{module}:{pid}", "name": name,
+                            "vcm_name": alias, "expected": expected,
                             "swept": got, "swept_name": rec.get("name"),
                             "swept_raw": rec.get("raw_value"), "swept_kind": rec.get("kind"),
                             "result": "MATCH" if ok else "MISMATCH"})
