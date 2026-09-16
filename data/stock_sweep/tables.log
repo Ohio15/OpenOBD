@@ -1,0 +1,82 @@
+﻿2026-09-16T21:17:56.8764960+00:00  === TABLES segment 'Speedo' start (have 0) ===
+2026-09-16T21:18:19.2306326+00:00    leaf [Speedo > Calibration] +0 tables (total 0)
+2026-09-16T21:18:30.6272886+00:00    leaf [Speedo > Limiter] +1 tables (total 1)
+2026-09-16T21:18:30.9862572+00:00  === TABLES 'Speedo' done: +1, total 1, scalar-labels-skipped 23, no-window 4, 34s ===
+2026-09-16T21:19:00.4198394+00:00  === TABLES segment 'Engine' start (have 1) ===
+2026-09-16T21:19:15.9282565+00:00    leaf [Engine > General] +0 tables (total 1)
+2026-09-16T21:19:57.7146379+00:00    leaf [Engine > Idle > RPM] +13 tables (total 14)
+2026-09-16T21:20:47.2378587+00:00    leaf [Engine > Idle > Airflow] +19 tables (total 33)
+2026-09-16T21:21:55.5033876+00:00    leaf [Engine > Airflow > General] +19 tables (total 52)
+2026-09-16T21:22:31.5466095+00:00    leaf [Engine > Airflow > Dynamic] +13 tables (total 65)
+2026-09-16T21:23:12.4667826+00:00    leaf [Engine > Airflow > Speed Density] +15 tables (total 80)
+2026-09-16T21:23:47.4888269+00:00    leaf [Engine > Airflow > Electronic Throttle] +7 tables (total 87)
+2026-09-16T21:25:34.3358737+00:00    leaf [Engine > Airflow > Variable Camshaft] +25 tables (total 112)
+2026-09-16T21:25:47.3708036+00:00    leaf [Engine > Airflow > Supercharger] +0 tables (total 112)
+2026-09-16T21:26:47.7994091+00:00    leaf [Engine > Fuel > General] +15 tables (total 127)
+2026-09-16T21:27:32.8974553+00:00    leaf [Engine > Fuel > Oxygen Sensors] +12 tables (total 139)
+2026-09-16T21:28:17.7125955+00:00    leaf [Engine > Fuel > Open Loop / Base] +12 tables (total 151)
+2026-09-16T21:28:32.5543854+00:00    leaf [Engine > Fuel > Power Enrich] +3 tables (total 154)
+2026-09-16T21:28:50.0309953+00:00    leaf [Engine > Fuel > Temperature Control] +2 tables (total 156)
+2026-09-16T21:29:51.0008709+00:00    leaf [Engine > Fuel > Cutoff, DFCO] +16 tables (total 172)
+2026-09-16T21:30:08.2893779+00:00    leaf [Engine > Fuel > Lean / Fuel-Saving] +2 tables (total 174)
+2026-09-16T21:30:51.6825957+00:00    leaf [Engine > Fuel > Transient] +13 tables (total 187)
+2026-09-16T21:31:10.0902220+00:00    leaf [Engine > Fuel > Flex Fuel] +0 tables (total 187)
+2026-09-16T21:33:26.2865232+00:00    leaf [Engine > Spark > Advance] +43 tables (total 230)
+2026-09-16T21:34:00.5409903+00:00    leaf [Engine > Spark > Retard] +11 tables (total 241)
+2026-09-16T21:34:20.9565914+00:00    leaf [Engine > Spark > Dwell] +4 tables (total 245)
+2026-09-16T21:34:57.5468623+00:00    leaf [Engine > Spark > Knock Sensors] +12 tables (total 257)
+2026-09-16T21:37:22.0471388+00:00    leaf [Engine > Torque Model > General] +24 tables (total 281)
+2026-09-16T21:37:42.5997781+00:00    leaf [Engine > Torque Model > Loss] +2 tables (total 283)
+2026-09-16T21:40:35.0685972+00:00    leaf [Engine > Torque Management > General] +18 tables (total 301)
+2026-09-16T21:40:47.7282664+00:00    leaf [Engine > Torque Management > Engine] +1 tables (total 302)
+2026-09-16T21:41:32.8904504+00:00    leaf [Engine > Torque Management > Supercharger] +4 tables (total 306)
+2026-09-16T21:41:33.8363708+00:00  === TABLES 'Engine' done: +305, total 306, scalar-labels-skipped 224, no-window 48, 1354s ===
+2026-09-16T21:41:49.9299856+00:00  === TABLES segment 'Trans' start (have 306) ===
+2026-09-16T21:42:09.8587287+00:00    leaf [Trans > General] +2 tables (total 308)
+2026-09-16T21:42:30.5383333+00:00    leaf [Trans > Manual] +0 tables (total 308)
+2026-09-16T21:44:09.2575625+00:00    leaf [Trans > Shift General] +23 tables (total 331)
+2026-09-16T21:46:17.3971844+00:00    leaf [Trans > Shift Scheduling] +64 tables (total 395)
+2026-09-16T21:47:28.0779501+00:00    leaf [Trans > Shift Pressures > General] +7 tables (total 402)
+2026-09-16T21:48:34.8926305+00:00    leaf [Trans > Shift Pressures > Upshift] +33 tables (total 435)
+2026-09-16T21:49:01.2191566+00:00    leaf [Trans > Shift Pressures > Downshift] +11 tables (total 446)
+2026-09-16T21:50:05.3959558+00:00    leaf [Trans > Shift Pressures > Adaptive] +20 tables (total 466)
+2026-09-16T21:53:34.2500484+00:00    leaf [Trans > Shift Timing > Upshift] +101 tables (total 567)
+2026-09-16T21:54:45.5037871+00:00    leaf [Trans > Shift Timing > Downshift] +33 tables (total 600)
+2026-09-16T21:55:50.5930049+00:00    leaf [Trans > Torque Converter > General] +20 tables (total 620)
+2026-09-16T21:57:18.0480463+00:00    leaf [Trans > Torque Converter > Apply/Release] +42 tables (total 662)
+2026-09-16T21:59:09.9816967+00:00    leaf [Trans > Torque Management > General] +1 tables (total 663)
+2026-09-16T21:59:19.3885696+00:00    leaf [Trans > Torque Management > Upshift] +1 tables (total 664)
+2026-09-16T21:59:19.7705459+00:00  === TABLES 'Trans' done: +358, total 664, scalar-labels-skipped 105, no-window 52, 1050s ===
+2026-09-16T21:59:27.9620606+00:00  === TABLES segment 'Fuel Sys' start (have 663) ===
+2026-09-16T21:59:44.5397922+00:00    leaf [Fuel Sys > General] +0 tables (total 663)
+2026-09-16T22:00:02.0800384+00:00    leaf [Fuel Sys > Fuel Pressure] +7 tables (total 670)
+2026-09-16T22:00:08.0319816+00:00    leaf [Fuel Sys > Fuel Pump] +1 tables (total 671)
+2026-09-16T22:00:49.8899424+00:00    leaf [Fuel Sys > Fuel Control Module] +0 tables (total 671)
+2026-09-16T22:01:18.1144869+00:00    leaf [Fuel Sys > Fuel Tank/Gauge] +0 tables (total 671)
+2026-09-16T22:01:27.2788553+00:00    leaf [Fuel Sys > Diagnostics] +0 tables (total 671)
+2026-09-16T22:01:31.2068050+00:00    leaf [Fuel Sys > DTCs] +0 tables (total 671)
+2026-09-16T22:01:31.5827769+00:00  === TABLES 'Fuel Sys' done: +8, total 671, scalar-labels-skipped 27, no-window 16, 124s ===
+2026-09-16T22:01:39.5296144+00:00  === TABLES segment 'System' start (have 671) ===
+2026-09-16T22:02:16.4893705+00:00    leaf [System > General] +0 tables (total 671)
+2026-09-16T22:02:57.9657345+00:00    leaf [System > Fans] +0 tables (total 671)
+2026-09-16T22:03:12.8441318+00:00    leaf [System > Coolant Pumps > Intercooler] +0 tables (total 671)
+2026-09-16T22:03:17.1953868+00:00    leaf [System > A/C] +0 tables (total 671)
+2026-09-16T22:03:17.5543667+00:00  === TABLES 'System' done: +0, total 671, scalar-labels-skipped 35, no-window 15, 98s ===
+2026-09-16T22:03:26.8796284+00:00  === TABLES segment 'Engine Diag' start (have 671) ===
+2026-09-16T22:03:53.2695268+00:00    leaf [Engine Diag > General] +0 tables (total 671)
+2026-09-16T22:04:25.9019897+00:00    leaf [Engine Diag > Airflow] +0 tables (total 671)
+2026-09-16T22:05:17.2113231+00:00    leaf [Engine Diag > Misfire] +0 tables (total 671)
+2026-09-16T22:05:21.6889657+00:00    leaf [Engine Diag > Exhaust] +0 tables (total 671)
+2026-09-16T22:05:26.2456045+00:00    leaf [Engine Diag > DTCs] +0 tables (total 671)
+2026-09-16T22:05:26.6095765+00:00  === TABLES 'Engine Diag' done: +0, total 671, scalar-labels-skipped 25, no-window 20, 120s ===
+2026-09-16T22:05:34.4799537+00:00  === TABLES segment 'Trans Diag' start (have 671) ===
+2026-09-16T22:06:29.9400885+00:00    leaf [Trans Diag > General] +0 tables (total 671)
+2026-09-16T22:06:33.9797630+00:00    leaf [Trans Diag > DTCs] +0 tables (total 671)
+2026-09-16T22:06:34.3377377+00:00  === TABLES 'Trans Diag' done: +0, total 671, scalar-labels-skipped 4, no-window 10, 60s ===
+2026-09-16T22:06:44.7329117+00:00  === TABLES segment 'OS' start (have 671) ===
+2026-09-16T22:07:16.0741713+00:00    leaf [OS] +0 tables (total 671)
+2026-09-16T22:07:16.4371397+00:00  === TABLES 'OS' done: +0, total 671, scalar-labels-skipped 0, no-window 6, 32s ===
+2026-09-16T22:07:26.7813137+00:00  === TABLES segment 'Speedo' start (have 671) ===
+2026-09-16T22:07:49.0556534+00:00    leaf [Speedo > Calibration] +0 tables (total 671)
+2026-09-16T22:08:03.6238564+00:00    leaf [Speedo > Limiter] +0 tables (total 671)
+2026-09-16T22:08:04.0008299+00:00  === TABLES 'Speedo' done: +0, total 671, scalar-labels-skipped 23, no-window 5, 37s ===
