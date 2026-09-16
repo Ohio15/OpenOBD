@@ -1,0 +1,91 @@
+﻿2026-09-16T19:55:58.4000798+00:00  === SEGMENT 'Speedo' start (already have 0 params) ===
+2026-09-16T19:55:58.5500795+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Speedometer]
+2026-09-16T19:56:06.5054216+00:00    leaf [Speedo] +18 (total 18)
+2026-09-16T19:56:06.5144225+00:00  === SEGMENT 'Speedo' done: +18 new, 0 dupes, 18 total, 8s ===
+2026-09-16T19:58:02.7199703+00:00  === SEGMENT 'Speedo' start (already have 18 params) ===
+2026-09-16T19:58:02.8469521+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Speedometer]
+2026-09-16T19:58:11.3729232+00:00    leaf [Speedo] tabrows= +0 (total 18)
+2026-09-16T19:58:11.3829168+00:00  === SEGMENT 'Speedo' done: +0 new, 18 dupes, 18 total, 9s ===
+2026-09-16T19:59:49.8460473+00:00  === SEGMENT 'Speedo' start (already have 18 params) ===
+2026-09-16T19:59:50.0560265+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Speedometer]
+2026-09-16T19:59:53.7783914+00:00    depth 0 tabs: Calibration | Limiter
+2026-09-16T20:00:04.4100639+00:00    leaf [Speedo > Calibration] tabrows=1 +0 (total 18)
+2026-09-16T20:00:12.3970442+00:00    leaf [Speedo > Limiter] tabrows=1 +9 (total 27)
+2026-09-16T20:00:12.4060424+00:00  === SEGMENT 'Speedo' done: +9 new, 18 dupes, 27 total, 23s ===
+2026-09-16T20:01:24.0876432+00:00  === SEGMENT 'OS' start (already have 27 params) ===
+2026-09-16T20:01:24.2076345+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Speedometer]
+2026-09-16T20:01:26.9434077+00:00  FATAL in tab walk: You cannot call a method on a null-valued expression.
+2026-09-16T20:01:26.9574072+00:00  === SEGMENT 'OS' done: +0 new, 0 dupes, 27 total, 3s ===
+2026-09-16T20:01:37.5492674+00:00  === SEGMENT 'Engine' start (already have 27 params) ===
+2026-09-16T20:01:37.6772490+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Operating System]
+2026-09-16T20:01:41.5955533+00:00    depth 0 tabs: General | Idle | Airflow | Fuel | Spark | Torque Model | Torque Management | General | Engine | Supercharger
+2026-09-16T20:01:46.6015810+00:00    leaf [Engine > General] tabrows=1 +5 (total 32)
+2026-09-16T20:01:52.3290994+00:00    leaf [Engine > Idle] tabrows=1 +8 (total 40)
+2026-09-16T20:01:59.0413400+00:00    leaf [Engine > Airflow] tabrows=1 +11 (total 51)
+2026-09-16T20:02:07.2517729+00:00    leaf [Engine > Fuel] tabrows=1 +11 (total 62)
+2026-09-16T20:02:13.7716865+00:00    leaf [Engine > Spark] tabrows=1 +5 (total 67)
+2026-09-16T20:02:22.3536621+00:00    leaf [Engine > Torque Model] tabrows=1 +0 (total 67)
+2026-09-16T20:02:41.2469775+00:00    leaf [Engine > Torque Management] tabrows=1 +41 (total 108)
+2026-09-16T20:02:45.7545364+00:00    leaf [Engine > General] tabrows=1 +0 (total 108)
+2026-09-16T20:02:47.6686872+00:00  === SEGMENT 'Engine' done: +81 new, 7 dupes, 108 total, 70s ===
+2026-09-16T20:02:55.8011135+00:00  === SEGMENT 'Engine Diag' start (already have 108 params) ===
+2026-09-16T20:02:55.9230975+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Engine]
+2026-09-16T20:02:59.2233457+00:00    depth 0 tabs: General | Airflow | Misfire | Exhaust | DTCs
+2026-09-16T20:03:04.8990133+00:00    leaf [Engine Diag > General] tabrows=1 +8 (total 116)
+2026-09-16T20:03:13.0300651+00:00    leaf [Engine Diag > Airflow] tabrows=1 +17 (total 133)
+2026-09-16T20:03:16.1859571+00:00    leaf [Engine Diag > Misfire] tabrows=1 +1 (total 134)
+2026-09-16T20:03:20.1166311+00:00    leaf [Engine Diag > Exhaust] tabrows=1 +4 (total 138)
+2026-09-16T20:03:23.1373791+00:00    leaf [Engine Diag > DTCs] tabrows=1 +0 (total 138)
+2026-09-16T20:03:23.1423821+00:00  === SEGMENT 'Engine Diag' done: +30 new, 0 dupes, 138 total, 27s ===
+2026-09-16T20:03:34.0521039+00:00  === SEGMENT 'Trans' start (already have 138 params) ===
+2026-09-16T20:03:34.1730957+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Engine Diagnostics]
+2026-09-16T20:03:37.5435153+00:00    depth 0 tabs: General | Manual | Shift General | Shift Scheduling | Shift Pressures | Shift Timing | Torque Converter | Torque Management | General | Upshift
+2026-09-16T20:03:41.5601906+00:00    leaf [Trans > General] tabrows=1 +3 (total 141)
+2026-09-16T20:03:47.4447068+00:00    leaf [Trans > Manual] tabrows=1 +9 (total 150)
+2026-09-16T20:03:53.5812541+00:00    leaf [Trans > Shift General] tabrows=1 +10 (total 160)
+2026-09-16T20:03:58.5932921+00:00    leaf [Trans > Shift Scheduling] tabrows=1 +0 (total 160)
+2026-09-16T20:04:06.0629981+00:00    leaf [Trans > Shift Pressures] tabrows=1 +13 (total 173)
+2026-09-16T20:04:11.4879836+00:00    leaf [Trans > Shift Timing] tabrows=1 +0 (total 173)
+2026-09-16T20:04:23.0935363+00:00    leaf [Trans > Torque Converter] tabrows=1 +18 (total 191)
+2026-09-16T20:04:35.8914861+00:00    leaf [Trans > Torque Management] tabrows=1 +25 (total 216)
+2026-09-16T20:04:40.5441052+00:00    leaf [Trans > General] tabrows=1 +0 (total 216)
+2026-09-16T20:04:41.5380242+00:00  === SEGMENT 'Trans' done: +78 new, 3 dupes, 216 total, 68s ===
+2026-09-16T20:04:52.6769884+00:00  === SEGMENT 'Trans Diag' start (already have 216 params) ===
+2026-09-16T20:04:52.8369740+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Transmission]
+2026-09-16T20:04:56.3739950+00:00    depth 0 tabs: General | DTCs
+2026-09-16T20:05:05.0082871+00:00    leaf [Trans Diag > General] tabrows=1 +14 (total 230)
+2026-09-16T20:05:08.6628954+00:00    leaf [Trans Diag > DTCs] tabrows=1 +0 (total 230)
+2026-09-16T20:05:08.6758946+00:00  === SEGMENT 'Trans Diag' done: +14 new, 0 dupes, 230 total, 16s ===
+2026-09-16T20:05:21.8698135+00:00  === SEGMENT 'Fuel Sys' start (already have 230 params) ===
+2026-09-16T20:05:22.0347998+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Transmission Diagnostics]
+2026-09-16T20:05:25.5036823+00:00    depth 0 tabs: General | Fuel Pressure | Fuel Pump | Fuel Control Module | Fuel Tank/Gauge | Diagnostics | DTCs
+2026-09-16T20:05:29.6573477+00:00    leaf [Fuel Sys > General] tabrows=1 +2 (total 232)
+2026-09-16T20:05:39.5642668+00:00    leaf [Fuel Sys > Fuel Pressure] tabrows=1 +15 (total 247)
+2026-09-16T20:05:44.4392921+00:00    leaf [Fuel Sys > Fuel Pump] tabrows=1 +3 (total 250)
+2026-09-16T20:05:49.4720622+00:00    leaf [Fuel Sys > Fuel Control Module] tabrows=1 +3 (total 253)
+2026-09-16T20:05:55.3968303+00:00    leaf [Fuel Sys > Fuel Tank/Gauge] tabrows=1 +7 (total 260)
+2026-09-16T20:05:58.8165503+00:00    leaf [Fuel Sys > Diagnostics] tabrows=1 +1 (total 261)
+2026-09-16T20:06:02.2622664+00:00    leaf [Fuel Sys > DTCs] tabrows=1 +0 (total 261)
+2026-09-16T20:06:02.2642663+00:00  === SEGMENT 'Fuel Sys' done: +31 new, 0 dupes, 261 total, 41s ===
+2026-09-16T20:06:16.2638620+00:00  === SEGMENT 'System' start (already have 261 params) ===
+2026-09-16T20:06:16.4218542+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Fuel System]
+2026-09-16T20:06:20.4704617+00:00    depth 0 tabs: General | Fans | Coolant Pumps | A/C
+2026-09-16T20:06:31.4978506+00:00    leaf [System > General] tabrows=1 +17 (total 278)
+2026-09-16T20:06:41.8939966+00:00    leaf [System > Fans] tabrows=1 +15 (total 293)
+2026-09-16T20:06:45.9326656+00:00    leaf [System > Coolant Pumps] tabrows=1 +4 (total 297)
+2026-09-16T20:06:50.2323174+00:00    leaf [System > A/C] tabrows=1 +4 (total 301)
+2026-09-16T20:06:50.2403115+00:00  === SEGMENT 'System' done: +40 new, 0 dupes, 301 total, 34s ===
+2026-09-16T20:07:00.5134705+00:00  === SEGMENT 'Favorites' start (already have 301 params) ===
+2026-09-16T20:07:00.6464619+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [System]
+2026-09-16T20:07:03.3697821+00:00    depth 0 tabs: General | Fans | Coolant Pumps | A/C
+2026-09-16T20:07:11.5553467+00:00    leaf [Favorites > General] tabrows=1 +0 (total 301)
+2026-09-16T20:07:18.5932670+00:00    leaf [Favorites > Fans] tabrows=1 +0 (total 301)
+2026-09-16T20:07:22.8455053+00:00    leaf [Favorites > Coolant Pumps] tabrows=1 +0 (total 301)
+2026-09-16T20:07:27.6211139+00:00    leaf [Favorites > A/C] tabrows=1 +0 (total 301)
+2026-09-16T20:07:27.6271145+00:00  === SEGMENT 'Favorites' done: +0 new, 40 dupes, 301 total, 27s ===
+2026-09-16T20:07:37.9199809+00:00  === SEGMENT 'Speedo' start (already have 301 params) ===
+2026-09-16T20:07:38.0469163+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Favorites]
+2026-09-16T20:07:40.8461343+00:00    depth 0 tabs: Calibration | Limiter
+2026-09-16T20:07:49.2439376+00:00    leaf [Speedo > Calibration] tabrows=1 +0 (total 301)
+2026-09-16T20:07:54.8346142+00:00    leaf [Speedo > Limiter] tabrows=1 +0 (total 301)
+2026-09-16T20:07:54.8526171+00:00  === SEGMENT 'Speedo' done: +0 new, 27 dupes, 301 total, 17s ===
