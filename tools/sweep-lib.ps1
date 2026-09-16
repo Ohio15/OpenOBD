@@ -212,16 +212,92 @@ function Get-RowLinks($panel) {
 # Tab rows of the open parameter panel, ordered top-to-bottom (row 0 = outer).
 # Returns a (possibly empty) ARRAY. Callers must be able to distinguish
 # "no tab rows" from "not built yet" -- see Wait-ForStableTabs.
+# Returns RAW AutomationElements, ordered top-to-bottom (row 0 = outermost).
+# Deliberately not wrapped in pscustomobjects: the wrapper version silently
+# produced elements whose .el was null once PowerShell finished unwrapping the
+# nested arrays, which surfaced only as "You cannot call a method on a
+# null-valued expression" in the middle of a segment.
 function Get-VisibleTabs($panel) {
   $acc = New-Object System.Collections.ArrayList
   foreach ($t in (Get-Descendants $panel ([System.Windows.Automation.ControlType]::Tab))) {
     if (-not (Test-OnScreen $t)) { continue }
-    $y = 0.0
-    try { $y = [double]$t.Current.BoundingRectangle.Y } catch { $y = 0.0 }
-    [void]$acc.Add([pscustomobject]@{ el = $t; y = $y })
+    [void]$acc.Add($t)
   }
-  $sorted = @($acc | Sort-Object -Property y)
-  return ,$sorted
+  # RETURN CONVENTION (do not "fix" this with a unary comma):
+  # emit the elements so the pipeline enumerates them, and let every CALLER
+  # wrap in @(). `return ,$arr` emits the array as ONE object, and @() at the
+  # call site then wraps it a SECOND time -- Get-VisibleTabs returned 2 tab
+  # rows but @(Get-VisibleTabs ...) measured 1. That made every panel look
+  # single-rowed, so no row-2 sub-tab was ever descended into and 224 Engine /
+  # Transmission parameters were silently lost. Verified with diag_filter.ps1.
+  return ($acc | Sort-Object -Property @{ Expression = {
+    try { [double]$_.Current.BoundingRectangle.Y } catch { 0.0 }
+  } })
+}
+
+# Names of the TabItems on one tab row. Empty array if the row has none (the
+# Operating System panel has exactly that shape: a Tab control with no TabItem
+# children), which must read as a flat leaf rather than throwing.
+function Get-TabItemNames($tabEl) {
+  $names = New-Object System.Collections.ArrayList
+  if ($null -eq $tabEl) { return @() }
+  try {
+    foreach ($it in @($tabEl.FindAll([System.Windows.Automation.TreeScope]::Children,
+                      (New-TypeCondition ([System.Windows.Automation.ControlType]::TabItem))))) {
+      $n = $it.Current.Name
+      if (-not [string]::IsNullOrWhiteSpace($n)) { [void]$names.Add($n) }
+    }
+  } catch {}
+  return $names
+}
+
+# Select a tab by POSITION, never by name.
+#
+# VCM Editor ships duplicate tab names on the same row. Measured live:
+#   Engine : General | Idle | Airflow | Fuel | Spark | Torque Model |
+#            Torque Management | General | Engine | Supercharger
+#   Trans  : General | Manual | Shift General | Shift Scheduling |
+#            Shift Pressures | Shift Timing | Torque Converter |
+#            Torque Management | General | Upshift
+# Note "General" appears TWICE in each. A name-based selector always re-selects
+# the first match, so the second "General" and every tab after it are
+# unreachable -- which is precisely the set that reported "tab-vanished"
+# (Engine>Engine, Engine>Supercharger, Trans>Upshift) and took their parameters
+# with them. Index selection is the only correct addressing here.
+function Select-TabItemByIndex($tabEl, [int]$index) {
+  if ($null -eq $tabEl) { return $false }
+  try {
+    $items = @($tabEl.FindAll([System.Windows.Automation.TreeScope]::Children,
+               (New-TypeCondition ([System.Windows.Automation.ControlType]::TabItem))))
+    if ($index -lt 0 -or $index -ge $items.Count) { return $false }
+    $items[$index].GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+    Start-Sleep -Milliseconds 550
+    return $true
+  } catch { return $false }
+}
+
+function Get-TabItemNameAt($tabEl, [int]$index) {
+  try {
+    $items = @($tabEl.FindAll([System.Windows.Automation.TreeScope]::Children,
+               (New-TypeCondition ([System.Windows.Automation.ControlType]::TabItem))))
+    if ($index -lt 0 -or $index -ge $items.Count) { return "?$index" }
+    return [string]$items[$index].Current.Name
+  } catch { return "?$index" }
+}
+
+# Maximize the MDI parameter panel so every control is realised on screen.
+# Read-CurrentPanel deliberately skips offscreen elements (an offscreen value is
+# not reliably readable), so a small panel would silently reduce coverage.
+function Set-PanelMaximized($panel) {
+  if ($null -eq $panel) { return $false }
+  try {
+    $wp = $panel.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+    if ($wp.Current.WindowVisualState -ne [System.Windows.Automation.WindowVisualState]::Maximized) {
+      $wp.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
+      Start-Sleep -Milliseconds 450
+    }
+    return $true
+  } catch { return $false }
 }
 
 # A freshly-swapped panel reports zero Tab children for a few hundred ms while
@@ -240,14 +316,14 @@ function Wait-ForStableTabs($panel, [int]$timeoutMs = 6000) {
     $c = $cur.Count
     if ($c -eq $last) {
       if ($null -eq $stableSince) { $stableSince = Get-Date }
-      if (((Get-Date) - $stableSince).TotalMilliseconds -ge 350) { return ,$cur }
+      if (((Get-Date) - $stableSince).TotalMilliseconds -ge 350) { return $cur }
     } else {
       $last = $c
       $stableSince = $null
     }
     Start-Sleep -Milliseconds 220
   }
-  return ,$cur
+  return $cur
 }
 
 function Write-SweepLog([string]$path, [string]$msg) {

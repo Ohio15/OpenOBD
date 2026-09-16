@@ -157,64 +157,118 @@ function Read-CurrentPanel([string]$tabPath) {
 }
 
 # ---- depth-first traversal of the real tab tree ------------------------------
-# At each level we re-query the visible Tab controls and take the one at index
-# $depth (ordered top-to-bottom). Selecting a TabItem can create or destroy a
-# deeper Tab row, so the tree is re-read on every step rather than assumed.
-function Invoke-TabWalk([string[]]$path, [int]$depth) {
+# Every node is reached by REPLAYING the whole path from the ribbon segment down,
+# rather than by inheriting whatever state the previous sibling left behind.
+#
+# The inherited-state version failed live with "tab-vanished" on Engine>Engine,
+# Engine>Supercharger and Trans>Upshift: selecting one tab causes VCM Editor to
+# rebuild the panel, which invalidates sibling TabItem elements captured before
+# the navigation. Re-deriving the path makes each read deterministic and costs
+# only ~1s per node.
+# Paths are arrays of INTEGER INDICES, not names. VCM Editor has duplicate tab
+# names on one row (two "General" tabs in both Engine and Trans), so a name is
+# not a unique address -- see Select-TabItemByIndex in sweep-lib.ps1.
+function Set-TabPath([int[]]$idxPath) {
+  if (-not (Select-Segment $vcm $Segment)) { return $false }
+  $panel = Get-PanelForm $vcm
+  if (-not $panel) { return $false }
+  Set-PanelMaximized $panel | Out-Null
+  for ($i = 0; $i -lt $idxPath.Count; $i++) {
+    $panel = Get-PanelForm $vcm
+    if (-not $panel) { return $false }
+    $tabs = @(Wait-ForStableTabs $panel)
+    if ($tabs.Count -le $i) { return $false }
+    if (-not (Select-TabItemByIndex $tabs[$i] $idxPath[$i])) { return $false }
+  }
+  return $true
+}
+
+function Get-PathLabel([int[]]$idxPath) {
+  $parts = New-Object System.Collections.Generic.List[string]
+  $parts.Add($Segment)
+  $panel = Get-PanelForm $vcm
+  if ($panel) {
+    for ($i = 0; $i -lt $idxPath.Count; $i++) {
+      $tabs = @(Get-VisibleTabs $panel)
+      if ($tabs.Count -le $i) { $parts.Add("?$($idxPath[$i])"); continue }
+      $parts.Add((Get-TabItemNameAt $tabs[$i] $idxPath[$i]))
+    }
+  }
+  return ($parts -join ' > ')
+}
+
+# Guards against the two ways this walk can go wrong. Both were hit live:
+#   - a path visited twice => infinite recursion (the OS panel spun for 20min);
+#   - an unbounded node count => a job that never returns and wedges the queue,
+#     which is serial, so it blocks every later segment too.
+$script:visited = @{}
+$script:nodeCount = 0
+$script:MAX_NODES = 400
+
+function Invoke-TabWalk([int[]]$idxPath) {
   if ($sw.Elapsed.TotalSeconds -gt $MaxSeconds) { return }
-  if ($depth -gt 4) { return }
+  if ($idxPath.Count -gt 4) { return }
+
+  $sig = ($idxPath -join ',')
+  if ($script:visited.ContainsKey($sig)) { return }
+  $script:visited[$sig] = 1
+  $script:nodeCount++
+  if ($script:nodeCount -gt $script:MAX_NODES) {
+    Write-SweepLog $log "NODE CAP hit at [$sig] -- stopping cleanly."
+    return
+  }
+
+  if (-not (Set-TabPath $idxPath)) {
+    Save-Anomaly ([ordered]@{ reason = 'tab-path-unreachable'; segment = $Segment; idx_path = $sig })
+    Write-SweepLog $log "  UNREACHABLE [$Segment idx=$sig]"
+    return
+  }
 
   $panel = Get-PanelForm $vcm
   if (-not $panel) { return }
-  $tabs = Wait-ForStableTabs $panel
+  Set-PanelMaximized $panel | Out-Null
+  $panel = Get-PanelForm $vcm
+  $tabs = @(Wait-ForStableTabs $panel)
+  $label = Get-PathLabel $idxPath
 
-  if ($tabs.Count -le $depth) {
-    $p = ($path -join ' > ')
-    $got = Read-CurrentPanel $p
-    Write-SweepLog $log ("  leaf [{0}] tabrows={1} +{2} (total {3})" -f $p, $tabs.Count, $got, $seen.Count)
+  if ($tabs.Count -le $idxPath.Count) {
+    $got = Read-CurrentPanel $label
+    Write-SweepLog $log ("  leaf [{0}] rows={1} +{2} (total {3})" -f $label, $tabs.Count, $got, $seen.Count)
     return
   }
 
-  $items = @()
-  foreach ($it in @($tabs[$depth].el.FindAll([System.Windows.Automation.TreeScope]::Children, (New-TypeCondition ([System.Windows.Automation.ControlType]::TabItem))))) {
-    $items += [pscustomobject]@{ name = $it.Current.Name }
+  $row = $tabs[$idxPath.Count]
+  $count = 0
+  $names = New-Object System.Collections.Generic.List[string]
+  try {
+    foreach ($it in @($row.FindAll([System.Windows.Automation.TreeScope]::Children,
+                      (New-TypeCondition ([System.Windows.Automation.ControlType]::TabItem))))) {
+      $count++
+      $names.Add([string]$it.Current.Name)
+    }
+  } catch {
+    Save-Anomaly ([ordered]@{ reason = 'tabitem-enum-failed'; segment = $Segment
+                              idx_path = $sig; error = $_.Exception.Message })
   }
-  if ($items.Count -eq 0) {
-    $p = ($path -join ' > ')
-    $got = Read-CurrentPanel $p
-    Write-SweepLog $log ("  leaf [{0}] tabrow-no-items +{1} (total {2})" -f $p, $got, $seen.Count)
+
+  if ($count -eq 0) {
+    $got = Read-CurrentPanel $label
+    Write-SweepLog $log ("  leaf [{0}] rows={1} no-items +{2} (total {3})" -f $label, $tabs.Count, $got, $seen.Count)
     return
   }
-  Write-SweepLog $log ("  depth {0} tabs: {1}" -f $depth, (($items | ForEach-Object { $_.name }) -join ' | '))
 
-  foreach ($item in $items) {
+  Write-SweepLog $log ("  depth {0} [{1}] {2} tabs: {3}" -f $idxPath.Count, $label, $count, ($names -join ' | '))
+  for ($k = 0; $k -lt $count; $k++) {
     if ($sw.Elapsed.TotalSeconds -gt $MaxSeconds) { return }
-    # Re-resolve by name each iteration: the element list goes stale as pages swap.
-    $panel = Get-PanelForm $vcm
-    if (-not $panel) { return }
-    $tabs = Wait-ForStableTabs $panel
-    if ($tabs.Count -le $depth) { return }
-    $target = $null
-    foreach ($it in @($tabs[$depth].el.FindAll([System.Windows.Automation.TreeScope]::Children, (New-TypeCondition ([System.Windows.Automation.ControlType]::TabItem))))) {
-      if ($it.Current.Name -eq $item.name) { $target = $it; break }
-    }
-    if (-not $target) {
-      Save-Anomaly ([ordered]@{ reason = 'tab-vanished'; segment = $Segment; tab = $item.name; depth = $depth })
-      continue
-    }
-    try {
-      $target.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
-      Start-Sleep -Milliseconds 550
-    } catch {
-      Save-Anomaly ([ordered]@{ reason = 'tab-select-failed'; segment = $Segment; tab = $item.name; error = $_.Exception.Message })
-      continue
-    }
-    Invoke-TabWalk ($path + $item.name) ($depth + 1)
+    $child = New-Object System.Collections.Generic.List[int]
+    foreach ($q in $idxPath) { $child.Add([int]$q) }
+    $child.Add([int]$k)
+    Invoke-TabWalk $child.ToArray()
   }
 }
 
 try {
-  Invoke-TabWalk @($Segment) 0
+  Invoke-TabWalk @()
 } catch {
   Write-SweepLog $log "FATAL in tab walk: $($_.Exception.Message)"
 }

@@ -1,0 +1,376 @@
+{
+  "generated_utc": "2026-09-16T21:10:31.618380+00:00",
+  "base_tune": "stock-10.13.24.hpt",
+  "base_tune_sha256": "0c108cea1fb037ac1b7e8c71edad4266b5eaa7a986d2ece3ba991825dfeeab16",
+  "pin_cross_check": {
+    "checked": 6,
+    "failed": 0,
+    "verdict": "ALL MATCH",
+    "results": [
+      {
+        "param": "ECM:9054",
+        "name": "Driven Tire Circumference",
+        "expected": 2475,
+        "swept": 2475,
+        "swept_name": "Driven Tire Circumference",
+        "swept_raw": "2,475",
+        "swept_kind": "scalar",
+        "result": "MATCH"
+      },
+      {
+        "param": "ECM:9056",
+        "name": "Non-Driven Tire Circumference",
+        "expected": 2475,
+        "swept": 2475,
+        "swept_name": "Non-Driven Tire Circumference",
+        "swept_raw": "2,475",
+        "swept_kind": "scalar",
+        "result": "MATCH"
+      },
+      {
+        "param": "ECM:9050",
+        "name": "Final Drive Ratio",
+        "expected": 3.08,
+        "swept": 3.08,
+        "swept_name": "Final Drive Ratio",
+        "swept_raw": "3.08",
+        "swept_kind": "scalar",
+        "result": "MATCH"
+      },
+      {
+        "param": "ECM:9052",
+        "name": "Final Drive Ratio - VSS Error",
+        "expected": 3.08,
+        "swept": 3.08,
+        "swept_name": "Final Drive Ratio - VSS Error",
+        "swept_raw": "3.08",
+        "swept_kind": "scalar",
+        "result": "MATCH"
+      },
+      {
+        "param": "TCM:5004",
+        "name": "Final Drive Ratio - Trans",
+        "expected": 3.08,
+        "swept": 3.08,
+        "swept_name": "Final Drive Ratio - Trans",
+        "swept_raw": "3.08",
+        "swept_kind": "scalar",
+        "result": "MATCH"
+      },
+      {
+        "param": "ECM:246",
+        "name": "DoD (AFM) Enable",
+        "expected": 0,
+        "swept": 0,
+        "swept_name": "DoD Enable",
+        "swept_raw": "Disable",
+        "swept_kind": "enum",
+        "result": "MATCH"
+      }
+    ]
+  },
+  "scalars": {
+    "swept_total": 576,
+    "by_kind": {
+      "enum": 134,
+      "scalar": 442
+    },
+    "reference_population_best_cal": 375,
+    "reference_with_param_id": 372,
+    "reference_without_param_id": 3,
+    "covered": 372,
+    "missing": 0,
+    "coverage_pct": 100.0,
+    "swept_not_in_reference": 204,
+    "enum_bool_coerced": 83,
+    "enum_left_as_raw_string": 51
+  },
+  "tables": {
+    "swept_total": 0,
+    "reference_population_best_cal": 252,
+    "covered": 0,
+    "missing": 252
+  },
+  "integrity": {
+    "duplicate_value_conflicts": 0,
+    "conflicts": [],
+    "sweep_anomalies": 6,
+    "anomaly_reasons": {
+      "tab-vanished": 3,
+      "tabitem-enum-failed": 2,
+      "tab-path-unreachable": 1
+    }
+  },
+  "enums_not_coerced_to_number": [
+    {
+      "key": "ECM:101",
+      "name": "TCS Patch",
+      "raw_value": "Not Applied"
+    },
+    {
+      "key": "ECM:120",
+      "name": "Speed Density Air Mode Patch",
+      "raw_value": "Not Applied"
+    },
+    {
+      "key": "ECM:121",
+      "name": "Manifold Vacuum Boost Patch",
+      "raw_value": "Not Applied"
+    },
+    {
+      "key": "ECM:203",
+      "name": "Makeup Pulse Mode",
+      "raw_value": "Multiple"
+    },
+    {
+      "key": "ECM:205",
+      "name": "Supercharger Fitted",
+      "raw_value": "Not Fitted"
+    },
+    {
+      "key": "ECM:206",
+      "name": "Intercooler Pump Fitted",
+      "raw_value": "Not Fitted"
+    },
+    {
+      "key": "ECM:257",
+      "name": "Supercharger Max Torque Gear Max",
+      "raw_value": "5th Gear"
+    },
+    {
+      "key": "ECM:258",
+      "name": "Supercharger Max Torque Gear Min",
+      "raw_value": "3rd Gear"
+    },
+    {
+      "key": "ECM:264",
+      "name": "Throttle Area Axis Type",
+      "raw_value": "VSS"
+    },
+    {
+      "key": "ECM:275",
+      "name": "Injector Offset Select",
+      "raw_value": "Vacuum"
+    },
+    {
+      "key": "ECM:277",
+      "name": "Number of Variable Camshafts",
+      "raw_value": "None"
+    },
+    {
+      "key": "ECM:310",
+      "name": "Oil Pressure Sensor Type",
+      "raw_value": "Sensor"
+    },
+    {
+      "key": "ECM:312",
+      "name": "Oil Temperature Config",
+      "raw_value": "Calc ECM"
+    },
+    {
+      "key": "ECM:439",
+      "name": "ECM Transmission Type",
+      "raw_value": "Auto"
+    },
+    {
+      "key": "ECM:600",
+      "name": "Fuel Pump Type",
+      "raw_value": "Fixed"
+    },
+    {
+      "key": "ECM:605",
+      "name": "Fuel Sender Type",
+      "raw_value": "Single"
+    },
+    {
+      "key": "ECM:701",
+      "name": "Tach Type",
+      "raw_value": "Serial"
+    },
+    {
+      "key": "ECM:710",
+      "name": "Fan Type",
+      "raw_value": "Discrete"
+    },
+    {
+      "key": "ECM:740",
+      "name": "Alternator Voltage Control",
+      "raw_value": "Fitted"
+    },
+    {
+      "key": "ECM:810",
+      "name": "Speed Limit Source",
+      "raw_value": "Calibration"
+    },
+    {
+      "key": "ECM:822",
+      "name": "Speed Output Type",
+      "raw_value": "WheelSpd"
+    },
+    {
+      "key": "ECM:5018",
+      "name": "MAP Sample",
+      "raw_value": "Slow"
+    },
+    {
+      "key": "ECM:5019",
+      "name": "MAP Filtering",
+      "raw_value": "No Filtering"
+    },
+    {
+      "key": "ECM:20220",
+      "name": "Flex Fuel Sensor",
+      "raw_value": "Virtual"
+    },
+    {
+      "key": "TCM:415",
+      "name": "Tip-In TqMgt Method - Upshift",
+      "raw_value": "No Throttle"
+    },
+    {
+      "key": "TCM:416",
+      "name": "Tip-In TqMgt Method - CT Downshift",
+      "raw_value": "No Throttle"
+    },
+    {
+      "key": "TCM:419",
+      "name": "Tip-In TqMgt Method - Garage Shift",
+      "raw_value": "None"
+    },
+    {
+      "key": "TCM:425",
+      "name": "Flare Control TqMgt Method - Upshift",
+      "raw_value": "No Throttle"
+    },
+    {
+      "key": "TCM:426",
+      "name": "Flare Control TqMgt Method - CT Downshift",
+      "raw_value": "No Throttle"
+    },
+    {
+      "key": "TCM:427",
+      "name": "Flare Control TqMgt Method - Downshift",
+      "raw_value": "No Throttle"
+    },
+    {
+      "key": "TCM:428",
+      "name": "Flare Control TqMgt Method - Skip Downshift",
+      "raw_value": "No Throttle"
+    },
+    {
+      "key": "TCM:429",
+      "name": "Flare Control TqMgt Method - Garage Shift",
+      "raw_value": "None"
+    },
+    {
+      "key": "TCM:441",
+      "name": "TUTD Type",
+      "raw_value": "Serial"
+    },
+    {
+      "key": "TCM:448",
+      "name": "TUTD Range Select Gear",
+      "raw_value": "D4"
+    },
+    {
+      "key": "TCM:460",
+      "name": "Shift Pattern A Type",
+      "raw_value": "Pattn 1"
+    },
+    {
+      "key": "TCM:461",
+      "name": "Shift Pattern B Type",
+      "raw_value": "Eco Mode"
+    },
+    {
+      "key": "TCM:462",
+      "name": "Pressure Pattern Select - Normal",
+      "raw_value": "Pattern X"
+    },
+    {
+      "key": "TCM:463",
+      "name": "Pressure Pattern Select - Shift Pattern A",
+      "raw_value": "Pattern Y"
+    },
+    {
+      "key": "TCM:464",
+      "name": "Pressure Pattern Select - Shift Pattern B",
+      "raw_value": "Pattern X"
+    },
+    {
+      "key": "TCM:465",
+      "name": "Pressure Pattern Select - TUTD Auto",
+      "raw_value": "Pattern X"
+    },
+    {
+      "key": "TCM:466",
+      "name": "Pressure Pattern Select - TUTD Man",
+      "raw_value": "Pattern X"
+    },
+    {
+      "key": "TCM:467",
+      "name": "Pressure Pattern Select - 4WD Low",
+      "raw_value": "Pattern Y"
+    },
+    {
+      "key": "TCM:468",
+      "name": "Control Mode - Pressure Pattern X",
+      "raw_value": "Normal"
+    },
+    {
+      "key": "TCM:469",
+      "name": "Control Mode - Pressure Pattern Y",
+      "raw_value": "Normal"
+    },
+    {
+      "key": "TCM:470",
+      "name": "Control Mode - Pressure Pattern Z",
+      "raw_value": "Normal"
+    },
+    {
+      "key": "TCM:480",
+      "name": "Limit TqMgt Method - Upshift",
+      "raw_value": "No Throttle"
+    },
+    {
+      "key": "TCM:481",
+      "name": "Limit TqMgt Method - Downshift",
+      "raw_value": "No Throttle"
+    },
+    {
+      "key": "TCM:482",
+      "name": "Limit TqMgt Method - Garage Shift",
+      "raw_value": "Throttle Only"
+    },
+    {
+      "key": "TCM:483",
+      "name": "Limit TqMgt Method - Default",
+      "raw_value": "Throttle Only"
+    },
+    {
+      "key": "TCM:484",
+      "name": "Speed Control Termination Mode",
+      "raw_value": "Torque Ramp"
+    },
+    {
+      "key": "TCM:20823",
+      "name": "P0716 ISS Performance",
+      "raw_value": "MIL and Error Reported"
+    }
+  ],
+  "missing_scalars": [],
+  "reference_scalars_without_param_id": [
+    {
+      "name": "Final Drive Ratio",
+      "category": "Speedometer/Calibration"
+    },
+    {
+      "name": "Final Drive Ratio - VSS Error",
+      "category": "Speedometer/Calibration"
+    },
+    {
+      "name": "Driven Tire Circumference",
+      "category": "Speedometer/Calibration"
+    }
+  ]
+}
