@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-09-16T22:08:55.164626+00:00",
+  "generated_utc": "2026-09-16T22:40:53.955562+00:00",
   "base_tune": "stock-10.13.24.hpt",
   "base_tune_sha256": "0c108cea1fb037ac1b7e8c71edad4266b5eaa7a986d2ece3ba991825dfeeab16",
   "pin_cross_check": {
@@ -92,24 +92,24 @@
     "enum_left_as_raw_string": 51
   },
   "tables": {
-    "swept_total": 671,
+    "swept_total": 735,
     "reference_population_best_cal": 252,
     "reference_with_param_id": 252,
-    "covered": 240,
-    "missing": 12,
-    "coverage_pct": 95.2,
-    "swept_not_in_reference": 431,
+    "covered": 246,
+    "missing": 6,
+    "coverage_pct": 97.6,
+    "swept_not_in_reference": 489,
     "incomplete_grids": 0
   },
   "integrity": {
     "duplicate_value_conflicts": 0,
     "conflicts": [],
-    "sweep_anomalies": 178,
+    "sweep_anomalies": 314,
     "anomaly_reasons": {
       "tab-vanished": 3,
       "tabitem-enum-failed": 2,
       "tab-path-unreachable": 1,
-      "label-opened-no-window": 172
+      "label-opened-no-window": 308
     }
   },
   "enums_not_coerced_to_number": [
@@ -384,26 +384,6 @@
       "name": "LTFT Purge Reduction Factor"
     },
     {
-      "param_id": 14005,
-      "name": "Misfire Cylinder Mode Event Time - Normal - [READ ONLY]"
-    },
-    {
-      "param_id": 14017,
-      "name": "Misfire SCD Mode Event Time - Off Idle - [READ ONLY]"
-    },
-    {
-      "param_id": 14018,
-      "name": "Misfire SCD Mode Event Time - Idle 2nd Order - [READ ONLY]"
-    },
-    {
-      "param_id": 14044,
-      "name": "Maximum Airflow Delta vs. TPS"
-    },
-    {
-      "param_id": 14110,
-      "name": "Oil Pressure Minimum"
-    },
-    {
       "param_id": 15244,
       "name": "TCC Apply Speed vs. %TPS vs. Gear - Hot TUTD"
     },
@@ -414,10 +394,6 @@
     {
       "param_id": 15305,
       "name": "Shift Speed vs. %TPS vs. Shift - D1 Safety"
-    },
-    {
-      "param_id": 15815,
-      "name": "Shift Desired Output Torque Scale Factor 4-5"
     }
   ],
   "missing_scalars": [],
