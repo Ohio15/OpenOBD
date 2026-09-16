@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-09-16T21:10:31.618380+00:00",
+  "generated_utc": "2026-09-16T21:30:07.556420+00:00",
   "base_tune": "stock-10.13.24.hpt",
   "base_tune_sha256": "0c108cea1fb037ac1b7e8c71edad4266b5eaa7a986d2ece3ba991825dfeeab16",
   "pin_cross_check": {
@@ -88,8 +88,12 @@
   "tables": {
     "swept_total": 0,
     "reference_population_best_cal": 252,
+    "reference_with_param_id": 252,
     "covered": 0,
-    "missing": 252
+    "missing": 252,
+    "coverage_pct": 0.0,
+    "swept_not_in_reference": 0,
+    "incomplete_grids": 0
   },
   "integrity": {
     "duplicate_value_conflicts": 0,
@@ -356,6 +360,1017 @@
       "key": "TCM:20823",
       "name": "P0716 ISS Performance",
       "raw_value": "MIL and Error Reported"
+    }
+  ],
+  "incomplete_tables": [],
+  "missing_tables": [
+    {
+      "param_id": 5672,
+      "name": "TCC Desired Pressure"
+    },
+    {
+      "param_id": 11051,
+      "name": "Delta Map"
+    },
+    {
+      "param_id": 12050,
+      "name": "Fuel Cutoff RPM (In Gear)"
+    },
+    {
+      "param_id": 12063,
+      "name": "Fuel Cutoff RPM vs. ERT vs. ECT"
+    },
+    {
+      "param_id": 12067,
+      "name": "RPM Limit Accel Thresh vs. Accel"
+    },
+    {
+      "param_id": 12069,
+      "name": "RPM Limit Method Delay vs. Gear"
+    },
+    {
+      "param_id": 12070,
+      "name": "RPM Limit Torque vs. RPM Delta vs. Gear"
+    },
+    {
+      "param_id": 12072,
+      "name": "RPM Limit Oil Temperature"
+    },
+    {
+      "param_id": 12080,
+      "name": "Target Idle Speed vs. Coolant Temp vs. (Drive & Park, A/C On & Off)"
+    },
+    {
+      "param_id": 12154,
+      "name": "Idle Overspeed Startup Airflow Time"
+    },
+    {
+      "param_id": 12155,
+      "name": "Idle Underspeed Startup Airflow Time"
+    },
+    {
+      "param_id": 12160,
+      "name": "MAF Airflow vs. Output Frequency"
+    },
+    {
+      "param_id": 12171,
+      "name": "Dynamic Airflow Zone - RPM Boundaries"
+    },
+    {
+      "param_id": 12172,
+      "name": "Dynamic Airflow Zone - MAP Boundaries"
+    },
+    {
+      "param_id": 12194,
+      "name": "Idle Startup Airflow vs. ERT vs. ECT"
+    },
+    {
+      "param_id": 12198,
+      "name": "Idle Airflow Mult vs. ECT"
+    },
+    {
+      "param_id": 12200,
+      "name": "COT Thresholds"
+    },
+    {
+      "param_id": 12209,
+      "name": "MAF Steady State Startup"
+    },
+    {
+      "param_id": 12239,
+      "name": "DoD Disable vs. PRNDL"
+    },
+    {
+      "param_id": 12240,
+      "name": "DoD Disable vs. Gear"
+    },
+    {
+      "param_id": 12250,
+      "name": "DFCO Enable TPS vs. RPM"
+    },
+    {
+      "param_id": 12252,
+      "name": "DFCO Enable CylAir vs. RPM"
+    },
+    {
+      "param_id": 12263,
+      "name": "DFCO Exit Spark Blend Time"
+    },
+    {
+      "param_id": 12264,
+      "name": "DFCO Entry Spark Blend Time"
+    },
+    {
+      "param_id": 12276,
+      "name": "DFCO Enable Speed vs. Gear"
+    },
+    {
+      "param_id": 12284,
+      "name": "Impact Factor Gain vs. Airflow"
+    },
+    {
+      "param_id": 12300,
+      "name": "Stoich AFR"
+    },
+    {
+      "param_id": 12338,
+      "name": "Cluster Fuel Density Translation"
+    },
+    {
+      "param_id": 12360,
+      "name": "Cranking VE vs. MAP vs. RPM"
+    },
+    {
+      "param_id": 12361,
+      "name": "Cranking VE Baro Mult"
+    },
+    {
+      "param_id": 12400,
+      "name": "Power Enrich EQ Ratio"
+    },
+    {
+      "param_id": 12403,
+      "name": "Power Enrich EQ Ratio (Alcohol)"
+    },
+    {
+      "param_id": 12420,
+      "name": "Hot Power Enrich Enable TPS Threshold vs. RPM"
+    },
+    {
+      "param_id": 12435,
+      "name": "Open Loop EQ Ratio Gas (Gear/DP)"
+    },
+    {
+      "param_id": 12437,
+      "name": "Open Loop EQ Ratio Alcohol (Gear/DP)"
+    },
+    {
+      "param_id": 12439,
+      "name": "Open Loop EQ Ratio Min vs. ECT"
+    },
+    {
+      "param_id": 12440,
+      "name": "Open Loop Airflow Gain vs. MAP vs. RPM"
+    },
+    {
+      "param_id": 12441,
+      "name": "Open Loop IVT Gain vs. IVT vs. MAP"
+    },
+    {
+      "param_id": 12446,
+      "name": "Open Loop AIR Enrich"
+    },
+    {
+      "param_id": 12447,
+      "name": "Open Loop AIR Gain"
+    },
+    {
+      "param_id": 12449,
+      "name": "Open Loop Blend Factor"
+    },
+    {
+      "param_id": 12461,
+      "name": "Closed Loop Enable Coolant Temp vs. Startup Coolant Temp"
+    },
+    {
+      "param_id": 12463,
+      "name": "Closed Loop O2 Ready ECT vs. Startup Coolant Temp"
+    },
+    {
+      "param_id": 12466,
+      "name": "Closed Loop Mode vs. Airflow"
+    },
+    {
+      "param_id": 12467,
+      "name": "Closed Loop O2 Ready ECT vs. Startup Delay"
+    },
+    {
+      "param_id": 12503,
+      "name": "Long Term Fuel Trim Min MAP vs. Baro"
+    },
+    {
+      "param_id": 12510,
+      "name": "LTFT Purge Reduction Factor"
+    },
+    {
+      "param_id": 12530,
+      "name": "O2 Sensor B1 R/L vs. Airflow Mode"
+    },
+    {
+      "param_id": 12532,
+      "name": "O2 Sensor R/L Offset"
+    },
+    {
+      "param_id": 12598,
+      "name": "Main Spark vs. Airmass vs. RPM Open Throttle, High Octane, DOD"
+    },
+    {
+      "param_id": 12600,
+      "name": "Main Spark vs. Airmass vs. RPM Open Throttle, High Octane"
+    },
+    {
+      "param_id": 12621,
+      "name": "IAT Spark Advance Correction - Add"
+    },
+    {
+      "param_id": 12622,
+      "name": "EGR Spark Advance Correction - Add"
+    },
+    {
+      "param_id": 12624,
+      "name": "ECT Spark Advance Correction - Add"
+    },
+    {
+      "param_id": 12636,
+      "name": "PE/COT Spark Advance Correction Mult vs. Fuel Composition"
+    },
+    {
+      "param_id": 12637,
+      "name": "PE/COT Spark Advance Correction Mult vs. MAP"
+    },
+    {
+      "param_id": 12650,
+      "name": "Base Dwell Time"
+    },
+    {
+      "param_id": 12652,
+      "name": "Maximum Dwell Time Mult vs. RPM"
+    },
+    {
+      "param_id": 12662,
+      "name": "Max Torque Timing EGR Adder"
+    },
+    {
+      "param_id": 12666,
+      "name": "Lightoff Spark Mult vs. Startup ECT"
+    },
+    {
+      "param_id": 12672,
+      "name": "Lightoff Spark Mult vs. ECT"
+    },
+    {
+      "param_id": 12676,
+      "name": "Lightoff Spark"
+    },
+    {
+      "param_id": 12677,
+      "name": "Lightoff Spark (Coastdown)"
+    },
+    {
+      "param_id": 12678,
+      "name": "Flex Fuel Spark"
+    },
+    {
+      "param_id": 12680,
+      "name": "Lightoff Spark Idle In Gear"
+    },
+    {
+      "param_id": 12684,
+      "name": "VCP Spark"
+    },
+    {
+      "param_id": 12742,
+      "name": "Knock Retard Amount"
+    },
+    {
+      "param_id": 12764,
+      "name": "Burst Knock Retard Mult vs. RPM"
+    },
+    {
+      "param_id": 12765,
+      "name": "Burst Knock Retard vs. Cylair Delta"
+    },
+    {
+      "param_id": 12767,
+      "name": "Burst Knock Retard Mult vs. IAT"
+    },
+    {
+      "param_id": 12805,
+      "name": "Max Torque vs. RPM (1st Gear)"
+    },
+    {
+      "param_id": 12808,
+      "name": "Max Torque vs. RPM (4th Gear)"
+    },
+    {
+      "param_id": 12811,
+      "name": "Max Torque vs. RPM (Reverse)"
+    },
+    {
+      "param_id": 12820,
+      "name": "Max Engine Torque vs. RPM vs. Gear"
+    },
+    {
+      "param_id": 12879,
+      "name": "AC Compressor Torque vs. AC Pressure"
+    },
+    {
+      "param_id": 12888,
+      "name": "AC Torque Reduction"
+    },
+    {
+      "param_id": 12960,
+      "name": "Knock Sensor Threshold Mult Cyl1"
+    },
+    {
+      "param_id": 12961,
+      "name": "Knock Sensor Threshold Mult Cyl2"
+    },
+    {
+      "param_id": 12962,
+      "name": "Knock Sensor Threshold Mult Cyl3"
+    },
+    {
+      "param_id": 12963,
+      "name": "Knock Sensor Threshold Mult Cyl4"
+    },
+    {
+      "param_id": 12964,
+      "name": "Knock Sensor Threshold Mult Cyl5"
+    },
+    {
+      "param_id": 12966,
+      "name": "Knock Sensor Threshold Mult Cyl7"
+    },
+    {
+      "param_id": 13001,
+      "name": "Cylinder Charge Temperature Bias vs. Airflow"
+    },
+    {
+      "param_id": 13002,
+      "name": "Cylinder Charge Temperature Filter Coeff vs. Airflow"
+    },
+    {
+      "param_id": 13017,
+      "name": "Supercharger Desired Torque vs. RPM"
+    },
+    {
+      "param_id": 13021,
+      "name": "Supercharger Boost Base DC"
+    },
+    {
+      "param_id": 13400,
+      "name": "VE Normal - Constant Coeff"
+    },
+    {
+      "param_id": 13401,
+      "name": "VE Normal - ExhaustCam Coeff"
+    },
+    {
+      "param_id": 13404,
+      "name": "VE Normal - IntakeCam Coeff"
+    },
+    {
+      "param_id": 13405,
+      "name": "VE Normal - IntakeCam² Coeff"
+    },
+    {
+      "param_id": 13407,
+      "name": "VE Normal - MAP Coeff"
+    },
+    {
+      "param_id": 13408,
+      "name": "VE Normal - MAP.IntakeCam Coeff"
+    },
+    {
+      "param_id": 13409,
+      "name": "VE Normal - MAP.RPM Coeff"
+    },
+    {
+      "param_id": 13411,
+      "name": "VE Normal - RPM.ExhaustCam Coeff"
+    },
+    {
+      "param_id": 13412,
+      "name": "VE Normal - RPM Coeff"
+    },
+    {
+      "param_id": 13413,
+      "name": "VE Normal - RPM.IntakeCam Coeff"
+    },
+    {
+      "param_id": 13420,
+      "name": "VE Reversion Lo Altd"
+    },
+    {
+      "param_id": 13421,
+      "name": "VE Reversion Hi Altd"
+    },
+    {
+      "param_id": 13422,
+      "name": "VE Reversion Baro Correction"
+    },
+    {
+      "param_id": 13430,
+      "name": "Dynamic Airflow Corrected Gain"
+    },
+    {
+      "param_id": 13431,
+      "name": "Dynamic Airflow Base Gain"
+    },
+    {
+      "param_id": 13432,
+      "name": "Dynamic Airflow Current Gain"
+    },
+    {
+      "param_id": 13434,
+      "name": "Dynamic Airflow MAP Current Gain"
+    },
+    {
+      "param_id": 13436,
+      "name": "Dynamic Airflow MAP Old2 Gain"
+    },
+    {
+      "param_id": 13437,
+      "name": "Dynamic Airflow TPS Current Gain"
+    },
+    {
+      "param_id": 13438,
+      "name": "Dynamic Airflow TPS Old Gain"
+    },
+    {
+      "param_id": 13440,
+      "name": "VE Reversion Vacuum"
+    },
+    {
+      "param_id": 13441,
+      "name": "VE Reversion Lo Altd (DOD)"
+    },
+    {
+      "param_id": 13442,
+      "name": "VE Reversion Hi Altd (DOD)"
+    },
+    {
+      "param_id": 13443,
+      "name": "VE Reversion Lo Altd (Cams Parked)"
+    },
+    {
+      "param_id": 13444,
+      "name": "VE Reversion Hi Altd (Cams Parked)"
+    },
+    {
+      "param_id": 13445,
+      "name": "VE Reversion Lo Altd (DOD,Cams Parked)"
+    },
+    {
+      "param_id": 13446,
+      "name": "VE Reversion Hi Altd (DOD,Cams Parked)"
+    },
+    {
+      "param_id": 13543,
+      "name": "Equivalence Ratio Offset"
+    },
+    {
+      "param_id": 13620,
+      "name": "Stomp Compensation Base Gain"
+    },
+    {
+      "param_id": 13621,
+      "name": "Stomp Compensation Decay Max"
+    },
+    {
+      "param_id": 13622,
+      "name": "Stomp Compensation Decay Min"
+    },
+    {
+      "param_id": 13623,
+      "name": "Stomp Compensation Decay Factor"
+    },
+    {
+      "param_id": 13624,
+      "name": "Impact Factor Gas"
+    },
+    {
+      "param_id": 13625,
+      "name": "Impact Factor Alcohol"
+    },
+    {
+      "param_id": 13626,
+      "name": "Impact Factor Blend"
+    },
+    {
+      "param_id": 14005,
+      "name": "Misfire Cylinder Mode Event Time - Normal - [READ ONLY]"
+    },
+    {
+      "param_id": 14017,
+      "name": "Misfire SCD Mode Event Time - Off Idle - [READ ONLY]"
+    },
+    {
+      "param_id": 14018,
+      "name": "Misfire SCD Mode Event Time - Idle 2nd Order - [READ ONLY]"
+    },
+    {
+      "param_id": 14044,
+      "name": "Maximum Airflow Delta vs. TPS"
+    },
+    {
+      "param_id": 14100,
+      "name": "IAT Sensor Curve"
+    },
+    {
+      "param_id": 14102,
+      "name": "IAT 2 Sensor Curve"
+    },
+    {
+      "param_id": 14110,
+      "name": "Oil Pressure Minimum"
+    },
+    {
+      "param_id": 15000,
+      "name": "Shift Speed vs. TPS vs. Shift - Normal"
+    },
+    {
+      "param_id": 15002,
+      "name": "Shift Speed vs. TPS vs. Shift - Hot Transmission"
+    },
+    {
+      "param_id": 15004,
+      "name": "Shift Speed vs. %TPS vs. Shift - TUTD"
+    },
+    {
+      "param_id": 15005,
+      "name": "Shift Speed vs. %TPS vs. Shift - TUTD Hot"
+    },
+    {
+      "param_id": 15006,
+      "name": "Shift Speed vs. %TPS vs. Shift - TUTD Cruise"
+    },
+    {
+      "param_id": 15009,
+      "name": "Map Filter"
+    },
+    {
+      "param_id": 15010,
+      "name": "WOT Shift Speed — Normal"
+    },
+    {
+      "param_id": 15012,
+      "name": "WOT Shift Speed — Hot Trans"
+    },
+    {
+      "param_id": 15014,
+      "name": "WOT Shift Speed vs. Shift - 4WD Low"
+    },
+    {
+      "param_id": 15015,
+      "name": "WOT Shift Speed — TUTD"
+    },
+    {
+      "param_id": 15017,
+      "name": "WOT Shift Speed — Hot Engine"
+    },
+    {
+      "param_id": 15020,
+      "name": "WOT Shift RPM vs. Shift - Normal"
+    },
+    {
+      "param_id": 15022,
+      "name": "WOT Shift RPM vs. Shift - Hot"
+    },
+    {
+      "param_id": 15024,
+      "name": "WOT Shift RPM vs. Shift - 4WD Low"
+    },
+    {
+      "param_id": 15025,
+      "name": "WOT Shift RPM vs. Shift - TUTD"
+    },
+    {
+      "param_id": 15040,
+      "name": "Intake Cam"
+    },
+    {
+      "param_id": 15041,
+      "name": "Exhaust Cam"
+    },
+    {
+      "param_id": 15050,
+      "name": "Shift Speed vs. %TPS - Normal 5th"
+    },
+    {
+      "param_id": 15058,
+      "name": "Shift Speed vs. %TPS - TUTD 5th"
+    },
+    {
+      "param_id": 15059,
+      "name": "Shift Speed vs. %TPS - TUTD 6th"
+    },
+    {
+      "param_id": 15060,
+      "name": "Shift Speed vs. %TPS - TUTD Hot 5th"
+    },
+    {
+      "param_id": 15061,
+      "name": "Shift Speed vs. %TPS - TUTD Hot 6th"
+    },
+    {
+      "param_id": 15090,
+      "name": "WOT Shift RPM - Pattern A"
+    },
+    {
+      "param_id": 15093,
+      "name": "WOT Shift RPM - Pattern B"
+    },
+    {
+      "param_id": 15200,
+      "name": "TCC Apply/Release Speed vs. TPS vs. Gear - Normal"
+    },
+    {
+      "param_id": 15205,
+      "name": "TCC WOT Apply/Release Speed vs. Gear - Normal"
+    },
+    {
+      "param_id": 15206,
+      "name": "TCC WOT Apply/Release Speed vs. Gear - Hot Transmission"
+    },
+    {
+      "param_id": 15240,
+      "name": "TCC Apply Speed vs. %TPS vs. Gear - TUTD"
+    },
+    {
+      "param_id": 15242,
+      "name": "TCC Apply Speed vs. %TPS vs. Gear - Hot"
+    },
+    {
+      "param_id": 15243,
+      "name": "TCC Release Speed vs. %TPS vs. Gear - Hot"
+    },
+    {
+      "param_id": 15244,
+      "name": "TCC Apply Speed vs. %TPS vs. Gear - Hot TUTD"
+    },
+    {
+      "param_id": 15245,
+      "name": "TCC Release Speed vs. %TPS vs. Gear - Hot TUTD"
+    },
+    {
+      "param_id": 15249,
+      "name": "TCC Apply/Release Speed vs. %TPS vs. Gear - Hot D2"
+    },
+    {
+      "param_id": 15251,
+      "name": "TCC Apply/Release Speed vs. %TPS - Normal 5th"
+    },
+    {
+      "param_id": 15255,
+      "name": "TCC Apply Speed vs. %TPS - Hot 5th"
+    },
+    {
+      "param_id": 15256,
+      "name": "TCC Apply Speed vs. %TPS - Hot 6th"
+    },
+    {
+      "param_id": 15262,
+      "name": "TCC Apply/Release Speed vs. %TPS - TUTD 6th"
+    },
+    {
+      "param_id": 15267,
+      "name": "TCC WOT Apply/Release Speed vs. Gear - Hot Engine"
+    },
+    {
+      "param_id": 15285,
+      "name": "TCC Apply/Release Speed vs. TPS vs. Gear - Pattern A"
+    },
+    {
+      "param_id": 15289,
+      "name": "TCC Apply/Release Speed vs. TPS vs. Gear - Pattern B"
+    },
+    {
+      "param_id": 15293,
+      "name": "TCC WOT Apply/Release Speed - Pattern A"
+    },
+    {
+      "param_id": 15296,
+      "name": "TCC WOT Apply/Release Speed - Pattern B"
+    },
+    {
+      "param_id": 15303,
+      "name": "Shift Speed vs. %TPS vs. Shift - Hot D2"
+    },
+    {
+      "param_id": 15305,
+      "name": "Shift Speed vs. %TPS vs. Shift - D1 Safety"
+    },
+    {
+      "param_id": 15315,
+      "name": "Shift Speed vs. TPS vs. Shift - Pattern A"
+    },
+    {
+      "param_id": 15319,
+      "name": "Shift Speed vs. TPS vs. Shift - Pattern B"
+    },
+    {
+      "param_id": 15323,
+      "name": "WOT Shift Speed — Pattern A"
+    },
+    {
+      "param_id": 15326,
+      "name": "WOT Shift Speed — Pattern B"
+    },
+    {
+      "param_id": 15430,
+      "name": "Trans Max Shift Torque"
+    },
+    {
+      "param_id": 15443,
+      "name": "Shift Torque Factor Cold"
+    },
+    {
+      "param_id": 15580,
+      "name": "Max Line Pressure vs. RPM vs. Gear"
+    },
+    {
+      "param_id": 15669,
+      "name": "Shift Inertia Factor Profile 2-4"
+    },
+    {
+      "param_id": 15672,
+      "name": "Shift Inertia Factor Profile Default"
+    },
+    {
+      "param_id": 15682,
+      "name": "Shift Inertia Factor Profile CT Downshift"
+    },
+    {
+      "param_id": 15814,
+      "name": "Shift Desired Output Torque Scale Factor 3-4"
+    },
+    {
+      "param_id": 15815,
+      "name": "Shift Desired Output Torque Scale Factor 4-5"
+    },
+    {
+      "param_id": 15817,
+      "name": "Shift Desired Output Torque Scale Factor 1-3"
+    },
+    {
+      "param_id": 15818,
+      "name": "Shift Desired Output Torque Scale Factor 1-4"
+    },
+    {
+      "param_id": 15819,
+      "name": "Shift Desired Output Torque Scale Factor 2-4"
+    },
+    {
+      "param_id": 15820,
+      "name": "Shift Desired Output Torque Scale Factor 2-6"
+    },
+    {
+      "param_id": 15821,
+      "name": "Shift Desired Output Torque Scale Factor 3-5"
+    },
+    {
+      "param_id": 15822,
+      "name": "Shift Desired Output Torque Scale Factor 4-6"
+    },
+    {
+      "param_id": 15823,
+      "name": "Shift Desired Output Torque Scale Factor 1-2 Special"
+    },
+    {
+      "param_id": 15824,
+      "name": "Shift Desired Output Torque Scale Factor 2-3 Special"
+    },
+    {
+      "param_id": 15825,
+      "name": "Shift Desired Output Torque Scale Factor 3-4 Special"
+    },
+    {
+      "param_id": 15826,
+      "name": "Shift Desired Output Torque Scale Factor 4-5 Special"
+    },
+    {
+      "param_id": 15827,
+      "name": "Shift Desired Output Torque Scale Factor 5-6 Special"
+    },
+    {
+      "param_id": 15828,
+      "name": "Shift Desired Output Torque Scale Factor 1-3 Special"
+    },
+    {
+      "param_id": 15829,
+      "name": "Shift Desired Output Torque Scale Factor 1-4 Special"
+    },
+    {
+      "param_id": 15830,
+      "name": "Shift Desired Output Torque Scale Factor 2-4 Special"
+    },
+    {
+      "param_id": 15831,
+      "name": "Shift Desired Output Torque Scale Factor 2-6 Special"
+    },
+    {
+      "param_id": 15832,
+      "name": "Shift Desired Output Torque Scale Factor 3-5 Special"
+    },
+    {
+      "param_id": 15845,
+      "name": "Shift Desired Output Torque Scale Factor Mult 1-3"
+    },
+    {
+      "param_id": 15936,
+      "name": "Shift Adapt Preset Pressure 2-3 Oncoming Special"
+    },
+    {
+      "param_id": 16000,
+      "name": "Cmd Gear Upshift Min Vehicle Speed"
+    },
+    {
+      "param_id": 16001,
+      "name": "Cmd Gear Downshift Max Vehicle Speed"
+    },
+    {
+      "param_id": 17010,
+      "name": "Fuel Pump Duty Cycle"
+    },
+    {
+      "param_id": 17020,
+      "name": "Low Flow Upper"
+    },
+    {
+      "param_id": 17021,
+      "name": "Low Flow Lower"
+    },
+    {
+      "param_id": 17022,
+      "name": "High Flow Upper"
+    },
+    {
+      "param_id": 17024,
+      "name": "Cranking Fuel Pressure"
+    },
+    {
+      "param_id": 17025,
+      "name": "Hot Fuel Pressure"
+    },
+    {
+      "param_id": 25013,
+      "name": "Mid Flow Duty Cycle"
+    },
+    {
+      "param_id": 25014,
+      "name": "High Flow Duty Cycle"
+    },
+    {
+      "param_id": 27777,
+      "name": "Throttle Area vs Position"
+    },
+    {
+      "param_id": 32447,
+      "name": "Engine Torque Coeff EQ Ratio"
+    },
+    {
+      "param_id": 32451,
+      "name": "Engine Torque Coeff Exhaust Cam Angle Map"
+    },
+    {
+      "param_id": 32452,
+      "name": "Engine Torque Coeff Spark A"
+    },
+    {
+      "param_id": 32455,
+      "name": "Engine Torque Coeff Spark D"
+    },
+    {
+      "param_id": 32456,
+      "name": "Engine Torque Coeff SparkSq A"
+    },
+    {
+      "param_id": 32459,
+      "name": "Engine Torque Coeff SparkSq D"
+    },
+    {
+      "param_id": 32460,
+      "name": "Engine Torque Coeff Airmass A"
+    },
+    {
+      "param_id": 32463,
+      "name": "Engine Torque Coeff Airmass D"
+    },
+    {
+      "param_id": 32464,
+      "name": "Engine Torque Coeff RPM A"
+    },
+    {
+      "param_id": 32467,
+      "name": "Engine Torque Coeff RPM D"
+    },
+    {
+      "param_id": 32468,
+      "name": "Engine Torque Coeff Spark.Airmass A"
+    },
+    {
+      "param_id": 32469,
+      "name": "Engine Torque Coeff Spark.Airmass B"
+    },
+    {
+      "param_id": 32470,
+      "name": "Engine Torque Coeff Spark.Airmass C"
+    },
+    {
+      "param_id": 32471,
+      "name": "Engine Torque Coeff Spark.Airmass D"
+    },
+    {
+      "param_id": 32472,
+      "name": "Engine Torque Coeff SparkSq.Airmass A"
+    },
+    {
+      "param_id": 32473,
+      "name": "Engine Torque Coeff SparkSq.Airmass B"
+    },
+    {
+      "param_id": 32950,
+      "name": "Spark Smoothing Gain Low Torque"
+    },
+    {
+      "param_id": 32951,
+      "name": "Spark Smoothing Gain High Torque"
+    },
+    {
+      "param_id": 32970,
+      "name": "ETC Tip-in Torque Limit 1st Gear"
+    },
+    {
+      "param_id": 32972,
+      "name": "ETC Tip-in Torque Limit 3rd Gear"
+    },
+    {
+      "param_id": 32974,
+      "name": "ETC Tip-in Torque Limit 5th Gear"
+    },
+    {
+      "param_id": 32976,
+      "name": "ETC Tip-in Torque Limit Neutral"
+    },
+    {
+      "param_id": 32978,
+      "name": "ETC Tip-in Torque Limit Park"
+    },
+    {
+      "param_id": 33020,
+      "name": "Throttle Area Increase Rate"
+    },
+    {
+      "param_id": 33100,
+      "name": "Intake Cam Position - Low Baro"
+    },
+    {
+      "param_id": 33104,
+      "name": "Exhaust Cam Position - Low Baro"
+    },
+    {
+      "param_id": 33108,
+      "name": "Exhaust Cam Position - High Baro DoD"
+    },
+    {
+      "param_id": 33109,
+      "name": "Intake Cam Angle - Cold Start"
+    },
+    {
+      "param_id": 33110,
+      "name": "Exhaust Cam Position - Cold Start"
+    },
+    {
+      "param_id": 33111,
+      "name": "Exhaust Cam Position Ramp Negative"
+    },
+    {
+      "param_id": 33113,
+      "name": "Intake Cam Position Ramp Negative"
+    },
+    {
+      "param_id": 33115,
+      "name": "Intake Cam Angle Minimum during Spark Reduction"
+    },
+    {
+      "param_id": 33116,
+      "name": "Exhaust Cam Angle Minimum during Spark Reduction"
+    },
+    {
+      "param_id": 33120,
+      "name": "Intake Cam ECT Correction"
+    },
+    {
+      "param_id": 33121,
+      "name": "Exhaust Cam ECT Correction"
+    },
+    {
+      "param_id": 33123,
+      "name": "Exhaust Cam Cold Start Baro Correction"
+    },
+    {
+      "param_id": 33150,
+      "name": "Intake Cam Enable ERT"
+    },
+    {
+      "param_id": 35000,
+      "name": "TCC Desired Slip AC Off - 1st"
+    },
+    {
+      "param_id": 35002,
+      "name": "TCC Desired Slip AC Off - 3rd"
     }
   ],
   "missing_scalars": [],
