@@ -89,3 +89,653 @@
 2026-09-16T20:07:49.2439376+00:00    leaf [Speedo > Calibration] tabrows=1 +0 (total 301)
 2026-09-16T20:07:54.8346142+00:00    leaf [Speedo > Limiter] tabrows=1 +0 (total 301)
 2026-09-16T20:07:54.8526171+00:00  === SEGMENT 'Speedo' done: +0 new, 27 dupes, 301 total, 17s ===
+2026-09-16T20:12:43.0267248+00:00  === SEGMENT 'OS' start (already have 301 params) ===
+2026-09-16T20:12:43.2157098+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Operating System]
+2026-09-16T20:12:47.8024259+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:12:50.2192299+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:12:53.1299951+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:12:56.2577419+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:12:58.3384037+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:01.8781179+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:04.8068808+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:07.0127025+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:09.2485217+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:12.3622700+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:14.5730970+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:17.4198614+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:19.6506803+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:21.6025222+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:24.1453172+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:26.9040941+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:29.7308643+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:32.2796594+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:35.1454299+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:39.1076777+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:41.2465047+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:43.6553101+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:46.8450519+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:49.2508567+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:52.4126009+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:55.3443655+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:13:57.3172055+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:00.7069312+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:03.7686825+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:05.9385054+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:09.1062509+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:12.7109568+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:16.7306329+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:20.8163007+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:23.4229307+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:26.6226706+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:29.6294266+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:31.6952606+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:35.5469471+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:41.6384534+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:44.7651996+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:48.6128891+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:52.8515447+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:14:56.1162797+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:02.8607323+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:07.2063803+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:15.5587032+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:17.8650760+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:22.8381629+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:26.1198493+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:29.8215501+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:32.1073647+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:35.2931071+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:37.6029191+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:39.6817509+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:46.1024242+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:49.3251646+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:52.8902459+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:55.2980508+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:15:58.5242610+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:02.3512167+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:07.5737926+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:10.1135856+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:13.9982705+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:17.7079700+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:22.0126200+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:24.3588950+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:27.8666092+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:31.8932829+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:35.8739595+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:38.6677326+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:42.2204431+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:46.9771188+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:50.6248216+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:54.4625553+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:16:56.7703661+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:00.8521745+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:04.5498732+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:08.6995363+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:11.3783186+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:14.4850662+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:19.1506856+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:21.5644915+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:25.3271856+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:28.7789031+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:33.0055589+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:35.2553785+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:40.8944939+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:44.7721787+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:48.4733717+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:52.3680538+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:54.8048567+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:17:57.5676311+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:00.0164318+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:04.1720928+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:06.8598775+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:12.4864164+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:17.7409633+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:22.9625396+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:26.6912343+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:29.3850156+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:32.1658014+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:37.0983884+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:40.3171258+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:44.7207685+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:49.3293927+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:52.9360984+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:57.4497308+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:18:59.7645442+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:19:02.7842978+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:19:07.8998811+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:19:15.9632232+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:19:22.4746946+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:19:25.9234150+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:19:32.1499052+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:19:40.9491889+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:19:58.8933780+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:20:03.5791014+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:20:09.1757926+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:20:14.0994105+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:20:20.3058842+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:20:29.9511007+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:20:40.6352287+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:20:43.0220333+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:20:46.5307483+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:20:52.1772476+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:21:00.4115791+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:21:08.0679543+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:21:15.8063209+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:21:19.4830219+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:22:22.6848801+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:22:25.7946080+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:22:30.0462607+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:22:34.7088789+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:22:38.8875382+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:22:42.2932605+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:22:47.4382753+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:22:53.6997668+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:22:59.0103314+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:02.2390670+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:05.7510563+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:10.0459002+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:13.1256477+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:15.5434495+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:18.1852340+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:20.6060363+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:23.6997836+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:27.7814500+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:31.6921397+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:35.7947962+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:40.8593841+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:43.4422883+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:47.6869385+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:50.7006927+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:54.4523856+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:23:59.8229471+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:04.8005401+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:09.4511618+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:14.0787881+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:19.6683268+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:23.8769825+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:26.8467422+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:28.9415792+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:30.9934022+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:33.0372348+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:35.4810367+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:37.5128708+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:39.4927075+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:41.9105098+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:44.2833164+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:46.5941270+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:48.8401980+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:50.9870230+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:53.2408393+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:55.2186778+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:57.2475215+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:24:59.2523477+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:01.5021633+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:03.7999759+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:06.1988670+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:08.4036890+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:10.6745004+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:12.6783400+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:15.0691425+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:17.0749802+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:19.4035676+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:21.5373901+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:23.6612141+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:25.6270550+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:27.8498744+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:30.0246960+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:32.4734951+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:34.4473345+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:36.6821529+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:38.9069694+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:41.1892438+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:43.5190458+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:45.5688802+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:47.9286873+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:49.9305217+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:52.1113452+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:54.1711765+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:56.8729552+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:25:58.8237980+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:01.0466148+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:03.0414509+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:05.3852595+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:07.3800962+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:09.6839075+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:12.0027193+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:14.0825494+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:16.1893767+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:18.4311943+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:20.6130141+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:22.8478318+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:25.0876497+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:27.3694635+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:29.6872753+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:31.8940924+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:33.9629233+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:36.2897354+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:38.6495404+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:40.6103806+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:42.9221904+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:45.2989967+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:47.3698278+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:49.7496331+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:51.7854661+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:54.0282829+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:56.0428965+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:26:58.9926545+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:01.5474465+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:03.8852551+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:06.2080649+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:08.4508812+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:10.8256867+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:13.8574395+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:16.1482517+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:18.3370732+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:20.5588921+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:22.9394415+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:25.4785072+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:27.5233412+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:29.9942787+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:32.2330972+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:34.4429213+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:36.5797482+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:39.0105408+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:41.1933634+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:43.2991894+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:45.8089846+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:48.0697988+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:50.0908707+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:52.1667001+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:54.2255311+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:56.5123455+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:27:58.5801765+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:00.9339839+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:03.0398119+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:05.4426174+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:07.4494509+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:09.5386632+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:11.7924789+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:13.9653012+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:16.3381073+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:18.7259116+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:20.9317312+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:23.4102164+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:25.5440408+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:27.6468692+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:29.8186913+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:31.9515171+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:34.1553369+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:36.3181599+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:38.5689757+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:40.7817945+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:42.7426336+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:45.0164564+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:47.6702310+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:49.6430699+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:51.7548971+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:54.1457019+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:56.2605281+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:28:58.4677601+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:00.6125845+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:02.8044064+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:04.9422308+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:07.2460425+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:09.3448809+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:11.4836958+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:13.7475102+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:15.9583298+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:18.3581327+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:20.4879769+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:22.7067767+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:24.8076049+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:26.8604371+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:28.9302676+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:30.9790996+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:33.2109172+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:35.5430443+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:37.6328699+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:39.7187009+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:41.8825223+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:43.9453536+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:46.2948248+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:48.3838779+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:50.9026720+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:53.2175064+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:55.5672897+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:57.6571196+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:29:59.6609554+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:01.7504987+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:04.2612930+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:06.4921104+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:08.5813678+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:10.9931721+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:13.0050049+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:15.0378405+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:17.0706737+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:19.4764783+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:21.5663045+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:23.8081222+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:25.8169587+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:27.8867898+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:30.1836032+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:32.5370372+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:34.9648445+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:37.0746666+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:39.1888889+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:42.7835480+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:44.9943664+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:47.2741806+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:49.4879981+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:51.8318076+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:54.1616162+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:56.2434450+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:30:58.4022690+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:03.7018348+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:06.0076461+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:08.2244099+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:10.5833556+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:12.9271646+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:15.3029700+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:17.6607777+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:20.2465651+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:22.5263792+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:24.6021435+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:26.5670350+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:28.6928600+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:30.7156941+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:33.2198572+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:35.6076620+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:37.6635098+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:40.1692890+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:42.2371207+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:44.2459548+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:46.5297675+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:48.8325791+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:51.1453897+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:53.4152032+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:55.7900088+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:31:58.1208180+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:00.0746582+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:02.0924934+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:04.3913054+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:06.6421209+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:08.9539322+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:11.2127474+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:13.6745451+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:15.9973547+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:18.3331639+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:20.6599747+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:22.6058150+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:24.9166244+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:27.2014380+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:29.4032571+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:31.7190673+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:34.0528762+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:36.2906947+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:38.3075291+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:40.6573371+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:42.9721467+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:45.3519529+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:47.6977592+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:50.1255636+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:53.7282660+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:32:57.1309875+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:00.0047515+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:03.3134811+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:05.5732964+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:07.8001158+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:10.0919264+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:12.2777482+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:14.4655694+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:16.6853871+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:18.9032041+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:21.1640200+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:23.4018370+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:25.6426532+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:27.6174914+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:29.8693071+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:32.0361306+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:34.3097642+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:33:36.3265988+00:00    depth 0 [OS] tabs: System.Object[]
+2026-09-16T20:34:24.0686883+00:00  === SEGMENT 'OS' start (already have 301 params) ===
+2026-09-16T20:34:24.3916621+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Operating System]
+2026-09-16T20:34:32.3090210+00:00    leaf [OS] rows=1 no-items +6 (total 307)
+2026-09-16T20:34:32.3150155+00:00  === SEGMENT 'OS' done: +6 new, 0 dupes, 307 total, 9s ===
+2026-09-16T20:34:51.9829080+00:00  === SEGMENT 'OS' start (already have 307 params) ===
+2026-09-16T20:34:52.2088792+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Operating System]
+2026-09-16T20:34:59.9392469+00:00    leaf [OS] rows=1 no-items +0 (total 307)
+2026-09-16T20:34:59.9752429+00:00  === SEGMENT 'OS' done: +0 new, 6 dupes, 307 total, 8s ===
+2026-09-16T20:35:13.7509722+00:00  === SEGMENT 'Engine' start (already have 307 params) ===
+2026-09-16T20:35:13.9040725+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Operating System]
+2026-09-16T20:35:18.2787673+00:00    depth 0 [Engine] tabs: General | Idle | Airflow | Fuel | Spark | Torque Model | Torque Management
+2026-09-16T20:35:24.2338884+00:00    leaf [Engine > General] rows=1 +0 (total 307)
+2026-09-16T20:35:33.6026504+00:00    leaf [Engine > Idle] rows=1 +0 (total 307)
+2026-09-16T20:35:44.2720253+00:00    leaf [Engine > Airflow] rows=1 +0 (total 307)
+2026-09-16T20:35:55.5311860+00:00    leaf [Engine > Fuel] rows=1 +0 (total 307)
+2026-09-16T20:36:06.4889243+00:00    leaf [Engine > Spark] rows=1 +0 (total 307)
+2026-09-16T20:36:21.2257047+00:00    leaf [Engine > Torque Model] rows=1 +0 (total 307)
+2026-09-16T20:36:44.1391363+00:00    leaf [Engine > Torque Management] rows=1 +0 (total 307)
+2026-09-16T20:36:44.1431261+00:00  === SEGMENT 'Engine' done: +0 new, 83 dupes, 307 total, 91s ===
+2026-09-16T20:36:56.7660980+00:00  === SEGMENT 'Engine Diag' start (already have 307 params) ===
+2026-09-16T20:36:56.9860748+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Engine]
+2026-09-16T20:37:01.1847324+00:00    depth 0 [Engine Diag] tabs: General | Airflow | Misfire | Exhaust | DTCs
+2026-09-16T20:37:09.0340877+00:00    leaf [Engine Diag > General] rows=1 +0 (total 307)
+2026-09-16T20:37:20.6865954+00:00    leaf [Engine Diag > Airflow] rows=1 +0 (total 307)
+2026-09-16T20:37:27.0460756+00:00    leaf [Engine Diag > Misfire] rows=1 +0 (total 307)
+2026-09-16T20:37:33.3484396+00:00    leaf [Engine Diag > Exhaust] rows=1 +0 (total 307)
+2026-09-16T20:37:38.2005057+00:00    leaf [Engine Diag > DTCs] rows=1 +0 (total 307)
+2026-09-16T20:37:38.2064962+00:00  === SEGMENT 'Engine Diag' done: +0 new, 30 dupes, 307 total, 42s ===
+2026-09-16T20:37:51.0494433+00:00  === SEGMENT 'Trans' start (already have 307 params) ===
+2026-09-16T20:37:51.2664264+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Engine Diagnostics]
+2026-09-16T20:37:56.1740430+00:00    depth 0 [Trans] tabs: General | Manual | Shift General | Shift Scheduling | Shift Pressures | Shift Timing | Torque Converter | Torque Management
+2026-09-16T20:38:02.7777991+00:00    leaf [Trans > General] rows=1 +0 (total 307)
+2026-09-16T20:38:10.8543806+00:00    leaf [Trans > Manual] rows=1 +0 (total 307)
+2026-09-16T20:38:19.9706337+00:00    leaf [Trans > Shift General] rows=1 +0 (total 307)
+2026-09-16T20:38:28.8519059+00:00    leaf [Trans > Shift Scheduling] rows=1 +0 (total 307)
+2026-09-16T20:38:40.3359448+00:00    leaf [Trans > Shift Pressures] rows=1 +0 (total 307)
+2026-09-16T20:38:50.5281092+00:00    leaf [Trans > Shift Timing] rows=1 +0 (total 307)
+2026-09-16T20:39:03.8045142+00:00    leaf [Trans > Torque Converter] rows=1 +0 (total 307)
+2026-09-16T20:39:21.4715045+00:00    leaf [Trans > Torque Management] rows=1 +0 (total 307)
+2026-09-16T20:39:21.4735108+00:00  === SEGMENT 'Trans' done: +0 new, 78 dupes, 307 total, 91s ===
+2026-09-16T20:39:36.4130781+00:00  === SEGMENT 'Trans Diag' start (already have 307 params) ===
+2026-09-16T20:39:36.6350591+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Transmission]
+2026-09-16T20:39:41.3181298+00:00    depth 0 [Trans Diag] tabs: General | DTCs
+2026-09-16T20:39:52.3302280+00:00    leaf [Trans Diag > General] rows=1 +0 (total 307)
+2026-09-16T20:39:56.9538783+00:00    leaf [Trans Diag > DTCs] rows=1 +0 (total 307)
+2026-09-16T20:39:56.9598883+00:00  === SEGMENT 'Trans Diag' done: +0 new, 14 dupes, 307 total, 21s ===
+2026-09-16T20:40:10.9610222+00:00  === SEGMENT 'Fuel Sys' start (already have 307 params) ===
+2026-09-16T20:40:11.1800103+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Transmission Diagnostics]
+2026-09-16T20:40:15.6466432+00:00    depth 0 [Fuel Sys] tabs: General | Fuel Pressure | Fuel Pump | Fuel Control Module | Fuel Tank/Gauge | Diagnostics | DTCs
+2026-09-16T20:40:20.7835063+00:00    leaf [Fuel Sys > General] rows=1 +0 (total 307)
+2026-09-16T20:40:31.3856367+00:00    leaf [Fuel Sys > Fuel Pressure] rows=1 +0 (total 307)
+2026-09-16T20:40:36.2925954+00:00    leaf [Fuel Sys > Fuel Pump] rows=1 +0 (total 307)
+2026-09-16T20:40:42.8650567+00:00    leaf [Fuel Sys > Fuel Control Module] rows=1 +0 (total 307)
+2026-09-16T20:40:50.4769981+00:00    leaf [Fuel Sys > Fuel Tank/Gauge] rows=1 +0 (total 307)
+2026-09-16T20:40:55.7545606+00:00    leaf [Fuel Sys > Diagnostics] rows=1 +0 (total 307)
+2026-09-16T20:41:00.3838363+00:00    leaf [Fuel Sys > DTCs] rows=1 +0 (total 307)
+2026-09-16T20:41:00.3868359+00:00  === SEGMENT 'Fuel Sys' done: +0 new, 31 dupes, 307 total, 50s ===
+2026-09-16T20:41:13.4987622+00:00  === SEGMENT 'System' start (already have 307 params) ===
+2026-09-16T20:41:13.6907480+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Fuel System]
+2026-09-16T20:41:18.4063804+00:00    depth 0 [System] tabs: General | Fans | Coolant Pumps | A/C
+2026-09-16T20:41:31.1622551+00:00    leaf [System > General] rows=1 +0 (total 307)
+2026-09-16T20:41:41.6533991+00:00    leaf [System > Fans] rows=1 +0 (total 307)
+2026-09-16T20:41:48.9397987+00:00    leaf [System > Coolant Pumps] rows=1 +0 (total 307)
+2026-09-16T20:41:55.3437064+00:00    leaf [System > A/C] rows=1 +0 (total 307)
+2026-09-16T20:41:55.3517141+00:00  === SEGMENT 'System' done: +0 new, 40 dupes, 307 total, 42s ===
+2026-09-16T20:42:07.6557076+00:00  === SEGMENT 'Favorites' start (already have 307 params) ===
+2026-09-16T20:42:07.8616843+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [System]
+2026-09-16T20:42:12.6012920+00:00    depth 0 [Favorites] tabs: General | Fans | Coolant Pumps | A/C
+2026-09-16T20:42:25.3972437+00:00    leaf [Favorites > General] rows=1 +0 (total 307)
+2026-09-16T20:42:35.7677611+00:00    leaf [Favorites > Fans] rows=1 +0 (total 307)
+2026-09-16T20:42:43.5241260+00:00    leaf [Favorites > Coolant Pumps] rows=1 +0 (total 307)
+2026-09-16T20:42:49.0416729+00:00    leaf [Favorites > A/C] rows=1 +0 (total 307)
+2026-09-16T20:42:49.0476720+00:00  === SEGMENT 'Favorites' done: +0 new, 40 dupes, 307 total, 42s ===
+2026-09-16T20:43:00.8747029+00:00  === SEGMENT 'Speedo' start (already have 307 params) ===
+2026-09-16T20:43:01.0626877+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt
+2026-09-16T20:43:06.2833678+00:00    depth 0 [Speedo] tabs: Calibration | Limiter
+2026-09-16T20:43:18.4913552+00:00    leaf [Speedo > Calibration] rows=1 +0 (total 307)
+2026-09-16T20:43:27.1596395+00:00    leaf [Speedo > Limiter] rows=1 +0 (total 307)
+2026-09-16T20:43:27.1656437+00:00  === SEGMENT 'Speedo' done: +0 new, 27 dupes, 307 total, 26s ===
+2026-09-16T20:45:55.4909252+00:00  === SEGMENT 'Engine' start (already have 307 params) ===
+2026-09-16T20:45:55.6709047+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt
+2026-09-16T20:46:02.9049778+00:00    depth 0 [Engine] 10 tabs: General | Idle | Airflow | Fuel | Spark | Torque Model | Torque Management | General | Engine | Supercharger
+2026-09-16T20:46:12.0057433+00:00    leaf [Engine > General] rows=1 +0 (total 307)
+2026-09-16T20:46:21.7129494+00:00    leaf [Engine > Idle] rows=1 +0 (total 307)
+2026-09-16T20:46:32.8961660+00:00    leaf [Engine > Airflow] rows=1 +0 (total 307)
+2026-09-16T20:46:44.6964872+00:00    leaf [Engine > Fuel] rows=1 +0 (total 307)
+2026-09-16T20:46:56.5447837+00:00    leaf [Engine > Spark] rows=1 +0 (total 307)
+2026-09-16T20:47:14.7300831+00:00    leaf [Engine > Torque Model] rows=1 +0 (total 307)
+2026-09-16T20:47:39.3342119+00:00    leaf [Engine > Torque Management] rows=1 +0 (total 307)
+2026-09-16T20:47:56.2902986+00:00    leaf [Engine > General] rows=1 +0 (total 307)
+2026-09-16T20:48:01.0819031+00:00    leaf [Engine > Engine] rows=1 +0 (total 307)
+2026-09-16T20:48:04.6962232+00:00    UNREACHABLE [Engine idx=9]
+2026-09-16T20:48:04.6972232+00:00  === SEGMENT 'Engine' done: +0 new, 83 dupes, 307 total, 129s ===
+2026-09-16T20:50:54.2191482+00:00  === SEGMENT 'Engine' start (already have 307 params) ===
+2026-09-16T20:50:54.3451444+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Engine]
+2026-09-16T20:50:58.2701714+00:00    depth 0 [Engine] 7 tabs: General | Idle | Airflow | Fuel | Spark | Torque Model | Torque Management
+2026-09-16T20:51:06.2736927+00:00    leaf [Engine > General] rows=1 +0 (total 307)
+2026-09-16T20:51:10.3598268+00:00    depth 1 [Engine > Idle] 2 tabs: RPM | Airflow
+2026-09-16T20:51:19.8646533+00:00    leaf [Engine > Idle > RPM] rows=2 +0 (total 307)
+2026-09-16T20:51:31.6595873+00:00    leaf [Engine > Idle > Airflow] rows=2 +15 (total 322)
+2026-09-16T20:51:36.0012275+00:00    depth 1 [Engine > Airflow] 6 tabs: General | Dynamic | Speed Density | Electronic Throttle | Variable Camshaft | Supercharger
+2026-09-16T20:51:46.7349567+00:00    leaf [Engine > Airflow > General] rows=2 +0 (total 322)
+2026-09-16T20:51:56.1538512+00:00    leaf [Engine > Airflow > Dynamic] rows=2 +10 (total 332)
+2026-09-16T20:52:03.1262759+00:00    leaf [Engine > Airflow > Speed Density] rows=2 +1 (total 333)
+2026-09-16T20:52:09.9167150+00:00    leaf [Engine > Airflow > Electronic Throttle] rows=2 +3 (total 336)
+2026-09-16T20:52:24.3624835+00:00    leaf [Engine > Airflow > Variable Camshaft] rows=2 +22 (total 358)
+2026-09-16T20:52:30.9809340+00:00    leaf [Engine > Airflow > Supercharger] rows=2 +3 (total 361)
+2026-09-16T20:52:35.8632992+00:00    depth 1 [Engine > Fuel] 9 tabs: General | Oxygen Sensors | Open Loop / Base | Power Enrich | Temperature Control | Cutoff, DFCO | Lean / Fuel-Saving | Transient | Flex Fuel
+2026-09-16T20:52:47.4798918+00:00    leaf [Engine > Fuel > General] rows=2 +0 (total 361)
+2026-09-16T20:53:00.5065236+00:00    leaf [Engine > Fuel > Oxygen Sensors] rows=2 +19 (total 380)
+2026-09-16T20:53:09.4804524+00:00    leaf [Engine > Fuel > Open Loop / Base] rows=2 +6 (total 386)
+2026-09-16T20:53:20.4902403+00:00    leaf [Engine > Fuel > Power Enrich] rows=2 +13 (total 399)
+2026-09-16T20:53:27.7986331+00:00    leaf [Engine > Fuel > Temperature Control] rows=2 +3 (total 402)
+2026-09-16T20:53:39.1697686+00:00    leaf [Engine > Fuel > Cutoff, DFCO] rows=2 +16 (total 418)
+2026-09-16T20:53:49.2079478+00:00    leaf [Engine > Fuel > Lean / Fuel-Saving] rows=2 +12 (total 430)
+2026-09-16T20:53:58.3181972+00:00    leaf [Engine > Fuel > Transient] rows=2 +8 (total 438)
+2026-09-16T20:54:07.5402931+00:00    leaf [Engine > Fuel > Flex Fuel] rows=2 +8 (total 446)
+2026-09-16T20:54:12.2479986+00:00    depth 1 [Engine > Spark] 4 tabs: Advance | Retard | Dwell | Knock Sensors
+2026-09-16T20:54:21.9897950+00:00    leaf [Engine > Spark > Advance] rows=2 +0 (total 446)
+2026-09-16T20:54:36.4176557+00:00    leaf [Engine > Spark > Retard] rows=2 +22 (total 468)
+2026-09-16T20:54:43.3090888+00:00    leaf [Engine > Spark > Dwell] rows=2 +0 (total 468)
+2026-09-16T20:54:51.5734165+00:00    leaf [Engine > Spark > Knock Sensors] rows=2 +5 (total 473)
+2026-09-16T20:54:57.5296419+00:00    depth 1 [Engine > Torque Model] 2 tabs: General | Loss
+2026-09-16T20:55:11.9775801+00:00    leaf [Engine > Torque Model > General] rows=2 +0 (total 473)
+2026-09-16T20:55:21.3908087+00:00    leaf [Engine > Torque Model > Loss] rows=2 +0 (total 473)
+2026-09-16T20:55:28.3120547+00:00    depth 1 [Engine > Torque Management] 3 tabs: General | Engine | Supercharger
+2026-09-16T20:55:49.4746008+00:00    leaf [Engine > Torque Management > General] rows=2 +0 (total 473)
+2026-09-16T20:55:56.6519939+00:00    leaf [Engine > Torque Management > Engine] rows=2 +0 (total 473)
+2026-09-16T20:56:11.9988479+00:00    leaf [Engine > Torque Management > Supercharger] rows=2 +24 (total 497)
+2026-09-16T20:56:12.0138461+00:00  === SEGMENT 'Engine' done: +190 new, 83 dupes, 497 total, 318s ===
+2026-09-16T20:56:31.0278299+00:00  === SEGMENT 'OS' start (already have 497 params) ===
+2026-09-16T20:56:31.1538082+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Engine]
+2026-09-16T20:56:36.6028162+00:00    leaf [OS] rows=0 +0 (total 497)
+2026-09-16T20:56:36.6128168+00:00  === SEGMENT 'OS' done: +0 new, 6 dupes, 497 total, 6s ===
+2026-09-16T20:56:44.4501665+00:00  === SEGMENT 'Engine' start (already have 497 params) ===
+2026-09-16T20:56:44.5721565+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Operating System]
+2026-09-16T20:56:48.3815407+00:00    depth 0 [Engine] 7 tabs: General | Idle | Airflow | Fuel | Spark | Torque Model | Torque Management
+2026-09-16T20:56:53.9230886+00:00    leaf [Engine > General] rows=1 +0 (total 497)
+2026-09-16T20:56:58.0347451+00:00    depth 1 [Engine > Idle] 2 tabs: RPM | Airflow
+2026-09-16T20:57:06.9801973+00:00    leaf [Engine > Idle > RPM] rows=2 +0 (total 497)
+2026-09-16T20:57:18.0592907+00:00    leaf [Engine > Idle > Airflow] rows=2 +0 (total 497)
+2026-09-16T20:57:22.4299288+00:00    depth 1 [Engine > Airflow] 6 tabs: General | Dynamic | Speed Density | Electronic Throttle | Variable Camshaft | Supercharger
+2026-09-16T20:57:32.9234679+00:00    leaf [Engine > Airflow > General] rows=2 +0 (total 497)
+2026-09-16T20:57:42.3504473+00:00    leaf [Engine > Airflow > Dynamic] rows=2 +0 (total 497)
+2026-09-16T20:57:49.3874475+00:00    leaf [Engine > Airflow > Speed Density] rows=2 +0 (total 497)
+2026-09-16T20:57:56.8414450+00:00    leaf [Engine > Airflow > Electronic Throttle] rows=2 +0 (total 497)
+2026-09-16T20:58:11.4532599+00:00    leaf [Engine > Airflow > Variable Camshaft] rows=2 +0 (total 497)
+2026-09-16T20:58:18.5676670+00:00    leaf [Engine > Airflow > Supercharger] rows=2 +0 (total 497)
+2026-09-16T20:58:23.5792501+00:00    depth 1 [Engine > Fuel] 9 tabs: General | Oxygen Sensors | Open Loop / Base | Power Enrich | Temperature Control | Cutoff, DFCO | Lean / Fuel-Saving | Transient | Flex Fuel
+2026-09-16T20:58:34.7063466+00:00    leaf [Engine > Fuel > General] rows=2 +0 (total 497)
+2026-09-16T20:58:48.0043693+00:00    leaf [Engine > Fuel > Oxygen Sensors] rows=2 +0 (total 497)
+2026-09-16T20:58:56.7137595+00:00    leaf [Engine > Fuel > Open Loop / Base] rows=2 +0 (total 497)
+2026-09-16T20:59:08.1208289+00:00    leaf [Engine > Fuel > Power Enrich] rows=2 +0 (total 497)
+2026-09-16T20:59:16.1108194+00:00    leaf [Engine > Fuel > Temperature Control] rows=2 +0 (total 497)
+2026-09-16T20:59:28.5228013+00:00    leaf [Engine > Fuel > Cutoff, DFCO] rows=2 +0 (total 497)
+2026-09-16T20:59:38.2410105+00:00    leaf [Engine > Fuel > Lean / Fuel-Saving] rows=2 +0 (total 497)
+2026-09-16T20:59:47.2433115+00:00    leaf [Engine > Fuel > Transient] rows=2 +0 (total 497)
+2026-09-16T20:59:56.1835786+00:00    leaf [Engine > Fuel > Flex Fuel] rows=2 +0 (total 497)
+2026-09-16T21:00:01.3002627+00:00    depth 1 [Engine > Spark] 4 tabs: Advance | Retard | Dwell | Knock Sensors
+2026-09-16T21:00:11.1241072+00:00    leaf [Engine > Spark > Advance] rows=2 +0 (total 497)
+2026-09-16T21:00:25.7093656+00:00    leaf [Engine > Spark > Retard] rows=2 +0 (total 497)
+2026-09-16T21:00:32.0868392+00:00    leaf [Engine > Spark > Dwell] rows=2 +0 (total 497)
+2026-09-16T21:00:39.9343664+00:00    leaf [Engine > Spark > Knock Sensors] rows=2 +0 (total 497)
+2026-09-16T21:00:46.3594023+00:00    depth 1 [Engine > Torque Model] 2 tabs: General | Loss
+2026-09-16T21:01:00.3221531+00:00    leaf [Engine > Torque Model > General] rows=2 +0 (total 497)
+2026-09-16T21:01:10.1949639+00:00    leaf [Engine > Torque Model > Loss] rows=2 +0 (total 497)
+2026-09-16T21:01:16.7579358+00:00    depth 1 [Engine > Torque Management] 3 tabs: General | Engine | Supercharger
+2026-09-16T21:01:37.4889183+00:00    leaf [Engine > Torque Management > General] rows=2 +0 (total 497)
+2026-09-16T21:01:44.1563640+00:00    leaf [Engine > Torque Management > Engine] rows=2 +0 (total 497)
+2026-09-16T21:02:01.1559703+00:00    leaf [Engine > Torque Management > Supercharger] rows=2 +0 (total 497)
+2026-09-16T21:02:01.1589695+00:00  === SEGMENT 'Engine' done: +0 new, 273 dupes, 497 total, 317s ===
+2026-09-16T21:02:12.0543165+00:00  === SEGMENT 'Engine Diag' start (already have 497 params) ===
+2026-09-16T21:02:12.1883166+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Engine]
+2026-09-16T21:02:15.9056588+00:00    depth 0 [Engine Diag] 5 tabs: General | Airflow | Misfire | Exhaust | DTCs
+2026-09-16T21:02:22.3176752+00:00    leaf [Engine Diag > General] rows=1 +0 (total 497)
+2026-09-16T21:02:32.3670176+00:00    leaf [Engine Diag > Airflow] rows=1 +0 (total 497)
+2026-09-16T21:02:36.9294690+00:00    leaf [Engine Diag > Misfire] rows=1 +0 (total 497)
+2026-09-16T21:02:42.4322957+00:00    leaf [Engine Diag > Exhaust] rows=1 +0 (total 497)
+2026-09-16T21:02:46.4259619+00:00    leaf [Engine Diag > DTCs] rows=1 +0 (total 497)
+2026-09-16T21:02:46.4309607+00:00  === SEGMENT 'Engine Diag' done: +0 new, 30 dupes, 497 total, 35s ===
+2026-09-16T21:02:54.1253300+00:00  === SEGMENT 'Trans' start (already have 497 params) ===
+2026-09-16T21:02:54.2493236+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Engine Diagnostics]
+2026-09-16T21:02:58.0271193+00:00    depth 0 [Trans] 8 tabs: General | Manual | Shift General | Shift Scheduling | Shift Pressures | Shift Timing | Torque Converter | Torque Management
+2026-09-16T21:03:03.1789331+00:00    leaf [Trans > General] rows=1 +0 (total 497)
+2026-09-16T21:03:10.5263375+00:00    leaf [Trans > Manual] rows=1 +0 (total 497)
+2026-09-16T21:03:18.1837033+00:00    leaf [Trans > Shift General] rows=1 +0 (total 497)
+2026-09-16T21:03:24.3531957+00:00    leaf [Trans > Shift Scheduling] rows=1 +0 (total 497)
+2026-09-16T21:03:28.1068876+00:00    depth 1 [Trans > Shift Pressures] 4 tabs: General | Upshift | Downshift | Adaptive
+2026-09-16T21:03:38.9010071+00:00    leaf [Trans > Shift Pressures > General] rows=2 +0 (total 497)
+2026-09-16T21:03:45.2486146+00:00    leaf [Trans > Shift Pressures > Upshift] rows=2 +0 (total 497)
+2026-09-16T21:03:51.5361002+00:00    leaf [Trans > Shift Pressures > Downshift] rows=2 +0 (total 497)
+2026-09-16T21:04:14.0133058+00:00    leaf [Trans > Shift Pressures > Adaptive] rows=2 +46 (total 543)
+2026-09-16T21:04:19.4978543+00:00    depth 1 [Trans > Shift Timing] 2 tabs: Upshift | Downshift
+2026-09-16T21:04:29.8775187+00:00    leaf [Trans > Shift Timing > Upshift] rows=2 +0 (total 543)
+2026-09-16T21:04:41.9159685+00:00    leaf [Trans > Shift Timing > Downshift] rows=2 +11 (total 554)
+2026-09-16T21:04:47.6339522+00:00    depth 1 [Trans > Torque Converter] 2 tabs: General | Apply/Release
+2026-09-16T21:05:00.8891229+00:00    leaf [Trans > Torque Converter > General] rows=2 +0 (total 554)
+2026-09-16T21:05:08.6908164+00:00    leaf [Trans > Torque Converter > Apply/Release] rows=2 +0 (total 554)
+2026-09-16T21:05:13.3746254+00:00    depth 1 [Trans > Torque Management] 2 tabs: General | Upshift
+2026-09-16T21:05:27.7627155+00:00    leaf [Trans > Torque Management > General] rows=2 +0 (total 554)
+2026-09-16T21:05:41.0287618+00:00    leaf [Trans > Torque Management > Upshift] rows=2 +22 (total 576)
+2026-09-16T21:05:41.0327568+00:00  === SEGMENT 'Trans' done: +79 new, 78 dupes, 576 total, 167s ===
+2026-09-16T21:05:51.5839963+00:00  === SEGMENT 'Trans Diag' start (already have 576 params) ===
+2026-09-16T21:05:51.7118920+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Transmission]
+2026-09-16T21:05:55.3855837+00:00    depth 0 [Trans Diag] 2 tabs: General | DTCs
+2026-09-16T21:06:04.0538685+00:00    leaf [Trans Diag > General] rows=1 +0 (total 576)
+2026-09-16T21:06:08.3515153+00:00    leaf [Trans Diag > DTCs] rows=1 +0 (total 576)
+2026-09-16T21:06:08.3585129+00:00  === SEGMENT 'Trans Diag' done: +0 new, 14 dupes, 576 total, 17s ===
+2026-09-16T21:06:17.3337775+00:00  === SEGMENT 'Fuel Sys' start (already have 576 params) ===
+2026-09-16T21:06:17.4627686+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Transmission Diagnostics]
+2026-09-16T21:06:21.1972290+00:00    depth 0 [Fuel Sys] 7 tabs: General | Fuel Pressure | Fuel Pump | Fuel Control Module | Fuel Tank/Gauge | Diagnostics | DTCs
+2026-09-16T21:06:25.6768710+00:00    leaf [Fuel Sys > General] rows=1 +0 (total 576)
+2026-09-16T21:06:34.5831364+00:00    leaf [Fuel Sys > Fuel Pressure] rows=1 +0 (total 576)
+2026-09-16T21:06:39.4257428+00:00    leaf [Fuel Sys > Fuel Pump] rows=1 +0 (total 576)
+2026-09-16T21:06:44.7293056+00:00    leaf [Fuel Sys > Fuel Control Module] rows=1 +0 (total 576)
+2026-09-16T21:06:50.8558016+00:00    leaf [Fuel Sys > Fuel Tank/Gauge] rows=1 +0 (total 576)
+2026-09-16T21:06:55.5054224+00:00    leaf [Fuel Sys > Diagnostics] rows=1 +0 (total 576)
+2026-09-16T21:06:59.3820969+00:00    leaf [Fuel Sys > DTCs] rows=1 +0 (total 576)
+2026-09-16T21:06:59.3840984+00:00  === SEGMENT 'Fuel Sys' done: +0 new, 31 dupes, 576 total, 42s ===
+2026-09-16T21:07:07.5502625+00:00  === SEGMENT 'System' start (already have 576 params) ===
+2026-09-16T21:07:07.6732647+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [Fuel System]
+2026-09-16T21:07:11.4129442+00:00    depth 0 [System] 4 tabs: General | Fans | Coolant Pumps | A/C
+2026-09-16T21:07:21.7549715+00:00    leaf [System > General] rows=1 +0 (total 576)
+2026-09-16T21:07:30.5366208+00:00    leaf [System > Fans] rows=1 +0 (total 576)
+2026-09-16T21:07:35.2612320+00:00    depth 1 [System > Coolant Pumps] 1 tabs: Intercooler
+2026-09-16T21:07:42.1486674+00:00    leaf [System > Coolant Pumps > Intercooler] rows=2 +0 (total 576)
+2026-09-16T21:07:47.3552411+00:00    leaf [System > A/C] rows=1 +0 (total 576)
+2026-09-16T21:07:47.3622399+00:00  === SEGMENT 'System' done: +0 new, 40 dupes, 576 total, 40s ===
+2026-09-16T21:07:53.9180611+00:00  === SEGMENT 'Favorites' start (already have 576 params) ===
+2026-09-16T21:07:54.0406930+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [System]
+2026-09-16T21:07:58.2844484+00:00    depth 0 [Favorites] 4 tabs: General | Fans | Coolant Pumps | A/C
+2026-09-16T21:08:09.1562920+00:00    leaf [Favorites > General] rows=1 +0 (total 576)
+2026-09-16T21:08:18.9160333+00:00    leaf [Favorites > Fans] rows=1 +0 (total 576)
+2026-09-16T21:08:23.8866242+00:00    depth 1 [Favorites > Coolant Pumps] 1 tabs: Intercooler
+2026-09-16T21:08:31.9426126+00:00    leaf [Favorites > Coolant Pumps > Intercooler] rows=2 +0 (total 576)
+2026-09-16T21:08:38.2636627+00:00    leaf [Favorites > A/C] rows=1 +0 (total 576)
+2026-09-16T21:08:38.2726550+00:00  === SEGMENT 'Favorites' done: +0 new, 40 dupes, 576 total, 44s ===
+2026-09-16T21:08:48.4968139+00:00  === SEGMENT 'Speedo' start (already have 576 params) ===
+2026-09-16T21:08:48.6198037+00:00  VCM title: VCM Editor - C:\sweep\tunes\stock-10.13.24.hpt - [System]
+2026-09-16T21:08:52.4825091+00:00    depth 0 [Speedo] 2 tabs: Calibration | Limiter
+2026-09-16T21:09:02.1843811+00:00    leaf [Speedo > Calibration] rows=1 +0 (total 576)
+2026-09-16T21:09:09.3127944+00:00    leaf [Speedo > Limiter] rows=1 +0 (total 576)
+2026-09-16T21:09:09.3197913+00:00  === SEGMENT 'Speedo' done: +0 new, 27 dupes, 576 total, 21s ===

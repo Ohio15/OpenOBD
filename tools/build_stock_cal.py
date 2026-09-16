@@ -76,6 +76,24 @@ def norm_unit(u: str | None) -> str:
     return (u or "").replace("﻿", "").strip()
 
 
+# VCM renders on/off parameters as an enumerated dropdown, not a checkbox, so the
+# sweep records them with kind="enum" and a STRING raw_value. Mapping that string
+# to 0/1 is a faithful transcription of what the UI shows, not a guess -- but it
+# is applied ONLY to this closed vocabulary. Anything else keeps value=None and
+# survives as raw_value alone, so an unrecognised enum can never be silently
+# coerced into a number.
+ENUM_BOOL = {
+    "disable": 0, "disabled": 0, "off": 0, "no": 0, "false": 0, "inactive": 0,
+    "enable": 1, "enabled": 1, "on": 1, "yes": 1, "true": 1, "active": 1,
+}
+
+
+def coerce_enum_bool(raw: str | None):
+    if raw is None:
+        return None
+    return ENUM_BOOL.get(str(raw).strip().lower())
+
+
 def build(sweep_dir: Path, data_dir: Path, out_path: Path, report_path: Path) -> int:
     scalars_raw = read_jsonl(sweep_dir / "scalars.jsonl")
     anomalies = read_jsonl(sweep_dir / "anomalies.jsonl")
@@ -120,14 +138,24 @@ def build(sweep_dir: Path, data_dir: Path, out_path: Path, report_path: Path) ->
 
     # ---- emit scalars ---------------------------------------------------------
     out_scalars = []
+    enum_coerced = 0
+    enum_uncoerced: list[dict] = []
     for (module, pid), rec in sorted(by_key.items(), key=lambda kv: (kv[0][0], kv[0][1])):
         ref_hits = ref_scalar_by_id.get(pid, [])
         category = rec.get("segment") or ""
         if ref_hits:
             category = ref_hits[0].get("category") or category
+        value = rec.get("value")
+        if value is None and rec.get("kind") == "enum":
+            value = coerce_enum_bool(rec.get("raw_value"))
+            if value is not None:
+                enum_coerced += 1
+            else:
+                enum_uncoerced.append({"key": f"{module}:{pid}", "name": rec.get("name"),
+                                       "raw_value": rec.get("raw_value")})
         out_scalars.append({
             "name": rec.get("name"),
-            "value": rec.get("value"),
+            "value": value,
             "unit": norm_unit(rec.get("unit")),
             "param_id": pid,
             "module": module,
@@ -201,11 +229,14 @@ def build(sweep_dir: Path, data_dir: Path, out_path: Path, report_path: Path) ->
             pin_fail += 1
             continue
         got = rec.get("value")
+        if got is None and rec.get("kind") == "enum":
+            got = coerce_enum_bool(rec.get("raw_value"))
         ok = got is not None and abs(float(got) - float(expected)) < 1e-6
         if not ok:
             pin_fail += 1
         pin_results.append({"param": f"{module}:{pid}", "name": name, "expected": expected,
                             "swept": got, "swept_name": rec.get("name"),
+                            "swept_raw": rec.get("raw_value"), "swept_kind": rec.get("kind"),
                             "result": "MATCH" if ok else "MISMATCH"})
 
     # ---- coverage vs the existing 375 / 252 ----------------------------------
@@ -245,6 +276,8 @@ def build(sweep_dir: Path, data_dir: Path, out_path: Path, report_path: Path) ->
             "missing": len(missing),
             "coverage_pct": round(100.0 * len(covered) / max(1, len(best_scalar_ids)), 1),
             "swept_not_in_reference": len(extra),
+            "enum_bool_coerced": enum_coerced,
+            "enum_left_as_raw_string": len(enum_uncoerced),
         },
         "tables": {
             "swept_total": len(out_tables),
@@ -258,6 +291,7 @@ def build(sweep_dir: Path, data_dir: Path, out_path: Path, report_path: Path) ->
             "sweep_anomalies": len(anomalies),
             "anomaly_reasons": dict(Counter(a.get("reason", "?") for a in anomalies)),
         },
+        "enums_not_coerced_to_number": enum_uncoerced,
         "missing_scalars": missing_detail,
         "reference_scalars_without_param_id": [
             {"name": s.get("name"), "category": s.get("category")} for s in best_scalar_no_id
@@ -274,7 +308,8 @@ def build(sweep_dir: Path, data_dir: Path, out_path: Path, report_path: Path) ->
     print()
     print("PIN CROSS-CHECK (the only independent verification):")
     for r in pin_results:
-        print(f"  [{r['result']:<12}] {r['param']:<10} {r['name']:<34} expected={r['expected']!s:<8} swept={r['swept']}")
+        raw = f"  (raw {r.get('swept_raw')!r})" if r.get('swept_kind') == 'enum' else ''
+        print(f"  [{r['result']:<12}] {r['param']:<10} {r['name']:<34} expected={r['expected']!s:<8} swept={r['swept']}{raw}")
     print(f"  verdict: {report['pin_cross_check']['verdict']}")
     print()
     print("COVERAGE vs best.cal.json:")
