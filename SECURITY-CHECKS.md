@@ -349,6 +349,42 @@ lexer asserts the resolved handler is a function.
 **Origin.** audit-cortex-hooks-2026-09-15 (CRITICAL; approved by Ron
 2026-09-16).
 
+### SC-23 · A hook's registration or tool family is narrower than the
+predicate it implements
+**Shape.** The detector matches every MCP alias, every file tool, every
+process channel — and the settings matcher, the `CONTENT_TOOLS` set, or the
+`SHELL_TOOLS` set the entry point consults names fewer. The conformance check
+confirms the matcher is present, not that it covers the predicate. One added
+alias or one added tool channel and a block-tier rule enforces nothing, while
+the CHANGELOG says "every row enforced".
+**Check.** For every PreToolUse guard, derive the predicate's tool set from
+source (the regex or set the core exports) and the registered matcher from
+the live settings block the generator emits; assert matcher ⊇ predicate. One
+exported tool-family constant per channel (shell, content, MCP file/process)
+consumed by every guard and by the resource layer, with a derived membership
+test that fails when a member is added to one set and not the others.
+**Fix form.** Generate the settings matcher from the predicate; one family
+constant; conformance asserts inclusion, not presence.
+**Since.** 2026-09-16.
+**Origin.** audit-cortex-hooks-2026-09-15 (HIGH; approved by Ron 2026-09-16).
+
+### SC-24 · A transport exemption that never checks the destination
+**Shape.** "Under ssh it is remote, so it is allowed"; "`-H ssh://` means
+another machine". The exemption is keyed on the transport's presence and
+never on where it goes, so `localhost`, `127.0.0.1`, `::1`, the machine's
+own hostname and `ssh://localhost` all earn the remote exemption while acting
+on this host. The refusal text advertises the exemption as the intended
+alternative.
+**Check.** `grep -n "remote = true\|ssh://\|isRemote\|transport" hooks/*.ts`;
+every exemption must classify the destination against a loopback/own-host set
+before it applies. Fixture pairs (`ssh <host> X` vs `ssh localhost X`,
+`-H ssh://<host>` vs `-H ssh://127.0.0.1`) for every rule that carries a
+remote exemption, asserted to differ.
+**Fix form.** Resolve the destination first; loopback and own-hostname are
+local; only then apply the transport exemption.
+**Since.** 2026-09-16.
+**Origin.** audit-cortex-hooks-2026-09-15 (HIGH; approved by Ron 2026-09-16).
+
 ---
 
 ## Proposed additions (from the routine audit; operator approval required)
