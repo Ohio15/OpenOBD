@@ -424,6 +424,13 @@ def compare_table(stock_table: dict[str, Any], tune_table: dict[str, Any],
     dec_map = table_cell_decimals(stock_table)
 
     if shape_s == shape_t:
+        # Row labels the stock grid states (e.g. "1 -> 2 Shift"), so a changed
+        # cell can be reported by what it controls rather than by index.
+        grid = stock_table.get("raw_grid") or []
+        row_labels: list[str | None] = (
+            [normalise_shift_label(row[0] if row else None) for row in grid[1:]]
+            if len(grid) == len(stock_values) + 1 else []
+        )
         cells: list[dict[str, Any]] = []
         compared = uncomparable = artefacts = 0
         for r, (srow, trow) in enumerate(zip(stock_values, tune_values)):
@@ -443,6 +450,9 @@ def compare_table(stock_table: dict[str, Any], tune_table: dict[str, Any],
                     dec = decimals_of_value(sv)
                 cell = _cell_record(sv, tv, dec, row=r, col=c)
                 if cell:
+                    label = row_labels[r] if r < len(row_labels) else None
+                    if label and shape_s[1] == 1:
+                        cell["label"] = label
                     cells.append(cell)
                 elif float(tv) != float(sv):
                     artefacts += 1

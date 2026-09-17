@@ -405,7 +405,8 @@
        "tune24": 35.000674187743584,
        "delta": 2.0006741877435843,
        "pct": 6.062649053768437,
-       "tune24_at_stock_precision": "35"
+       "tune24_at_stock_precision": "35",
+       "label": "1-2"
       },
       {
        "row": 1,
@@ -414,7 +415,8 @@
        "tune24": 57.001097962896694,
        "delta": -7.998902037103306,
        "pct": -12.306003134005087,
-       "tune24_at_stock_precision": "57"
+       "tune24_at_stock_precision": "57",
+       "label": "2-3"
       },
       {
        "row": 2,
@@ -423,7 +425,8 @@
        "tune24": 89.0017143631194,
        "delta": -15.998285636880595,
        "pct": -15.236462511314851,
-       "tune24_at_stock_precision": "89"
+       "tune24_at_stock_precision": "89",
+       "label": "3-4"
       },
       {
        "row": 3,
@@ -432,7 +435,8 @@
        "tune24": 31.000597137715744,
        "delta": 1.0005971377157437,
        "pct": 3.3353237923858123,
-       "tune24_at_stock_precision": "31"
+       "tune24_at_stock_precision": "31",
+       "label": "2-1"
       },
       {
        "row": 4,
@@ -441,7 +445,8 @@
        "tune24": 53.00102091286885,
        "delta": -7.998979087131147,
        "pct": -13.113080470706798,
-       "tune24_at_stock_precision": "53"
+       "tune24_at_stock_precision": "53",
+       "label": "3-2"
       },
       {
        "row": 5,
@@ -450,7 +455,8 @@
        "tune24": 85.00163731309155,
        "delta": -15.99836268690845,
        "pct": -15.839963056344999,
-       "tune24_at_stock_precision": "85"
+       "tune24_at_stock_precision": "85",
+       "label": "4-3"
       }
      ],
      "max_abs_delta": 15.99836268690845,
@@ -568,7 +574,8 @@
      "tune24": 35.000674187743584,
      "delta": 2.0006741877435843,
      "pct": 6.062649053768437,
-     "tune24_at_stock_precision": "35"
+     "tune24_at_stock_precision": "35",
+     "label": "1-2"
     },
     {
      "row": 1,
@@ -577,7 +584,8 @@
      "tune24": 57.001097962896694,
      "delta": -7.998902037103306,
      "pct": -12.306003134005087,
-     "tune24_at_stock_precision": "57"
+     "tune24_at_stock_precision": "57",
+     "label": "2-3"
     },
     {
      "row": 2,
@@ -586,7 +594,8 @@
      "tune24": 89.0017143631194,
      "delta": -15.998285636880595,
      "pct": -15.236462511314851,
-     "tune24_at_stock_precision": "89"
+     "tune24_at_stock_precision": "89",
+     "label": "3-4"
     },
     {
      "row": 3,
@@ -595,7 +604,8 @@
      "tune24": 31.000597137715744,
      "delta": 1.0005971377157437,
      "pct": 3.3353237923858123,
-     "tune24_at_stock_precision": "31"
+     "tune24_at_stock_precision": "31",
+     "label": "2-1"
     },
     {
      "row": 4,
@@ -604,7 +614,8 @@
      "tune24": 53.00102091286885,
      "delta": -7.998979087131147,
      "pct": -13.113080470706798,
-     "tune24_at_stock_precision": "53"
+     "tune24_at_stock_precision": "53",
+     "label": "3-2"
     },
     {
      "row": 5,
@@ -613,7 +624,8 @@
      "tune24": 85.00163731309155,
      "delta": -15.99836268690845,
      "pct": -15.839963056344999,
-     "tune24_at_stock_precision": "85"
+     "tune24_at_stock_precision": "85",
+     "label": "4-3"
     }
    ],
    "status": "changed",
@@ -725,7 +737,8 @@
        "tune24": 31.000597137715744,
        "delta": -5.999402862284256,
        "pct": -16.21460233049799,
-       "tune24_at_stock_precision": "31"
+       "tune24_at_stock_precision": "31",
+       "label": "1-2"
       },
       {
        "row": 1,
@@ -734,7 +747,8 @@
        "tune24": 52.00100165036189,
        "delta": -10.998998349638107,
        "pct": -17.458727539108107,
-       "tune24_at_stock_precision": "52"
+       "tune24_at_stock_precision": "52",
+       "label": "2-3"
       },
       {
        "row": 2,
@@ -743,7 +757,8 @@
        "tune24": 81.00156026306372,
        "delta": -16.998439736936277,
        "pct": -17.34534667034314,
-       "tune24_at_stock_precision": "81"
+       "tune24_at_stock_precision": "81",
+       "label": "3-4"
       },
       {
        "row": 3,
@@ -752,7 +767,8 @@
        "tune24": 24.00046230016703,
        "delta": -4.99953769983297,
        "pct": -17.23978517183783,
-       "tune24_at_stock_precision": "24"
+       "tune24_at_stock_precision": "24",
+       "label": "2-1"
       },
       {
        "row": 4,
@@ -761,7 +777,8 @@
        "tune24": 46.00088607532014,
        "delta": -8.999113924679861,
        "pct": -16.362025317599745,
-       "tune24_at_stock_precision": "46"
+       "tune24_at_stock_precision": "46",
+       "label": "3-2"
       },
       {
        "row": 5,
@@ -770,7 +787,8 @@
        "tune24": 76.00146395052892,
        "delta": -15.998536049471085,
        "pct": -17.389713097251178,
-       "tune24_at_stock_precision": "76"
+       "tune24_at_stock_precision": "76",
+       "label": "4-3"
       }
      ],
      "max_abs_delta": 16.998439736936277,
@@ -888,7 +906,8 @@
      "tune24": 31.000597137715744,
      "delta": -5.999402862284256,
      "pct": -16.21460233049799,
-     "tune24_at_stock_precision": "31"
+     "tune24_at_stock_precision": "31",
+     "label": "1-2"
     },
     {
      "row": 1,
@@ -897,7 +916,8 @@
      "tune24": 52.00100165036189,
      "delta": -10.998998349638107,
      "pct": -17.458727539108107,
-     "tune24_at_stock_precision": "52"
+     "tune24_at_stock_precision": "52",
+     "label": "2-3"
     },
     {
      "row": 2,
@@ -906,7 +926,8 @@
      "tune24": 81.00156026306372,
      "delta": -16.998439736936277,
      "pct": -17.34534667034314,
-     "tune24_at_stock_precision": "81"
+     "tune24_at_stock_precision": "81",
+     "label": "3-4"
     },
     {
      "row": 3,
@@ -915,7 +936,8 @@
      "tune24": 24.00046230016703,
      "delta": -4.99953769983297,
      "pct": -17.23978517183783,
-     "tune24_at_stock_precision": "24"
+     "tune24_at_stock_precision": "24",
+     "label": "2-1"
     },
     {
      "row": 4,
@@ -924,7 +946,8 @@
      "tune24": 46.00088607532014,
      "delta": -8.999113924679861,
      "pct": -16.362025317599745,
-     "tune24_at_stock_precision": "46"
+     "tune24_at_stock_precision": "46",
+     "label": "3-2"
     },
     {
      "row": 5,
@@ -933,7 +956,8 @@
      "tune24": 76.00146395052892,
      "delta": -15.998536049471085,
      "pct": -17.389713097251178,
-     "tune24_at_stock_precision": "76"
+     "tune24_at_stock_precision": "76",
+     "label": "4-3"
     }
    ],
    "status": "changed",
@@ -1045,7 +1069,8 @@
        "tune24": 22.00042377515311,
        "delta": -3.9995762248468907,
        "pct": -15.38298548018035,
-       "tune24_at_stock_precision": "22"
+       "tune24_at_stock_precision": "22",
+       "label": "1-2"
       },
       {
        "row": 1,
@@ -1054,7 +1079,8 @@
        "tune24": 52.00100165036189,
        "delta": -10.998998349638107,
        "pct": -17.458727539108107,
-       "tune24_at_stock_precision": "52"
+       "tune24_at_stock_precision": "52",
+       "label": "2-3"
       },
       {
        "row": 2,
@@ -1063,7 +1089,8 @@
        "tune24": 83.00159878807764,
        "delta": -16.998401211922356,
        "pct": -16.998401211922356,
-       "tune24_at_stock_precision": "83"
+       "tune24_at_stock_precision": "83",
+       "label": "3-4"
       },
       {
        "row": 3,
@@ -1072,7 +1099,8 @@
        "tune24": 17.000327462618312,
        "delta": -3.999672537381688,
        "pct": -19.046059701817562,
-       "tune24_at_stock_precision": "17"
+       "tune24_at_stock_precision": "17",
+       "label": "2-1"
       },
       {
        "row": 4,
@@ -1081,7 +1109,8 @@
        "tune24": 51.00098238785494,
        "delta": -9.99901761214506,
        "pct": -16.391832151057475,
-       "tune24_at_stock_precision": "51"
+       "tune24_at_stock_precision": "51",
+       "label": "3-2"
       },
       {
        "row": 5,
@@ -1090,7 +1119,8 @@
        "tune24": 80.00154100055677,
        "delta": -15.99845899944323,
        "pct": -16.665061457753364,
-       "tune24_at_stock_precision": "80"
+       "tune24_at_stock_precision": "80",
+       "label": "4-3"
       }
      ],
      "max_abs_delta": 16.998401211922356,
@@ -1208,7 +1238,8 @@
      "tune24": 22.00042377515311,
      "delta": -3.9995762248468907,
      "pct": -15.38298548018035,
-     "tune24_at_stock_precision": "22"
+     "tune24_at_stock_precision": "22",
+     "label": "1-2"
     },
     {
      "row": 1,
@@ -1217,7 +1248,8 @@
      "tune24": 52.00100165036189,
      "delta": -10.998998349638107,
      "pct": -17.458727539108107,
-     "tune24_at_stock_precision": "52"
+     "tune24_at_stock_precision": "52",
+     "label": "2-3"
     },
     {
      "row": 2,
@@ -1226,7 +1258,8 @@
      "tune24": 83.00159878807764,
      "delta": -16.998401211922356,
      "pct": -16.998401211922356,
-     "tune24_at_stock_precision": "83"
+     "tune24_at_stock_precision": "83",
+     "label": "3-4"
     },
     {
      "row": 3,
@@ -1235,7 +1268,8 @@
      "tune24": 17.000327462618312,
      "delta": -3.999672537381688,
      "pct": -19.046059701817562,
-     "tune24_at_stock_precision": "17"
+     "tune24_at_stock_precision": "17",
+     "label": "2-1"
     },
     {
      "row": 4,
@@ -1244,7 +1278,8 @@
      "tune24": 51.00098238785494,
      "delta": -9.99901761214506,
      "pct": -16.391832151057475,
-     "tune24_at_stock_precision": "51"
+     "tune24_at_stock_precision": "51",
+     "label": "3-2"
     },
     {
      "row": 5,
@@ -1253,7 +1288,8 @@
      "tune24": 80.00154100055677,
      "delta": -15.99845899944323,
      "pct": -16.665061457753364,
-     "tune24_at_stock_precision": "80"
+     "tune24_at_stock_precision": "80",
+     "label": "4-3"
     }
    ],
    "status": "changed",
@@ -1605,7 +1641,8 @@
        "tune24": 31.000597137715744,
        "delta": -5.999402862284256,
        "pct": -16.21460233049799,
-       "tune24_at_stock_precision": "31"
+       "tune24_at_stock_precision": "31",
+       "label": "1-2"
       },
       {
        "row": 1,
@@ -1614,7 +1651,8 @@
        "tune24": 52.00100165036189,
        "delta": -10.998998349638107,
        "pct": -17.458727539108107,
-       "tune24_at_stock_precision": "52"
+       "tune24_at_stock_precision": "52",
+       "label": "2-3"
       },
       {
        "row": 2,
@@ -1623,7 +1661,8 @@
        "tune24": 87.00167583810548,
        "delta": -17.998324161894516,
        "pct": -17.141261106566205,
-       "tune24_at_stock_precision": "87"
+       "tune24_at_stock_precision": "87",
+       "label": "3-4"
       },
       {
        "row": 3,
@@ -1632,7 +1671,8 @@
        "tune24": 29.000558612701827,
        "delta": -5.999441387298173,
        "pct": -17.14126110656621,
-       "tune24_at_stock_precision": "29"
+       "tune24_at_stock_precision": "29",
+       "label": "2-1"
       },
       {
        "row": 4,
@@ -1641,7 +1681,8 @@
        "tune24": 51.00098238785494,
        "delta": -9.99901761214506,
        "pct": -16.391832151057475,
-       "tune24_at_stock_precision": "51"
+       "tune24_at_stock_precision": "51",
+       "label": "3-2"
       },
       {
        "row": 5,
@@ -1650,7 +1691,8 @@
        "tune24": 84.0016180505846,
        "delta": -16.998381949415403,
        "pct": -16.83008113803505,
-       "tune24_at_stock_precision": "84"
+       "tune24_at_stock_precision": "84",
+       "label": "4-3"
       }
      ],
      "max_abs_delta": 17.998324161894516,
@@ -1768,7 +1810,8 @@
      "tune24": 31.000597137715744,
      "delta": -5.999402862284256,
      "pct": -16.21460233049799,
-     "tune24_at_stock_precision": "31"
+     "tune24_at_stock_precision": "31",
+     "label": "1-2"
     },
     {
      "row": 1,
@@ -1777,7 +1820,8 @@
      "tune24": 52.00100165036189,
      "delta": -10.998998349638107,
      "pct": -17.458727539108107,
-     "tune24_at_stock_precision": "52"
+     "tune24_at_stock_precision": "52",
+     "label": "2-3"
     },
     {
      "row": 2,
@@ -1786,7 +1830,8 @@
      "tune24": 87.00167583810548,
      "delta": -17.998324161894516,
      "pct": -17.141261106566205,
-     "tune24_at_stock_precision": "87"
+     "tune24_at_stock_precision": "87",
+     "label": "3-4"
     },
     {
      "row": 3,
@@ -1795,7 +1840,8 @@
      "tune24": 29.000558612701827,
      "delta": -5.999441387298173,
      "pct": -17.14126110656621,
-     "tune24_at_stock_precision": "29"
+     "tune24_at_stock_precision": "29",
+     "label": "2-1"
     },
     {
      "row": 4,
@@ -1804,7 +1850,8 @@
      "tune24": 51.00098238785494,
      "delta": -9.99901761214506,
      "pct": -16.391832151057475,
-     "tune24_at_stock_precision": "51"
+     "tune24_at_stock_precision": "51",
+     "label": "3-2"
     },
     {
      "row": 5,
@@ -1813,7 +1860,8 @@
      "tune24": 84.0016180505846,
      "delta": -16.998381949415403,
      "pct": -16.83008113803505,
-     "tune24_at_stock_precision": "84"
+     "tune24_at_stock_precision": "84",
+     "label": "4-3"
     }
    ],
    "status": "changed",
@@ -1925,7 +1973,8 @@
        "tune24": 31.000597137715744,
        "delta": -5.999402862284256,
        "pct": -16.21460233049799,
-       "tune24_at_stock_precision": "31"
+       "tune24_at_stock_precision": "31",
+       "label": "1-2"
       },
       {
        "row": 1,
@@ -1934,7 +1983,8 @@
        "tune24": 54.00104017537581,
        "delta": -10.998959824624187,
        "pct": -16.92147665326798,
-       "tune24_at_stock_precision": "54"
+       "tune24_at_stock_precision": "54",
+       "label": "2-3"
       },
       {
        "row": 2,
@@ -1943,7 +1993,8 @@
        "tune24": 87.00167583810548,
        "delta": -17.998324161894516,
        "pct": -17.141261106566205,
-       "tune24_at_stock_precision": "87"
+       "tune24_at_stock_precision": "87",
+       "label": "3-4"
       },
       {
        "row": 3,
@@ -1952,7 +2003,8 @@
        "tune24": 29.000558612701827,
        "delta": -5.999441387298173,
        "pct": -17.14126110656621,
-       "tune24_at_stock_precision": "29"
+       "tune24_at_stock_precision": "29",
+       "label": "2-1"
       },
       {
        "row": 4,
@@ -1961,7 +2013,8 @@
        "tune24": 51.00098238785494,
        "delta": -9.99901761214506,
        "pct": -16.391832151057475,
-       "tune24_at_stock_precision": "51"
+       "tune24_at_stock_precision": "51",
+       "label": "3-2"
       },
       {
        "row": 5,
@@ -1970,7 +2023,8 @@
        "tune24": 84.0016180505846,
        "delta": -16.998381949415403,
        "pct": -16.83008113803505,
-       "tune24_at_stock_precision": "84"
+       "tune24_at_stock_precision": "84",
+       "label": "4-3"
       }
      ],
      "max_abs_delta": 17.998324161894516,
@@ -2088,7 +2142,8 @@
      "tune24": 31.000597137715744,
      "delta": -5.999402862284256,
      "pct": -16.21460233049799,
-     "tune24_at_stock_precision": "31"
+     "tune24_at_stock_precision": "31",
+     "label": "1-2"
     },
     {
      "row": 1,
@@ -2097,7 +2152,8 @@
      "tune24": 54.00104017537581,
      "delta": -10.998959824624187,
      "pct": -16.92147665326798,
-     "tune24_at_stock_precision": "54"
+     "tune24_at_stock_precision": "54",
+     "label": "2-3"
     },
     {
      "row": 2,
@@ -2106,7 +2162,8 @@
      "tune24": 87.00167583810548,
      "delta": -17.998324161894516,
      "pct": -17.141261106566205,
-     "tune24_at_stock_precision": "87"
+     "tune24_at_stock_precision": "87",
+     "label": "3-4"
     },
     {
      "row": 3,
@@ -2115,7 +2172,8 @@
      "tune24": 29.000558612701827,
      "delta": -5.999441387298173,
      "pct": -17.14126110656621,
-     "tune24_at_stock_precision": "29"
+     "tune24_at_stock_precision": "29",
+     "label": "2-1"
     },
     {
      "row": 4,
@@ -2124,7 +2182,8 @@
      "tune24": 51.00098238785494,
      "delta": -9.99901761214506,
      "pct": -16.391832151057475,
-     "tune24_at_stock_precision": "51"
+     "tune24_at_stock_precision": "51",
+     "label": "3-2"
     },
     {
      "row": 5,
@@ -2133,7 +2192,8 @@
      "tune24": 84.0016180505846,
      "delta": -16.998381949415403,
      "pct": -16.83008113803505,
-     "tune24_at_stock_precision": "84"
+     "tune24_at_stock_precision": "84",
+     "label": "4-3"
     }
    ],
    "status": "changed",
