@@ -3,6 +3,24 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.18.2 — 2026-09-26
+
+### Fixed
+- **DTC parser re-scanned inside consumed bytes.** `parse_dtc_response`
+  searched the flattened reply for every `43`, so a 0x43 inside DTC data
+  could start a phantom code. Replaced by `parse_dtc_reply`, which walks each
+  responder's message by its declared structure (mode byte 43/47/4A, count
+  byte, exactly count 2-byte DTCs) and never re-scans. 00 00 pairs and CAN
+  padding beyond the declared length are not DTCs.
+- **Multi-frame replies (more than 2 DTCs on CAN) were misread.** DTC reads
+  now run with ATH1 + ATS0 + ATCAF1 (all confirmed; CAF1 was only the ATZ
+  default before) and `reassemble_isotp` rebuilds each responder's ISO-TP
+  message from its first/consecutive frames, including interleaved frames
+  from several modules. A missing or out-of-order frame, a truncated message,
+  or a count/length mismatch marks THAT module "Incomplete" in the codes
+  table — never a silently short list. Regression fixture: the truck's own
+  reply `7E81008430303050606` / `7E8210700` = P0305, P0606, P0700.
+
 ## 0.18.1 — 2026-09-26
 
 ### Fixed
