@@ -212,6 +212,22 @@ def reply_has_frame_from(resp: str, can_id: str) -> bool:
     return False
 
 
+def parse_frames(resp: str) -> list[tuple[str, str]]:
+    """Headers-on, spaces-off (ATH1 ATS0) single-frame reply -> [(can_id,
+    payload_hex)]. Each flattened token is one frame: 3-hex id, PCI length
+    byte, then that many payload bytes. Tokens that are not well-formed
+    single frames (NO DATA, '?', multi-frame) are skipped, never guessed."""
+    frames = []
+    for tok in resp.upper().split():
+        if len(tok) < 5 or any(c not in "0123456789ABCDEF" for c in tok):
+            continue
+        n = int(tok[3:5], 16)
+        if not 1 <= n <= 7 or len(tok) < 5 + 2 * n:
+            continue
+        frames.append((tok[:3], tok[5:5 + 2 * n]))
+    return frames
+
+
 def parse_atrv(resp: str) -> Optional[float]:
     """ATRV text reply ('12.6V') -> volts, or None when it does not parse.
     None means UNREADABLE, never 'no voltage'."""
@@ -438,23 +454,116 @@ class ObdxGt:
         return out
 
     # -- diagnostics -------------------------------------------------------- #
-    def read_dtcs(self) -> dict:
-        """Stored / pending / permanent DTCs (modes 03 / 07 / 0A)."""
-        out = {}
-        for mode, key in (("03", "stored"), ("07", "pending"),
-                          ("0A", "permanent")):
-            resp = self.command(mode, wait=0.15)
-            out[key] = parse_dtc_response(resp, mode)
-        return out
+    # Addressing for the OBD service modes (decided from this codebase):
+    #   03/07/0A and 04 go FUNCTIONAL (7DF). The DTC parser is built for
+    #   multi-ECU replies (it de-dups across responders), the UI promises to
+    #   read and clear ALL codes, and J1979 defines these as functional
+    #   requests; ECM and TCM both answer 7DF on this truck. On the old
+    #   leftover 7E0 header they only ever reached the ECM.
+    #   0101 readiness goes PHYSICAL to the ECM (7E0): with headers off a
+    #   functional reply interleaves ECUs, and the first '41 01' found could
+    #   be the TCM's. The ECM owns the emissions monitors.
+    DTC_HEADER = "7DF"
+    READINESS_HEADER = "7E0"
+    CLEAR_ACK_FROM = "7E8"      # the ECM must positively acknowledge a clear
 
-    def clear_dtcs(self) -> bool:
-        """Mode 04 — clears codes AND readiness monitors. Caller confirms."""
-        resp = self.command("04", wait=0.4)
-        return "44" in _hexonly(resp)
+    def _prepare(self, header: str, headers_on: bool) -> Optional[str]:
+        """Confirm header, header display and compact formatting. Returns
+        None when ready, else the reason the request must not go out."""
+        if not self._set_header(header):
+            return f"GT refused ATSH{header}; request not sent"
+        if not self._at_checked("ATH1" if headers_on else "ATH0"):
+            return "GT refused the header-display setting; request not sent"
+        if not self._at_checked("ATS0"):
+            return "GT refused ATS0; request not sent"
+        return None
+
+    def _restore_default(self) -> None:
+        """Back to the polling state; each step checked (poll_once repairs a
+        failed header restore before trusting addressing again)."""
+        self._set_header("7E0")
+        self._at_checked("ATH0")
+
+    def read_dtcs(self) -> dict:
+        """Stored / pending / permanent DTCs (modes 03 / 07 / 0A), functional.
+
+        Returns {"examined": bool, "error": str|None, "stored": list|None,
+        "pending": ..., "permanent": ...}. A kind is None (NOT EXAMINED) when
+        its request could not be addressed or nothing answered with the
+        positive response — silence is never reported as 'no codes'."""
+        out: dict = {"examined": False, "error": None, "stored": None,
+                     "pending": None, "permanent": None}
+        try:
+            why = self._prepare(self.DTC_HEADER, headers_on=False)
+            if why:
+                out["error"] = why
+                return out
+            for mode, key in (("03", "stored"), ("07", "pending"),
+                              ("0A", "permanent")):
+                resp = self.command(mode, wait=0.15)
+                rmode = "%02X" % (int(mode, 16) + 0x40)
+                if (is_binary_reply(self.last_raw) or "?" in resp
+                        or rmode not in _hexonly(resp)):
+                    continue                  # no positive answer: unknown
+                out[key] = parse_dtc_response(resp, mode)
+            out["examined"] = any(out[k] is not None for k in
+                                  ("stored", "pending", "permanent"))
+            if not out["examined"]:
+                out["error"] = "no module answered the DTC requests"
+            return out
+        finally:
+            self._restore_default()
+
+    def clear_dtcs(self) -> dict:
+        """Mode 04, functional — clears codes AND readiness monitors in every
+        emissions ECU that accepts it. The CALLER must have confirmed with the
+        user (diagui.clear_codes does, default Cancel).
+
+        Refuses to send 04 at all unless the functional header, header display
+        and formatting are confirmed: a clear on an unverified header could
+        hit the wrong module or 'succeed' without reaching the ECM.
+        Returns {"sent": bool, "cleared": bool, "acked_by": [ids],
+        "rejected_by": {id: nrc}, "error": str|None}. cleared needs a positive
+        44 frame FROM the ECM (7E8) — not a '44' anywhere in the reply."""
+        out: dict = {"sent": False, "cleared": False, "acked_by": [],
+                     "rejected_by": {}, "error": None}
+        try:
+            why = self._prepare(self.DTC_HEADER, headers_on=True)
+            if why:
+                out["error"] = "clear refused: " + why
+                return out
+            out["sent"] = True
+            resp = self.command("04", wait=0.4)
+            if is_binary_reply(self.last_raw):
+                out["error"] = "binary reply to 04 — result unknown"
+                return out
+            for can_id, payload in parse_frames(resp):
+                if payload.startswith("44"):
+                    out["acked_by"].append(can_id)
+                elif payload.startswith("7F04") and len(payload) >= 6:
+                    out["rejected_by"][can_id] = payload[4:6]
+            out["cleared"] = self.CLEAR_ACK_FROM in out["acked_by"]
+            if not out["cleared"]:
+                nrc = out["rejected_by"].get(self.CLEAR_ACK_FROM)
+                out["error"] = (f"ECM rejected the clear (NRC {nrc})" if nrc
+                                else "no positive 44 from the ECM (7E8)")
+            return out
+        finally:
+            self._restore_default()
 
     def readiness(self) -> dict:
-        data = self._extract(self.request_raw("0101"), "0101")
-        return parse_readiness(data or [])
+        """PID 0101 from the ECM (physical 7E0). Returns parse_readiness()'s
+        dict, or {"error": ...} when it could not be examined."""
+        why = self._prepare(self.READINESS_HEADER, headers_on=False)
+        if why:
+            self._restore_default()
+            return {"error": why}
+        resp = self.request_raw("0101")
+        if is_binary_reply(self.last_raw):
+            return {"error": "binary reply to 0101"}
+        data = self._extract(resp, "0101")
+        out = parse_readiness(data or [])
+        return out if out else {"error": "ECM did not answer 0101"}
 
     def scan_network(self) -> dict:
         """One pass over the comms pipeline for the module map:
