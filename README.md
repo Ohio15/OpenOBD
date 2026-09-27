@@ -53,6 +53,11 @@ pyinstaller openobd.spec
 # -> dist/openobd.exe   (single file, windowed, seed bundled)
 ```
 
+The exe carries a Windows version resource generated from
+`openobd/__init__.py`, so an installed copy can be checked without launching
+it: `(Get-Item "$env:LOCALAPPDATA\Programs\OpenOBD\OpenOBD.exe").VersionInfo.ProductVersion`.
+Release history: [CHANGELOG.md](CHANGELOG.md).
+
 ## The workspaces
 
 Five top-level workspaces separate the workflows. **Dashboard** opens first;
@@ -69,7 +74,15 @@ off disk (see *Reading truck-mcp drive logs* below):
   segment where it occurred** — tool link, DLC power, whole-bus, or a single
   silent module. SW-GMLAN modules are amber "unreachable via this path"
   (the ELM HS-CAN path can't open the single-wire bus), which is distinct
-  from red "expected but silent". Click any module for its role and address.
+  from red "expected but silent". Red is only ever painted after a physical
+  ping whose header and receive filter the GT confirmed; if the GT refuses
+  the addressing commands the module is grey "not examined", and absence
+  from the functional broadcast alone never counts as silence. A GT left in
+  its binary J2534 mode by another tool is reported as such (unplug it from
+  USB and the OBD port for 10 s), and an unparseable ATRV is "voltage
+  unreadable", not a power fault. Addresses are the ones measured on this
+  truck: ECM 7E0/7E8, TCM 7E2/7EA, EBCM 243/643, BCM 241/641 (HS; also the
+  SW gateway). Click any module for its role and address.
 * **Codes & Readiness** — stored / pending / permanent DTCs (modes 03/07/0A)
   with decoded SAE codes and common-code descriptions, MIL state and count,
   readiness monitor table, and *Clear Codes* behind a confirmation that

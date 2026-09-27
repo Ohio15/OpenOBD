@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
 import numpy as np
 import pyqtgraph as pg
 
-from . import editops
+from . import __version__, editops
 from .appsettings import app_settings
 from .calspec import Calibration
 from .diagui import DiagnosticsPage
@@ -1525,7 +1525,8 @@ class MainWindow(QMainWindow):
         md = self.cal.metadata
         QMessageBox.information(
             self, "About OpenOBD",
-            "OpenOBD — calibration viewer/editor + log overlay for truck-mcp.\n\n"
+            f"OpenOBD {__version__} — calibration viewer/editor + log "
+            "overlay for truck-mcp.\n\n"
             f"Vehicle: {md.get('vehicle','')}\n"
             f"Controllers: {md.get('controllers','')}\n\n"
             + md.get("safety", ""),

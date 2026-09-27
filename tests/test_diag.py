@@ -48,8 +48,8 @@ def test_parse_readiness():
 
 
 def test_parse_hs_responders():
-    resp = "7E8 06 41 00 BE 3F A8 13  7E9 06 41 00 80 00 00 01"
-    assert parse_hs_responders(resp) == {"7E8", "7E9"}
+    resp = "7E8 06 41 00 BE 3F A8 13  7EA 06 41 00 80 00 00 01"
+    assert parse_hs_responders(resp) == {"7E8", "7EA"}
     assert parse_hs_responders("NO DATA") == set()
 
 
@@ -60,14 +60,15 @@ def scan(port=True, iface=True, volts=12.6, hs=None, pinged=None):
 
 
 def test_localize_healthy():
-    v = localize(scan(hs={"7E8", "7E9"}, pinged={"ebcm": True}))
+    v = localize(scan(hs={"7E8", "7EA"}, pinged={"ebcm": True, "bcm": True}))
     assert v.segments["pc_gt"] == SegStatus.OK
     assert v.segments["gt_dlc"] == SegStatus.OK
     assert v.segments["dlc_hs"] == SegStatus.OK
     assert v.modules["ecm"] == Status.OK
     assert v.modules["tcm"] == Status.OK
     assert v.modules["ebcm"] == Status.OK
-    assert v.modules["bcm"] == Status.UNREACHABLE
+    assert v.modules["bcm"] == Status.OK
+    assert v.modules["ipc"] == Status.UNREACHABLE
     assert v.failure_point is None
 
 
@@ -81,7 +82,7 @@ def test_localize_no_interface():
 
 
 def test_localize_no_dlc_power():
-    v = localize(scan(volts=None))
+    v = localize(scan(volts=0.3))
     assert v.failure_point == "gt_dlc"
     assert v.segments["pc_gt"] == SegStatus.OK
 
@@ -104,7 +105,7 @@ def test_localize_single_module_down():
 def test_module_table_shape():
     hs_mods = [m for m in MODULES if m.bus == HS]
     sw_mods = [m for m in MODULES if m.bus == SW]
-    assert {m.key for m in hs_mods} == {"ecm", "tcm", "ebcm"}
+    assert {m.key for m in hs_mods} == {"ecm", "tcm", "ebcm", "bcm"}
     assert len(sw_mods) >= 5
     for m in hs_mods:
         assert m.req_id and m.resp_id
