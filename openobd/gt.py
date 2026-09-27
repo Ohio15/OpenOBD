@@ -93,30 +93,138 @@ def _hexonly(s: str) -> str:
     return "".join(ch for ch in s.upper() if ch in "0123456789ABCDEF")
 
 
-def parse_dtc_response(resp: str, mode: str) -> list[str]:
-    """Parse an ELM response to mode 03/07/0A into DTC strings. Handles CAN
-    framing (count byte after the response mode) and multi-ECU replies by
-    scanning every occurrence of the response-mode marker."""
+def reassemble_isotp(resp: str) -> dict[str, dict]:
+    """Reassemble ISO-TP messages per responder from a headers-on reply.
+
+    Adapter format this relies on (set in ObdxGt._prepare, confirmed with
+    OK): ATH1 (CAN id shown), ATS0 (no spaces) and ATCAF1 (auto-format on;
+    also the ATZ default in open()). In that mode every CAN frame is one line
+    — '<3-hex id><PCI><data>' — and the reader flattens lines to
+    whitespace-separated tokens, so one token is one frame. The ELM shows the
+    PCI with headers on and trims a consecutive frame to the bytes that
+    remain (seen on the truck 2026-09-26: '7E81008430303050606' then
+    '7E8210700').
+
+    Frames from different responders may interleave; each id gets its own
+    reassembly. Returns {can_id: {"messages": [payload_hex, ...],
+    "errors": [reason, ...]}}. A message whose length does not reach its
+    declared length, a sequence gap, or a CF without an FF is an ERROR for
+    that responder — never a silently short payload."""
+    state: dict[str, dict] = {}
+
+    def mod(cid):
+        return state.setdefault(cid, {"messages": [], "errors": [],
+                                      "_ff": None})
+
+    for tok in resp.upper().split():
+        if len(tok) < 5 or len(tok) % 2 == 0 or any(
+                c not in "0123456789ABCDEF" for c in tok):
+            continue                  # not '<3-hex id><whole bytes>'
+        cid, data = tok[:3], tok[3:]
+        m = mod(cid)
+        kind, low = data[0], int(data[1], 16)
+        if kind == "0":                                   # single frame
+            if m["_ff"] is not None:
+                m["errors"].append("single frame while a multi-frame "
+                                   "message was incomplete")
+                m["_ff"] = None
+            body = data[2:]
+            if low == 0 or len(body) < 2 * low:
+                m["errors"].append(f"single frame shorter than its length "
+                                   f"{low}")
+                continue
+            m["messages"].append(body[:2 * low])
+        elif kind == "1":                                 # first frame
+            if m["_ff"] is not None:
+                m["errors"].append("new first frame before the previous "
+                                   "message completed")
+            if len(data) < 4:
+                m["errors"].append("first frame without a length")
+                m["_ff"] = None
+                continue
+            m["_ff"] = {"len": int(data[1:4], 16), "buf": data[4:], "sn": 1}
+        elif kind == "2":                                 # consecutive frame
+            ff = m["_ff"]
+            if ff is None:
+                m["errors"].append(f"consecutive frame {low} without a "
+                                   "first frame")
+                continue
+            if low != ff["sn"]:
+                m["errors"].append(f"sequence gap: expected frame "
+                                   f"{ff['sn']}, got {low}")
+                m["_ff"] = None
+                continue
+            ff["buf"] += data[2:]
+            ff["sn"] = (ff["sn"] + 1) & 0xF
+        else:
+            continue                  # flow control etc. — not payload
+        ff = m["_ff"]
+        if ff is not None and len(ff["buf"]) >= 2 * ff["len"]:
+            m["messages"].append(ff["buf"][:2 * ff["len"]])
+            m["_ff"] = None
+    for cid, m in state.items():
+        ff = m.pop("_ff")
+        if ff is not None:
+            m["errors"].append(f"truncated: {len(ff['buf']) // 2} of "
+                               f"{ff['len']} bytes")
+    return state
+
+
+def parse_dtc_reply(resp: str, mode: str) -> dict:
+    """Mode 03/07/0A headers-on reply -> per-responder DTC lists.
+
+    Walks each reassembled message by its declared structure: response mode
+    byte (43/47/4A), count byte, then exactly count 2-byte DTCs. Nothing is
+    ever re-scanned, so a 0x43 inside DTC data cannot start a phantom code.
+    A 00 00 pair is not a DTC; bytes beyond the declared length (padding AA/
+    55/00) never reach this walk.
+
+    Returns {"codes": [...] de-duped across responders (order kept),
+    "by_module": {id: [codes]} for responders with a complete answer,
+    "incomplete": {id: reason} for responders whose answer could not be
+    fully read (truncation, gap, count/length mismatch, negative
+    response)}. A responder in "incomplete" is NOT EXAMINED — its codes are
+    unknown, not absent."""
     rmode = "%02X" % (int(mode, 16) + 0x40)
-    s = _hexonly(resp)
-    codes: list[str] = []
-    idx = 0
-    while True:
-        i = s.find(rmode, idx)
-        if i < 0:
-            break
-        rest = s[i + 2:]
-        if len(rest) >= 2:
-            n = int(rest[:2], 16)
-            take = rest[2:2 + n * 4] if n <= 8 else ""
-            for j in range(0, len(take) - 3, 4):
-                b1, b2 = int(take[j:j + 2], 16), int(take[j + 2:j + 4], 16)
+    out = {"codes": [], "by_module": {}, "incomplete": {}}
+    for cid, m in reassemble_isotp(resp).items():
+        if m["errors"]:
+            out["incomplete"][cid] = "; ".join(m["errors"])
+            continue
+        codes: list[str] = []
+        problem = None
+        answered = False              # a complete positive response was walked
+        for msg in m["messages"]:
+            if msg.startswith("7F"):
+                problem = f"negative response 7F {msg[2:4]} {msg[4:6]}"
+                break
+            if not msg.startswith(rmode):
+                continue              # a reply to something else
+            if len(msg) < 4:
+                problem = "response without a count byte"
+                break
+            n = int(msg[2:4], 16)
+            pairs = msg[4:]
+            if len(pairs) != 4 * n:
+                problem = (f"count says {n} DTC(s) but the message carries "
+                           f"{len(pairs) / 4:g}")
+                break
+            for j in range(0, len(pairs), 4):
+                b1, b2 = int(pairs[j:j + 2], 16), int(pairs[j + 2:j + 4], 16)
                 if b1 or b2:
                     codes.append(format_dtc(b1, b2))
-        idx = i + 2
-    # de-dup preserving order (same code from multiple ECUs)
+            answered = True
+        if problem:
+            out["incomplete"][cid] = problem
+        elif answered:
+            out["by_module"][cid] = codes
     seen: set[str] = set()
-    return [c for c in codes if not (c in seen or seen.add(c))]
+    for cid in sorted(out["by_module"]):
+        for c in out["by_module"][cid]:
+            if c not in seen:
+                seen.add(c)
+                out["codes"].append(c)
+    return out
 
 
 # Continuous + non-continuous monitors for spark-ignition, OBD-II PID 01.
@@ -458,6 +566,11 @@ class ObdxGt:
             return "GT refused the header-display setting; request not sent"
         if not self._at_checked("ATS0"):
             return "GT refused ATS0; request not sent"
+        # CAF1 is the ATZ default and nothing in this codebase turns it off,
+        # but the frame parser depends on it (PCI shown, one frame per line,
+        # adapter-driven flow control) — confirm it rather than assume it.
+        if not self._at_checked("ATCAF1"):
+            return "GT refused ATCAF1; request not sent"
         return None
 
     def _restore_default(self) -> None:
@@ -470,24 +583,32 @@ class ObdxGt:
         """Stored / pending / permanent DTCs (modes 03 / 07 / 0A), functional.
 
         Returns {"examined": bool, "error": str|None, "stored": list|None,
-        "pending": ..., "permanent": ...}. A kind is None (NOT EXAMINED) when
-        its request could not be addressed or nothing answered with the
-        positive response — silence is never reported as 'no codes'."""
+        "pending": ..., "permanent": ..., "incomplete": {kind: {id: why}},
+        "by_module": {kind: {id: [codes]}}}. A kind is None (NOT EXAMINED)
+        when its request could not be addressed or no responder gave a
+        complete positive answer — silence is never reported as 'no codes'.
+        A kind can hold codes AND an incomplete entry: some modules read
+        completely, others not; the UI must show both."""
         out: dict = {"examined": False, "error": None, "stored": None,
-                     "pending": None, "permanent": None}
+                     "pending": None, "permanent": None,
+                     "incomplete": {}, "by_module": {}}
         try:
-            why = self._prepare(self.DTC_HEADER, headers_on=False)
+            # headers ON: multi-frame replies are reassembled per responder
+            why = self._prepare(self.DTC_HEADER, headers_on=True)
             if why:
                 out["error"] = why
                 return out
             for mode, key in (("03", "stored"), ("07", "pending"),
                               ("0A", "permanent")):
                 resp = self.command(mode, wait=0.15)
-                rmode = "%02X" % (int(mode, 16) + 0x40)
-                if (is_binary_reply(self.last_raw) or "?" in resp
-                        or rmode not in _hexonly(resp)):
-                    continue                  # no positive answer: unknown
-                out[key] = parse_dtc_response(resp, mode)
+                if is_binary_reply(self.last_raw) or "?" in resp:
+                    continue                  # no usable answer: unknown
+                res = parse_dtc_reply(resp, mode)
+                if res["incomplete"]:
+                    out["incomplete"][key] = res["incomplete"]
+                if res["by_module"]:
+                    out["by_module"][key] = res["by_module"]
+                    out[key] = res["codes"]
             out["examined"] = any(out[k] is not None for k in
                                   ("stored", "pending", "permanent"))
             if not out["examined"]:

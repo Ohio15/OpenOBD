@@ -28,6 +28,21 @@ BINARY_REPLY = b"\x7f\x02A\x01<"
 TRUCK_ROUTES = {"7E0": "7E8", "7E2": "7EA", "243": "643", "241": "641"}
 
 
+def isotp_frames(can_id, payload_hex):
+    """ELM CAF1 + ATH1 + ATS0 rendering of one ISO-TP message: single frame
+    when it fits, else first frame + consecutive frames, the last one trimmed
+    to the remaining bytes (as the truck's GT did: '7E8210700')."""
+    n = len(payload_hex) // 2
+    if n <= 7:
+        return [f"{can_id}{n:02X}{payload_hex}"]
+    frames = [f"{can_id}1{n:03X}{payload_hex[:12]}"]
+    rest, sn = payload_hex[12:], 1
+    while rest:
+        frames.append(f"{can_id}2{sn & 0xF:X}{rest[:14]}")
+        rest, sn = rest[14:], sn + 1
+    return frames
+
+
 class FakeTruckGt:
     """Serial-port double for the OBDX GT on the truck.
 
@@ -45,6 +60,7 @@ class FakeTruckGt:
         self.clear_ack = list(clear_ack)
         self.clear_nrc = dict(clear_nrc or {})
         self.clears_seen = []        # header in force for every 04 received
+        self.dtc_raw = {}            # mode -> exact reply bytes
         self.binary = binary
         self.atrv = atrv
         self.refuse = dict(refuse or {})
@@ -117,9 +133,16 @@ class FakeTruckGt:
                      for cid, body in self.dtcs.get(cmd, {}).items()
                      if self.header == "7DF" or cid == TRUCK_ROUTES.get(
                          self.header)]
+            if cmd in self.dtc_raw:              # exact transcript override
+                return self.dtc_raw[cmd]
             if not lines:
                 return b"NO DATA\r\r>"
-            return b"\r".join(self._line(c, p) for c, p in lines) + b"\r\r>"
+            frames = [f for c, p in lines for f in isotp_frames(c, p)]
+            if not self.headers_on:
+                # headers off: the ELM hides ids + PCI; frames are useless
+                # for attribution (the reader must ask with ATH1)
+                frames = [f[3:] for f in frames]
+            return "\r".join(frames).encode() + b"\r\r>"
         if cmd == "0101":
             if self.header in ("7E0", "7DF"):
                 return self._frame("7E8", "064101000765 00".replace(" ", ""))
@@ -443,3 +466,49 @@ def test_readiness_physical_ecm_and_refusal(make_gt):
     g2 = make_gt(refuse={"ATSH7E0": 2})
     r2 = g2.readiness()
     assert "error" in r2 and "0101" not in g2.ser.sent()
+
+
+# -- 0.18.2: frame-structured DTC reads through the GT -----------------------
+def test_read_dtcs_truck_multiframe_transcript(make_gt):
+    g = make_gt()
+    g.ser.dtc_raw["03"] = b"7E81008430303050606\r7E8210700\r\r>"
+    res = g.read_dtcs()
+    assert res["stored"] == ["P0305", "P0606", "P0700"]
+    assert res["incomplete"] == {}
+    # the parser's format was confirmed, not assumed
+    sent = g.ser.sent()
+    assert sent.index("ATH1") < sent.index("03")
+    assert sent.index("ATCAF1") < sent.index("03")
+
+
+def test_read_dtcs_generated_multiframe_two_modules(make_gt):
+    g = make_gt(dtcs={"03": {"7E8": "03030506060700",
+                             "7EA": "0407110712071307 4A".replace(" ", "")}})
+    res = g.read_dtcs()
+    assert res["by_module"]["stored"]["7EA"] == ["P0711", "P0712", "P0713",
+                                                 "P074A"]
+    assert res["stored"] == ["P0305", "P0606", "P0700", "P0711", "P0712",
+                             "P0713", "P074A"]
+
+
+def test_read_dtcs_truncated_module_is_reported_not_short(make_gt):
+    g = make_gt()
+    g.ser.dtc_raw["03"] = b"7E81008430303050606\r7EA0443010711\r\r>"
+    res = g.read_dtcs()
+    assert res["stored"] == ["P0711"]                 # TCM read completely
+    assert "truncated" in res["incomplete"]["stored"]["7E8"]
+
+
+def test_read_dtcs_all_truncated_is_not_examined(make_gt):
+    g = make_gt()
+    g.ser.dtc_raw["03"] = b"7E81008430303050606\r\r>"
+    res = g.read_dtcs()
+    assert res["stored"] is None
+    assert res["stored"] != []
+
+
+def test_refused_caf_blocks_dtc_read_and_clear(make_gt):
+    g = make_gt(refuse={"ATCAF1": 4})
+    assert g.read_dtcs()["examined"] is False
+    assert g.clear_dtcs()["sent"] is False
+    assert not {"03", "04"} & set(g.ser.sent())

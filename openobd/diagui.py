@@ -385,22 +385,34 @@ class DiagnosticsPage(QWidget):
     def populate_codes(self, dtcs: dict, ready: dict):
         self.dtc_table.setRowCount(0)
         unexamined = []
-        for kind, codes in (("Stored", dtcs.get("stored")),
-                            ("Pending", dtcs.get("pending")),
-                            ("Permanent", dtcs.get("permanent"))):
+        n_codes = 0
+        incomplete = dtcs.get("incomplete", {})
+
+        def unknown_row(kind, text):
+            r = self.dtc_table.rowCount()
+            self.dtc_table.insertRow(r)
+            self.dtc_table.setItem(r, 0, QTableWidgetItem(kind))
+            self.dtc_table.setItem(r, 1, QTableWidgetItem("?"))
+            ni = QTableWidgetItem(text)
+            ni.setForeground(QColor(150, 158, 180))
+            self.dtc_table.setItem(r, 2, ni)
+
+        for kind, key in (("Stored", "stored"), ("Pending", "pending"),
+                          ("Permanent", "permanent")):
+            codes = dtcs.get(key)
+            # a module whose reply could not be read completely: its codes
+            # are UNKNOWN — never let a short list pass as the whole story
+            for cid, why in sorted(incomplete.get(key, {}).items()):
+                unexamined.append(kind)
+                unknown_row(kind, f"Incomplete from {cid} — {why}")
             if codes is None:
                 # not examined is NOT "no codes" — say so on its own row
-                unexamined.append(kind)
-                r = self.dtc_table.rowCount()
-                self.dtc_table.insertRow(r)
-                self.dtc_table.setItem(r, 0, QTableWidgetItem(kind))
-                self.dtc_table.setItem(r, 1, QTableWidgetItem("?"))
-                ni = QTableWidgetItem(
-                    "Not examined — " + (dtcs.get("error")
-                                         or "no module answered"))
-                ni.setForeground(QColor(150, 158, 180))
-                self.dtc_table.setItem(r, 2, ni)
+                if key not in incomplete:
+                    unexamined.append(kind)
+                    unknown_row(kind, "Not examined — " + (
+                        dtcs.get("error") or "no module answered"))
                 continue
+            n_codes += len(codes)
             for code in codes:
                 r = self.dtc_table.rowCount()
                 self.dtc_table.insertRow(r)
@@ -411,7 +423,7 @@ class DiagnosticsPage(QWidget):
                 self.dtc_table.setItem(r, 1, ci)
                 self.dtc_table.setItem(
                     r, 2, QTableWidgetItem(DTC_DESCRIPTIONS.get(code, "")))
-        if self.dtc_table.rowCount() == len(unexamined) < 3:
+        if n_codes == 0 and len(set(unexamined)) < 3:
             # only the kinds that were actually examined can be called clean
             r = self.dtc_table.rowCount()
             self.dtc_table.insertRow(r)
