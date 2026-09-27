@@ -36,7 +36,15 @@ class FakeTruckGt:
     """
 
     def __init__(self, *, binary=False, atrv=b"12.6V", refuse=None,
-                 alive=None, ati=b"ELM327 v2.1", at1=b"OBDX Pro GT"):
+                 alive=None, ati=b"ELM327 v2.1", at1=b"OBDX Pro GT",
+                 dtcs=None, clear_ack=("7E8", "7EA"), clear_nrc=None):
+        # mode -> {responder id: body after the response-mode byte}
+        self.dtcs = {"03": {"7E8": "010300", "7EA": "010711"},
+                     "07": {"7E8": "00"}, "0A": {"7E8": "00"}} \
+            if dtcs is None else dtcs
+        self.clear_ack = list(clear_ack)
+        self.clear_nrc = dict(clear_nrc or {})
+        self.clears_seen = []        # header in force for every 04 received
         self.binary = binary
         self.atrv = atrv
         self.refuse = dict(refuse or {})
@@ -103,6 +111,30 @@ class FakeTruckGt:
             if self.header in ("7DF", "7E0") and "7E8" in self.alive:
                 return self._frame("7E8", "064100BE3FA813")
             return b"NO DATA\r\r>"
+        if cmd in ("03", "07", "0A"):
+            rmode = "%02X" % (int(cmd, 16) + 0x40)
+            lines = [(cid, rmode + body)
+                     for cid, body in self.dtcs.get(cmd, {}).items()
+                     if self.header == "7DF" or cid == TRUCK_ROUTES.get(
+                         self.header)]
+            if not lines:
+                return b"NO DATA\r\r>"
+            return b"\r".join(self._line(c, p) for c, p in lines) + b"\r\r>"
+        if cmd == "0101":
+            if self.header in ("7E0", "7DF"):
+                return self._frame("7E8", "064101000765 00".replace(" ", ""))
+            return b"NO DATA\r\r>"
+        if cmd == "04":
+            self.clears_seen.append(self.header)
+            lines = [(cid, "44") for cid in self.clear_ack
+                     if self.header == "7DF"
+                     or cid == TRUCK_ROUTES.get(self.header)]
+            lines += [(cid, "7F04" + nrc) for cid, nrc in self.clear_nrc.items()]
+            if not lines:
+                return b"NO DATA\r\r>"
+            return b"\r".join(
+                self._line(c, "%02X" % (len(p) // 2) + p) for c, p in lines
+            ) + b"\r\r>"
         if cmd == "3E":
             resp = TRUCK_ROUTES.get(self.header)
             if resp and resp in self.alive and self._passes(resp):
@@ -115,9 +147,11 @@ class FakeTruckGt:
             return can_id.startswith("7E") and can_id[2] in "89ABCDEF"
         return can_id == self.filter
 
+    def _line(self, can_id, payload):
+        return ((can_id + payload) if self.headers_on else payload).encode()
+
     def _frame(self, can_id, payload):
-        line = (can_id + payload) if self.headers_on else payload
-        return line.encode() + b"\r\r>"
+        return self._line(can_id, payload) + b"\r\r>"
 
     def sent(self):
         return [c for c, _ in self.log]
@@ -329,3 +363,83 @@ def test_frame_match_ignores_data_bytes():
     assert not reply_has_frame_from("7E8064300", "643")
     assert not reply_has_frame_from("7E8 06 43 00", "643")
     assert not reply_has_frame_from("NO DATA", "641")
+
+
+# -- follow-up: DTC read / readiness / clear addressing (0.18.1) -------------
+def test_question_mark_on_atsh_before_clear_sends_no_04(make_gt):
+    g = make_gt(refuse={"ATSH7DF": 2})
+    res = g.clear_dtcs()
+    assert "04" not in g.ser.sent()                 # refused to send
+    assert res["sent"] is False and res["cleared"] is False
+    assert "ATSH7DF" in res["error"] and "refused" in res["error"]
+
+
+def test_refused_header_display_also_blocks_clear(make_gt):
+    g = make_gt(refuse={"ATH1": 2})
+    res = g.clear_dtcs()
+    assert "04" not in g.ser.sent() and res["sent"] is False
+
+
+def test_stale_7e0_header_corrected_before_03(make_gt):
+    g = make_gt()
+    g.ser.header, g._header = "7E0", "7E0"          # left by open()/polling
+    res = g.read_dtcs()
+    assert ("03", "7DF") in g.ser.log
+    assert ("03", "7E0") not in g.ser.log
+    assert res["examined"] is True
+    assert res["stored"] == ["P0300", "P0711"]      # TCM's code reached too
+    assert res["pending"] == [] and res["permanent"] == []
+    assert g._header == "7E0" and g.ser.header == "7E0"   # polling restored
+
+
+def test_44_only_from_wrong_id_is_not_success(make_gt):
+    g = make_gt(clear_ack=("7EA",))                 # TCM acks, ECM silent
+    res = g.clear_dtcs()
+    assert res["sent"] is True
+    assert res["acked_by"] == ["7EA"]
+    assert res["cleared"] is False
+    assert "7E8" in res["error"]
+
+
+def test_ecm_negative_response_is_not_success(make_gt):
+    # '44' appears inside other bytes, but the ECM said 7F 04 22
+    g = make_gt(clear_ack=(), clear_nrc={"7E8": "22"})
+    res = g.clear_dtcs()
+    assert res["cleared"] is False
+    assert res["rejected_by"] == {"7E8": "22"}
+    assert "NRC 22" in res["error"]
+
+
+def test_clear_positive_from_ecm_functional(make_gt):
+    g = make_gt()
+    g.ser.header, g._header = "7E0", "7E0"
+    res = g.clear_dtcs()
+    assert g.ser.clears_seen == ["7DF"]
+    assert res["cleared"] is True and set(res["acked_by"]) == {"7E8", "7EA"}
+    assert g._header == "7E0"
+
+
+def test_refused_header_dtcs_not_examined_not_clean(make_gt):
+    g = make_gt(refuse={"ATSH7DF": 2})
+    res = g.read_dtcs()
+    assert res["examined"] is False
+    assert res["stored"] is None and res["pending"] is None
+    assert res["stored"] != []
+    assert not {"03", "07", "0A"} & set(g.ser.sent())
+
+
+def test_no_data_dtc_kind_is_unknown_not_empty(make_gt):
+    g = make_gt(dtcs={"03": {"7E8": "00"}})         # 07/0A: NO DATA
+    res = g.read_dtcs()
+    assert res["stored"] == []
+    assert res["pending"] is None and res["permanent"] is None
+
+
+def test_readiness_physical_ecm_and_refusal(make_gt):
+    g = make_gt()
+    g.ser.header, g._header = "7DF", "7DF"
+    r = g.readiness()
+    assert ("0101", "7E0") in g.ser.log and r["dtc_count"] == 0
+    g2 = make_gt(refuse={"ATSH7E0": 2})
+    r2 = g2.readiness()
+    assert "error" in r2 and "0101" not in g2.ser.sent()

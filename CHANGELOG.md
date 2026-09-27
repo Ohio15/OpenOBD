@@ -3,6 +3,25 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.18.1 — 2026-09-26
+
+### Fixed
+- **DTC read / clear / readiness went out on whatever header was set** (in
+  practice the 7E0 left by `open()`, so only the ECM was read or cleared).
+  Modes 03/07/0A and the 04 clear now set the functional 7DF header — the
+  parser is multi-ECU and the UI promises to clear ALL codes; J1979 defines
+  these as functional. Readiness (0101) goes physical to the ECM (7E0): with
+  headers off a functional reply interleaves ECUs. Every header and format
+  command is checked and retried once.
+- **Clear refuses to send 04** unless the header, header display and
+  formatting are confirmed, and tells the user the clear was not sent.
+- **Clear success needs a positive 44 frame from the ECM (7E8)**, parsed per
+  frame; a 44 from another module or a negative response (7F 04 NRC) is not
+  success, and the dialog says who acknowledged.
+- **Unknown is never "no codes".** A DTC kind that could not be addressed or
+  got no positive answer is shown as "Not examined"; readiness that could not
+  be read shows "MIL: not examined".
+
 ## 0.18.0 — 2026-09-26
 
 Module Map correctness, from running 0.17.0 against the truck (2010 Silverado

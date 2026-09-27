@@ -233,6 +233,16 @@ assert win.diag.dtc_table.rowCount() == 3
 assert win.diag.dtc_table.item(0, 1).text() == "P0300"
 assert "ON" in win.diag.mil_label.text()
 assert win.diag.ready_table.rowCount() > 0
+# not examined must never render as "No trouble codes" / a clean MIL
+win.diag.populate_codes({"examined": False, "error": "GT refused ATSH7DF",
+                         "stored": None, "pending": None, "permanent": None},
+                        {"error": "GT refused ATSH7E0"})
+texts = [win.diag.dtc_table.item(r, 2).text()
+         for r in range(win.diag.dtc_table.rowCount())]
+assert all(t.startswith("Not examined") for t in texts), texts
+assert "No trouble codes" not in texts
+assert "not examined" in win.diag.mil_label.text()
+win.diag.populate_codes(dtcs, ready)
 print("diagnostics OK: map verdict painted,",
       win.diag.dtc_table.rowCount(), "DTC rows,",
       win.diag.ready_table.rowCount(), "monitors")

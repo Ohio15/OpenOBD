@@ -378,15 +378,29 @@ class DiagnosticsPage(QWidget):
             return
         self.clear_btn.setEnabled(False)
         self._pending = "clear"
-        self.job.run(lambda gt: {"cleared": gt.clear_dtcs(),
+        self.job.run(lambda gt: {"clear": gt.clear_dtcs(),
                                  "dtcs": gt.read_dtcs(),
                                  "ready": gt.readiness()})
 
     def populate_codes(self, dtcs: dict, ready: dict):
         self.dtc_table.setRowCount(0)
-        for kind, codes in (("Stored", dtcs.get("stored", [])),
-                            ("Pending", dtcs.get("pending", [])),
-                            ("Permanent", dtcs.get("permanent", []))):
+        unexamined = []
+        for kind, codes in (("Stored", dtcs.get("stored")),
+                            ("Pending", dtcs.get("pending")),
+                            ("Permanent", dtcs.get("permanent"))):
+            if codes is None:
+                # not examined is NOT "no codes" — say so on its own row
+                unexamined.append(kind)
+                r = self.dtc_table.rowCount()
+                self.dtc_table.insertRow(r)
+                self.dtc_table.setItem(r, 0, QTableWidgetItem(kind))
+                self.dtc_table.setItem(r, 1, QTableWidgetItem("?"))
+                ni = QTableWidgetItem(
+                    "Not examined — " + (dtcs.get("error")
+                                         or "no module answered"))
+                ni.setForeground(QColor(150, 158, 180))
+                self.dtc_table.setItem(r, 2, ni)
+                continue
             for code in codes:
                 r = self.dtc_table.rowCount()
                 self.dtc_table.insertRow(r)
@@ -397,10 +411,14 @@ class DiagnosticsPage(QWidget):
                 self.dtc_table.setItem(r, 1, ci)
                 self.dtc_table.setItem(
                     r, 2, QTableWidgetItem(DTC_DESCRIPTIONS.get(code, "")))
-        if self.dtc_table.rowCount() == 0:
-            self.dtc_table.insertRow(0)
-            self.dtc_table.setItem(0, 1, QTableWidgetItem("—"))
-            self.dtc_table.setItem(0, 2, QTableWidgetItem("No trouble codes"))
+        if self.dtc_table.rowCount() == len(unexamined) < 3:
+            # only the kinds that were actually examined can be called clean
+            r = self.dtc_table.rowCount()
+            self.dtc_table.insertRow(r)
+            self.dtc_table.setItem(r, 1, QTableWidgetItem("—"))
+            self.dtc_table.setItem(r, 2, QTableWidgetItem(
+                "No trouble codes" if not unexamined else
+                "No codes in the examined kinds"))
 
         self.ready_table.setRowCount(0)
         for name, complete in ready.get("monitors", []):
@@ -411,7 +429,12 @@ class DiagnosticsPage(QWidget):
             si.setForeground(QColor(96, 190, 120) if complete
                              else QColor(225, 165, 60))
             self.ready_table.setItem(r, 1, si)
-        if ready:
+        if not ready or ready.get("error"):
+            self.mil_label.setText(
+                "MIL: not examined"
+                + (f" — {ready['error']}" if ready.get("error") else ""))
+            self.mil_label.setStyleSheet("color:#969eb4;")
+        else:
             mil = "ON" if ready.get("mil") else "off"
             self.mil_label.setText(
                 f"MIL: {mil}   ·   {ready.get('dtc_count', 0)} code(s)")
@@ -430,8 +453,17 @@ class DiagnosticsPage(QWidget):
             QMessageBox.warning(self, "GT link",
                                 f"Couldn't reach the truck: {error}")
             return
-        if pending == "clear" and not result.get("cleared"):
-            QMessageBox.warning(self, "Clear codes",
-                                "The ECU did not acknowledge the clear "
-                                "request (no 44 response).")
+        if pending == "clear":
+            clr = result.get("clear", {})
+            if not clr.get("sent"):
+                QMessageBox.warning(
+                    self, "Clear codes",
+                    "The clear was NOT sent — nothing was changed.\n\n"
+                    f"{clr.get('error') or 'addressing not confirmed'}")
+            elif not clr.get("cleared"):
+                QMessageBox.warning(
+                    self, "Clear codes",
+                    "The clear was sent but the ECM did not confirm it.\n\n"
+                    f"{clr.get('error')}\nAcknowledged by: "
+                    f"{', '.join(clr.get('acked_by', [])) or 'nobody'}")
         self.populate_codes(result.get("dtcs", {}), result.get("ready", {}))
