@@ -35,6 +35,9 @@ STATUS_COLORS = {
     Status.OK: QColor(60, 170, 95),
     Status.SILENT: QColor(205, 60, 50),
     Status.UNREACHABLE: QColor(205, 150, 45),
+    # grey family: no finding either way. NOT_EXAMINED is a cooler grey so a
+    # refused header reads differently from "never scanned" at a glance.
+    Status.NOT_EXAMINED: QColor(110, 118, 140),
     Status.UNKNOWN: QColor(95, 100, 110),
 }
 SEG_COLORS = {
@@ -206,17 +209,21 @@ class ModuleMapView(QWidget):
                 draw_node(rect, m.name, sub, STATUS_COLORS[st], key=m.key,
                           selected=self.selected == m.key)
 
-        # legend
+        # legend — wraps upward onto a second row when the view is narrow
         lx = 14
+        ly = h - 20
         for st, txt in ((Status.OK, "responding"),
                         (Status.SILENT, "no response"),
                         (Status.UNREACHABLE, "unreachable via this path"),
+                        (Status.NOT_EXAMINED, "not examined"),
                         (Status.UNKNOWN, "not scanned")):
-            p.setBrush(STATUS_COLORS[st]); p.setPen(Qt.NoPen)
-            p.drawRect(QRectF(lx, h - 20, 10, 10))
-            p.setPen(QColor(170, 175, 183))
             tw = p.fontMetrics().horizontalAdvance(txt) + 18
-            p.drawText(QRectF(lx + 14, h - 23, tw, 16),
+            if lx > 14 and lx + 14 + tw > w - 8:
+                lx, ly = 14, ly - 18
+            p.setBrush(STATUS_COLORS[st]); p.setPen(Qt.NoPen)
+            p.drawRect(QRectF(lx, ly, 10, 10))
+            p.setPen(QColor(170, 175, 183))
+            p.drawText(QRectF(lx + 14, ly - 3, tw, 16),
                        Qt.AlignLeft | Qt.AlignVCenter, txt)
             lx += tw + 26
         p.end()
@@ -275,23 +282,7 @@ class DiagnosticsPage(QWidget):
         self.map_status.setText("Scanning the comms pipeline…")
         self._pending = "scan"
 
-        def do_scan(gt):
-            facts = gt.scan_network()
-            pinged = {}
-            for m in vehnet.MODULES:
-                if m.bus != HS or not m.req_id:
-                    continue
-                if m.resp_id in facts["hs_responders"]:
-                    pinged[m.key] = True
-                else:
-                    pinged[m.key] = gt.ping_module(m.req_id, m.resp_id)
-            return ScanResult(
-                port_open=True,
-                interface_alive=facts["interface_alive"],
-                dlc_volts=facts["dlc_volts"],
-                hs_responders=facts["hs_responders"],
-                pinged=pinged)
-        self.job.run(do_scan)
+        self.job.run(vehnet.scan_pipeline)
 
     def _apply_scan(self, result, error):
         self.scan_btn.setEnabled(True)
@@ -303,12 +294,19 @@ class DiagnosticsPage(QWidget):
             self.map_status.setText(f"Scan failed at the tool link: {error}")
         v = vehnet.localize(result)
         self.map_view.set_verdict(v)
-        if error is None:
+        if error is None and v.failure_point == "pc_gt:binary_mode":
+            self.map_status.setText(
+                "⚠ OBDX GT is stuck in binary (J2534) mode — unplug it from "
+                "USB and the OBD port for 10 s, then rescan.")
+        elif error is None:
             volts = (f"{result.dlc_volts:.1f} V"
-                     if result.dlc_volts is not None else "no reading")
+                     if result.dlc_volts is not None else "voltage unreadable")
             ok = sum(1 for s in v.modules.values() if s == Status.OK)
+            unexamined = sum(1 for s in v.modules.values()
+                             if s == Status.NOT_EXAMINED)
             self.map_status.setText(
                 f"Scan complete — DLC {volts}, {ok} module(s) responding."
+                + (f"  {unexamined} not examined." if unexamined else "")
                 + (f"  ⚠ fault at: {v.failure_point}" if v.failure_point
                    else ""))
         self.map_details.setPlainText("\n".join(f"• {n}" for n in v.notes))

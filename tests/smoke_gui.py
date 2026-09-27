@@ -215,7 +215,7 @@ print("live data shared layout OK: hide/re-add syncs both views, "
 from openobd.vehnet import ScanResult, Status, localize  # noqa: E402
 from openobd.gt import parse_dtc_response, parse_readiness  # noqa: E402
 v = localize(ScanResult(port_open=True, interface_alive=True, dlc_volts=12.5,
-                        hs_responders={"7E8", "7E9"},
+                        hs_responders={"7E8", "7EA"},
                         pinged={"ebcm": False}))
 win.diag.map_view.set_verdict(v)
 assert v.modules["ecm"] == Status.OK and v.modules["ebcm"] == Status.SILENT

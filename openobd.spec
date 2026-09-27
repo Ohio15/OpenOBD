@@ -5,7 +5,37 @@
 # Bundles the seed calibration (data/2010_silverado_full.cal.json) so the exe
 # opens on the 2010 Silverado #24 calibration with no external files.
 
+import os
+import re
+
+from PyInstaller.utils.win32.versioninfo import (
+    FixedFileInfo, StringFileInfo, StringStruct, StringTable, VarFileInfo,
+    VarStruct, VSVersionInfo)
+
 block_cipher = None
+
+# Windows version resource, derived from openobd/__init__.py so the installed
+# exe's version is readable at the boundary ((Get-Item exe).VersionInfo)
+# without launching it, and can never drift from the package version.
+with open(os.path.join(SPECPATH, 'openobd', '__init__.py'), encoding='utf-8') as _f:
+    _ver = re.search(r'__version__\s*=\s*"(\d+)\.(\d+)\.(\d+)"', _f.read())
+if not _ver:
+    raise SystemExit('openobd/__init__.py: __version__ must be "X.Y.Z"')
+_vt = tuple(int(x) for x in _ver.groups()) + (0,)
+_vs = '.'.join(_ver.groups())
+version_info = VSVersionInfo(
+    ffi=FixedFileInfo(filevers=_vt, prodvers=_vt),
+    kids=[
+        StringFileInfo([StringTable('040904B0', [
+            StringStruct('CompanyName', 'Ohio15'),
+            StringStruct('FileDescription', 'OpenOBD'),
+            StringStruct('FileVersion', _vs),
+            StringStruct('InternalName', 'openobd'),
+            StringStruct('OriginalFilename', 'openobd.exe'),
+            StringStruct('ProductName', 'OpenOBD'),
+            StringStruct('ProductVersion', _vs)])]),
+        VarFileInfo([VarStruct('Translation', [1033, 1200])]),
+    ])
 
 a = Analysis(
     ['run.py'],
@@ -48,4 +78,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='assets/openobd.ico',
+    version=version_info,
 )

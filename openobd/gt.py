@@ -61,8 +61,8 @@ CANONICAL_KEYS = sorted({v[0] for v in PID_TABLE.values()})
 
 # ---- GM enhanced parameters (mode 22 ReadDataByIdentifier) ----------------- #
 # Confirmed on this truck: the E38 ECM answers mode 22 (22 1940 -> 62 1940 28).
-# The T43 TCM did NOT answer 11-bit physical addressing (7E1) in testing, so
-# trans temp / gear likely need a different bus/address or the GM DID map.
+# The T43 TCM did NOT answer 7E1 in testing because it is not there: on this
+# truck the TCM is 7E2 -> 7EA (see vehnet.MODULES for the capture evidence).
 # Populate DID_TABLE once the GM DID -> parameter + scaling is known; entries
 # are polled and merged into the sample exactly like PIDs. Left EMPTY on purpose
 # so no unverified/guessed values ever reach the gauges.
@@ -168,8 +168,55 @@ def parse_readiness(data: list[int]) -> dict:
 
 
 def parse_hs_responders(resp: str) -> set[str]:
-    """Headers-on broadcast reply -> set of responding CAN ids (7E8..7EF)."""
-    return set(re.findall(r"(7E[89A-F])[0-9A-F]{2}4100", _hexonly(resp)))
+    """Headers-on functional 0100 reply -> set of responding CAN ids
+    (7E8..7EF). Every responder line is collected: the reader flattens the
+    ELM's CR-separated lines into one string, so each '7Ex <PCI> 41 00' is
+    matched wherever it sits. The PCI byte is pinned to a single-frame length
+    (01..07) so data bytes cannot masquerade as a header."""
+    return set(re.findall(r"(7E[89A-F])0[1-7]4100", _hexonly(resp)))
+
+
+def is_binary_reply(raw: bytes) -> bool:
+    """True when a reply to a TEXT command is not text. After a J2534 session
+    the OBDX GT stays in its binary J2534 mode and answers AT commands with
+    binary frames (observed on the truck 2026-09-26: ATI answered with the
+    five bytes 7F 02 41 01 3C). ELM text is printable ASCII plus CR/LF/TAB
+    and the '>' prompt; anything else (DEL 0x7F, control bytes, >= 0x80)
+    means the GT is not speaking ELM."""
+    return any(not (0x20 <= b < 0x7F or b in (0x0D, 0x0A, 0x09)) for b in raw)
+
+
+def is_elm_identity(ati: str, at1: str) -> bool:
+    """Positive identification of an ELM/OBDX text interface: ATI names an
+    ELM327 or AT@1 names the OBDX. Any other bytes are not proof of life."""
+    return "ELM" in ati.upper() or "OBDX" in at1.upper()
+
+
+def at_reply_ok(resp: str) -> bool:
+    """An AT configuration command was accepted: the reply carries OK and no
+    '?' (the ELM's 'unknown/rejected command' answer)."""
+    return "OK" in resp.upper().split() and "?" not in resp
+
+
+def reply_has_frame_from(resp: str, can_id: str) -> bool:
+    """Headers-on reply contains a frame whose CAN id is can_id. Matches frame
+    STARTS only: with spaces off (ATS0) each frame is one token beginning with
+    its id; with spaces on the id is its own 3-char token while data bytes are
+    2-char tokens. A plain substring test would let data bytes fake an id
+    (e.g. '7E8 06 43 ...' contains '643')."""
+    want = can_id.upper()
+    for tok in resp.upper().split():
+        if (len(tok) >= 3 and tok.startswith(want)
+                and all(c in "0123456789ABCDEF" for c in tok)):
+            return True
+    return False
+
+
+def parse_atrv(resp: str) -> Optional[float]:
+    """ATRV text reply ('12.6V') -> volts, or None when it does not parse.
+    None means UNREADABLE, never 'no voltage'."""
+    m = re.fullmatch(r"\s*(\d{1,2}(?:\.\d{1,2})?)\s*V\s*", resp.upper())
+    return float(m.group(1)) if m else None
 
 
 # Common-code descriptions (generic OBD-II; blank when unknown — never guess).
@@ -230,6 +277,14 @@ class ObdxGt:
         self.ser = None
         self.supported: set[str] = set()
         self.device = "?"
+        # The tx header the GT is KNOWN to be using, or None when a header
+        # command was refused and the real header is unknown. Requests whose
+        # meaning depends on addressing must not go out while this is None.
+        self._header: Optional[str] = None
+        # Per-reply read deadline; a binary-mode GT never sends '>' so every
+        # read in that state runs to this deadline.
+        self.read_deadline_s = 1.2
+        self.last_raw = b""
 
     @staticmethod
     def autodetect() -> Optional[str]:
@@ -258,7 +313,7 @@ class ObdxGt:
         except Exception:
             self.device = "OBDX Pro GT"
         self._probe_supported()
-        self.command("ATSH7E0", wait=0.1)  # physical ECM addr for mode-22 DIDs
+        self._set_header("7E0")  # physical ECM addr for mode-22 DIDs
 
     def close(self) -> None:
         if self.ser:
@@ -269,6 +324,9 @@ class ObdxGt:
 
     # -- raw io ------------------------------------------------------------ #
     def command(self, cmd: str, wait: float = 0.0) -> str:
+        """Send one command; returns the reply as flattened text. The raw
+        bytes are kept in self.last_raw so callers can tell a binary-mode
+        reply from ELM text (the lossy decode alone would hide it)."""
         try:
             self.ser.reset_input_buffer()
         except Exception:
@@ -281,9 +339,10 @@ class ObdxGt:
     def request_raw(self, mode_pid: str) -> str:
         return self.command(mode_pid, wait=0.0)
 
-    def _read_to_prompt(self, deadline_s: float = 1.2) -> str:
+    def _read_to_prompt(self, deadline_s: Optional[float] = None) -> str:
         buf = b""
-        end = time.monotonic() + deadline_s
+        end = time.monotonic() + (self.read_deadline_s if deadline_s is None
+                                  else deadline_s)
         while time.monotonic() < end:
             n = getattr(self.ser, "in_waiting", 0)
             if n:
@@ -292,8 +351,30 @@ class ObdxGt:
                     break
             else:
                 time.sleep(0.005)
+        self.last_raw = buf
         return (buf.decode(errors="ignore")
                 .replace("\r", " ").replace("\n", " ").replace(">", " ").strip())
+
+    # -- checked configuration ---------------------------------------------- #
+    def _at_checked(self, cmd: str, wait: float = 0.05) -> bool:
+        """Send an AT config command and confirm the GT accepted it. The real
+        GT intermittently answers '?' (seen: ATH1 -> OK, then ATSH7E0 -> ?),
+        after which the next request silently goes out with the PREVIOUS
+        setting — so every setting a result depends on is checked, and
+        retried once."""
+        for _ in range(2):
+            resp = self.command(cmd, wait=wait)
+            if not is_binary_reply(self.last_raw) and at_reply_ok(resp):
+                return True
+        return False
+
+    def _set_header(self, header: str) -> bool:
+        """Set the tx header and track the header actually in force."""
+        if self._at_checked("ATSH" + header):
+            self._header = header.upper()
+            return True
+        self._header = None
+        return False
 
     # -- pid decode -------------------------------------------------------- #
     @staticmethod
@@ -326,6 +407,11 @@ class ObdxGt:
     def poll_once(self) -> dict:
         out: dict[str, float] = {}
         if not self.ser:
+            return out
+        # Physical ECM addressing is what makes these values ECM values. If a
+        # header command was refused earlier, re-establish it; if the GT still
+        # refuses, report nothing rather than another module's bytes.
+        if self._header != "7E0" and not self._set_header("7E0"):
             return out
         for pid, (key, fn) in PID_TABLE.items():
             if self.supported and pid not in self.supported:
@@ -372,47 +458,101 @@ class ObdxGt:
 
     def scan_network(self) -> dict:
         """One pass over the comms pipeline for the module map:
-        interface -> DLC voltage -> HS broadcast -> per-module physical ping.
-        Returns the raw facts; vehnet.localize() renders the verdict."""
-        facts = {"interface_alive": False, "dlc_volts": None,
-                 "hs_responders": set(), "pinged": {}}
-        if self.command("ATI", wait=0.1):
-            facts["interface_alive"] = True
-        m = re.search(r"([\d.]+)\s*V", self.command("ATRV", wait=0.05))
-        if m:
-            facts["dlc_volts"] = float(m.group(1))
-        # functional broadcast with headers visible
-        self.command("ATH1", wait=0.05)
+        interface -> DLC voltage -> HS functional broadcast. Returns the raw
+        facts; vehnet.scan_pipeline() adds the per-module physical pings and
+        vehnet.localize() renders the verdict.
+
+        interface_alive requires a positively identified ELM/OBDX TEXT reply;
+        binary_mode flags the GT stuck in its J2534 binary mode. dlc_volts is
+        None when ATRV did not parse (unreadable) — that is not 'no voltage'.
+        Broadcast responders are positive evidence only: the GT's ELM layer
+        has been seen returning one line when several modules answer, so an
+        id missing from hs_responders proves nothing."""
+        facts = {"interface_alive": False, "binary_mode": False,
+                 "interface_reply": "", "dlc_volts": None, "dlc_reply": "",
+                 "hs_responders": set(), "bcast_verified": False,
+                 "pinged": {}}
+        ati = self.command("ATI", wait=0.1)
+        if is_binary_reply(self.last_raw):
+            facts["binary_mode"] = True
+            facts["interface_reply"] = repr(self.last_raw)
+            return facts
+        at1 = self.command("AT@1", wait=0.1)
+        if is_binary_reply(self.last_raw):
+            facts["binary_mode"] = True
+            facts["interface_reply"] = repr(self.last_raw)
+            return facts
+        facts["interface_reply"] = f"ATI={ati!r} AT@1={at1!r}"
+        if not is_elm_identity(ati, at1):
+            return facts
+        facts["interface_alive"] = True
+
+        rv = self.command("ATRV", wait=0.05)
+        if is_binary_reply(self.last_raw):
+            facts["dlc_reply"] = repr(self.last_raw)
+        else:
+            facts["dlc_reply"] = rv
+            facts["dlc_volts"] = parse_atrv(rv)
+
+        # Functional broadcast with headers visible. The tx header must be
+        # 7DF: left at 7E0 (open() sets it for DIDs) the "broadcast" is a
+        # physical ECM request and only 7E8 can ever answer.
+        if not self._at_checked("ATH1"):
+            return facts
         try:
-            resp = self.command("0100", wait=0.5)
-            facts["hs_responders"] = parse_hs_responders(resp)
+            facts["bcast_verified"] = self._set_header("7DF")
+            if facts["bcast_verified"]:
+                resp = self.command("0100", wait=0.5)
+                if not is_binary_reply(self.last_raw):
+                    facts["hs_responders"] = parse_hs_responders(resp)
         finally:
-            self.command("ATH0", wait=0.05)
+            self._set_header("7E0")
+            self._at_checked("ATH0")
         return facts
 
-    def ping_module(self, req_id: str, resp_id: str) -> bool:
-        """Physically address one module: TesterPresent ($3E, GMLAN single
-        byte), any reply from its response id counts. Header restored after."""
-        self.command("ATH1", wait=0.05)
-        self.command("ATSH" + req_id, wait=0.05)
+    def ping_module(self, req_id: str, resp_id: str) -> Optional[bool]:
+        """Physically address one module with TesterPresent ($3E, GMLAN
+        single byte); any reply frame from its response id counts (a negative
+        response still proves the module is alive on the bus).
+
+        Returns True (answered); False (the request provably went out on
+        req_id with the receive filter on resp_id and nothing came back); or
+        None — NOT EXAMINED: the GT refused the header/filter setup or the
+        request itself, so silence would say nothing about the module."""
         try:
+            if not (self._at_checked("ATH1")
+                    and self._set_header(req_id)
+                    and self._at_checked("ATCRA" + resp_id)):
+                return None
             resp = self.command("3E", wait=0.25)
-            return resp_id.upper() in _hexonly(resp)
+            if is_binary_reply(self.last_raw) or "?" in resp:
+                return None
+            return reply_has_frame_from(resp, resp_id)
         finally:
-            self.command("ATSH7E0", wait=0.05)
-            self.command("ATH0", wait=0.05)
+            # Restore the automatic receive filter and the ECM header; each
+            # is checked. A failed header restore leaves _header None, which
+            # poll_once / request_did repair (or refuse on) before trusting
+            # addressing again.
+            self._at_checked("ATCRA")
+            self._set_header("7E0")
+            self._at_checked("ATH0")
 
     # -- GM enhanced (mode 22) --------------------------------------------- #
     def request_did(self, did: str, module: Optional[str] = None) -> Optional[list]:
-        """Mode 22 ReadDataByIdentifier. module = 11-bit tx header (e.g. '7E1')
-        to physically address a non-default module; restored to ECM after."""
-        if module:
-            self.command("ATSH" + module, wait=0.05)
+        """Mode 22 ReadDataByIdentifier. module = 11-bit tx header (e.g. '7E2')
+        to physically address a non-default module; restored to ECM after.
+        Returns None when the header cannot be confirmed — a reply to an
+        unverified header could belong to a different module."""
+        target = (module or "7E0").upper()
+        if self._header != target and not self._set_header(target):
+            if target != "7E0":
+                self._set_header("7E0")
+            return None
         try:
             data = self._extract_did(self.command("22" + did, wait=0.0), did)
         finally:
-            if module:
-                self.command("ATSH7E0", wait=0.05)
+            if target != "7E0":
+                self._set_header("7E0")
         return data
 
     @staticmethod
