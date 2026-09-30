@@ -1,4 +1,7 @@
-$port = New-Object System.IO.Ports.SerialPort("COM3", 115200)
+# The OBDX Pro GT by USB VID/PID (0483:5740); never a guessed COM number.
+$gt = @(Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPDeviceID -like 'USB\VID_0483&PID_5740\*' } | ForEach-Object { if ($_.Name -match '\((COM\d+)\)') { $Matches[1] } })
+if ($gt.Count -ne 1) { throw "Expected exactly one OBDX Pro GT (USB 0483:5740), found $($gt.Count): $($gt -join ', ')" }
+$port = New-Object System.IO.Ports.SerialPort($gt[0], 115200)
 $port.ReadTimeout = 500
 $port.Open(); Start-Sleep -Milliseconds 200
 function Cmd($c,$w){ try{$port.DiscardInBuffer()}catch{}; $port.Write($c+"`r"); Start-Sleep -Milliseconds $w; $r=""; try{ while($port.BytesToRead -gt 0){ $r+=[char]$port.ReadChar(); if($r[-1] -eq [char]62){break} } }catch{}; return ($r -replace '[\r\n]','').Trim() }
