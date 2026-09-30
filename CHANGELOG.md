@@ -3,6 +3,15 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.18.3 — 2026-09-30
+
+### Fixed
+- **GT autodetect could pick the wrong adapter** (from main, v0.15.3, PR #2).
+  `ObdxGt.autodetect()` fell back to any USB-serial port, then to the first
+  port at all, so with the GT absent the ELM stream could reach the OBDLink
+  MX+. It now matches USB 0483:5740 only, exactly one device, and `open()`
+  raises naming every port seen. The DID tools no longer hardcode COM3.
+
 ## 0.18.2 — 2026-09-26
 
 ### Fixed
