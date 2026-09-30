@@ -2,6 +2,9 @@
 import sys, time
 sys.path.insert(0, r"D:\Projects\OpenOBD")
 import serial
+from openobd.gt import ObdxGt, describe_no_gt
+PORT = ObdxGt.autodetect()
+if not PORT: sys.exit(describe_no_gt())
 
 DIDS = []
 for ln in open(r"D:\Projects\OpenOBD\tools\ecm_dids.tsv", encoding="ascii"):
@@ -11,7 +14,7 @@ for ln in open(r"D:\Projects\OpenOBD\tools\ecm_dids.tsv", encoding="ascii"):
     if len(p) >= 1 and len(p[0]) == 4:
         DIDS.append(p[0])
 
-s = serial.Serial("COM3", 115200, timeout=0.4)
+s = serial.Serial(PORT, 115200, timeout=0.4)
 time.sleep(0.2)
 def cmd(c, w=0.06):
     s.reset_input_buffer(); s.write((c+"\r").encode()); time.sleep(w)

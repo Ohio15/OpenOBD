@@ -80,6 +80,28 @@ OBDX_VID = 0x0483
 OBDX_PID = 0x5740
 
 
+def find_gt_ports(ports=None) -> list[str]:
+    """COM ports whose USB VID/PID is the OBDX Pro GT's. `ports` defaults to
+    pyserial's live enumeration; tests pass stand-ins."""
+    if ports is None:
+        ports = list(list_ports.comports()) if list_ports else []
+    return [p.device for p in ports
+            if p.vid == OBDX_VID and p.pid == OBDX_PID]
+
+
+def describe_no_gt(ports=None) -> str:
+    """Why autodetect gave up, naming every port seen so the user can pick."""
+    if ports is None:
+        ports = list(list_ports.comports()) if list_ports else []
+    found = find_gt_ports(ports)
+    seen = ", ".join(f"{p.device} ({p.description})" for p in ports) or "none"
+    if len(found) > 1:
+        return (f"More than one OBDX Pro GT found ({', '.join(found)}); "
+                f"pass the port explicitly")
+    return (f"No OBDX Pro GT (USB {OBDX_VID:04X}:{OBDX_PID:04X}) found. "
+            f"Serial ports present: {seen}")
+
+
 # --------------------------------------------------------------------------- #
 # DTC / readiness parsing — pure functions, unit-tested without hardware
 # --------------------------------------------------------------------------- #
@@ -211,16 +233,12 @@ class ObdxGt:
 
     @staticmethod
     def autodetect() -> Optional[str]:
-        if not list_ports:
-            return None
-        ports = list(list_ports.comports())
-        for p in ports:
-            if p.vid == OBDX_VID and p.pid == OBDX_PID:
-                return p.device
-        for p in ports:
-            if "USB Serial" in (p.description or "") or p.vid:
-                return p.device
-        return ports[0].device if ports else None
+        """The GT's COM port, matched by USB VID/PID only. None when there is
+        no GT or more than one: guessing another port would hand the ELM
+        command stream to whatever else is attached (the OBDLink MX+ is also
+        ELM-compatible), so open() fails loudly instead."""
+        found = find_gt_ports()
+        return found[0] if len(found) == 1 else None
 
     # -- lifecycle --------------------------------------------------------- #
     def open(self) -> None:
@@ -229,7 +247,7 @@ class ObdxGt:
         if not self.port_name:
             self.port_name = self.autodetect()
         if not self.port_name:
-            raise RuntimeError("No OBDX Pro GT serial port found")
+            raise RuntimeError(describe_no_gt())
         self.ser = serial.Serial(self.port_name, self.baud, timeout=self.timeout)
         time.sleep(0.2)
         self.command("ATZ", wait=0.9)
