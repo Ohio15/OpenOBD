@@ -162,6 +162,10 @@ class LogReplaySource(DataSource):
 
 
 class GtDataSource(DataSource):
+    #: Consecutive failed polls before every gauge flips to "read failed" and
+    #: latest() stops serving the last good sample (mirrors tmsource FAIL_LIMIT).
+    FAIL_LIMIT = 2
+
     """
     Live source backed by the OBDX Pro GT (openobd.gt.ObdxGt), an ELM327 v2.1
     interface over USB serial. start() opens the transport and spawns a daemon
@@ -189,12 +193,35 @@ class GtDataSource(DataSource):
         self._t0 = None
         self.device = "OBDX Pro GT"
         self.port_name = port
+        # Poll health. The loop used to swallow every exception, so a GT that
+        # stopped answering (USB pulled, adapter wedged) left the Dashboard
+        # frozen on its last values as if live (2026-10-01).
+        self.fail_streak = 0
+        self.last_error: str | None = None
 
     def channels(self):
         return list(self._keys)
 
+    def failing(self) -> bool:
+        return self.fail_streak >= self.FAIL_LIMIT
+
     def latest(self):
-        return self._latest
+        # A failing source serves nothing: a stale sample must not render as
+        # a live value. channel_states() says why.
+        return None if self.failing() else self._latest
+
+    def channel_states(self) -> dict:
+        """Freshness vocabulary the Dashboard already applies to tm sources:
+        every channel "failed" while polls are failing, "fresh" otherwise."""
+        state = "failed" if self.failing() else "fresh"
+        return {k: state for k in self._keys}
+
+    def status_message(self) -> str | None:
+        """One line for the Dashboard status bar while polls are failing."""
+        if not self.failing():
+            return None
+        return (f"GT not answering — {self.fail_streak} polls failed: "
+                f"{self.last_error}")
 
     def drain(self):
         out = []
@@ -233,8 +260,10 @@ class GtDataSource(DataSource):
                     s = Sample(t=time.monotonic() - self._t0, values=vals)
                     self._latest = s
                     self._queue.append(s)
-            except Exception:
-                pass
+                self.fail_streak = 0
+            except Exception as exc:
+                self.fail_streak += 1
+                self.last_error = f"{type(exc).__name__}: {exc}"
             self._stop.wait(self._interval)
 
     def stop(self):

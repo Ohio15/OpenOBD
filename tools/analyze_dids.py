@@ -1,13 +1,14 @@
+import os
 """Correlate ECM mode-22 DIDs against known live OBD values to identify them."""
 import sys, time
-sys.path.insert(0, r"D:\Projects\OpenOBD")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import serial
 from openobd.gt import ObdxGt, describe_no_gt
 PORT = ObdxGt.autodetect()
 if not PORT: sys.exit(describe_no_gt())
 
 DIDS = []
-for ln in open(r"D:\Projects\OpenOBD\tools\ecm_dids.tsv", encoding="ascii"):
+for ln in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ecm_dids.tsv"), encoding="ascii"):
     ln = ln.strip()
     if not ln or ln.startswith("#"): continue
     p = ln.split("\t")

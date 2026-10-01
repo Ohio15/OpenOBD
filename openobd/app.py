@@ -1149,8 +1149,10 @@ class Dashboard(QWidget):
         self.btn_stop.setEnabled(True)
         self.btn_connect.setEnabled(True)
         dev = getattr(src, "device", "OBDX Pro GT")
-        self.status.setText(
+        self._live_status = (
             f"{dev} live — {len(self.gauges)} gauges @ {getattr(src, 'port_name', '')}")
+        self._source_alarm = False
+        self.status.setText(self._live_status)
 
     def _on_gt_error(self, msg):
         self.btn_connect.setEnabled(True)
@@ -1309,6 +1311,16 @@ class Dashboard(QWidget):
         if states is not None:
             for key, g in self.gauges.items():
                 g.set_state(states.get(key))
+        # A source that can say WHY it stopped (the GT poll loop) says so in
+        # the status line; when it recovers, the live caption comes back.
+        msg = (self.source.status_message()
+               if hasattr(self.source, "status_message") else None)
+        if msg:
+            self.status.setText(msg)
+            self._source_alarm = True
+        elif getattr(self, "_source_alarm", False):
+            self._source_alarm = False
+            self.status.setText(getattr(self, "_live_status", ""))
         if not s:
             if states is not None:
                 for key, g in self.gauges.items():

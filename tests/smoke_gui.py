@@ -330,6 +330,27 @@ d._cluster.grab()
 print("dashboard style switch OK: modern <-> classic, source kept bound")
 win.dashboard.stop()
 
+# GT poll health (v0.18.4): a failing GT source flips its gauges to "read
+# failed", serves no frozen value, and says why in the status line; when the
+# polls recover, the live caption comes back. A real GtDataSource, no thread.
+from openobd.transport import GtDataSource  # noqa: E402
+gsrc = GtDataSource()
+gsrc._keys = ["rpm", "voltage"]
+win.dashboard._on_gt_ready(gsrc)
+win.dashboard.timer.stop()
+live_caption = win.dashboard.status.text()
+assert "live" in live_caption
+gsrc.fail_streak, gsrc.last_error = 2, "OSError: port gone"
+win.dashboard._tick()
+assert "GT not answering" in win.dashboard.status.text(), win.dashboard.status.text()
+assert "OSError: port gone" in win.dashboard.status.text()
+assert win.dashboard.gauges["rpm"].state == "failed"
+gsrc.fail_streak = 0
+win.dashboard._tick()
+assert win.dashboard.status.text() == live_caption, "live caption not restored"
+assert win.dashboard.gauges["rpm"].state == "fresh"
+print("GT poll health OK: failed state + reason shown, live caption restored")
+
 # recording path: drain-based, streamed to a temp CSV (bypass the save dialog)
 import tempfile, csv as _csv  # noqa: E402
 # speed chosen so the 19.9s log does NOT loop during ~0.16s of ticking

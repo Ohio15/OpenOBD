@@ -1,6 +1,6 @@
 import json, os, sys, glob, re
-HERE = r"C:\Users\ohio_\hpt_extract"
-ROOT = r"D:\Projects\OpenOBD"
+HERE = os.environ.get("OPENOBD_HPT_EXTRACT", os.path.join(os.path.expanduser("~"), "hpt_extract"))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from openobd.calspec import Axis, Table, Scalar, Calibration
 TUNE = os.path.join(HERE, "tune24_read"); STOCK = os.path.join(HERE, "stock_read")

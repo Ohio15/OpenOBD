@@ -12,7 +12,7 @@ k32 = ctypes.windll.kernel32
 try: u32.SetProcessDPIAware()
 except Exception: pass
 ENV = dict(os.environ); ENV.pop("PYTHONHOME", None)
-PY = r"C:\Python314\python.exe"
+PY = sys.executable
 
 VK_CTRL=0x11; VK_A=0x41; VK_DOWN=0x28; VK_RETURN=0x0D
 
