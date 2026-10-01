@@ -23,12 +23,20 @@ will implement. No vendor software, no subscriptions, no `.hpt` encryption.
 
 ## Install & run (dev)
 
+The toolchain is pinned in-repo: `pyproject.toml` + `uv.lock` (Python 3.13,
+see `.python-version`). `uv run --frozen` creates/refreshes `.venv` from the
+lock on every call.
+
 ```bash
 cd OpenOBD
-python -m pip install -r requirements.txt
-python -m openobd            # opens on the seeded 2010 Silverado #24 cal
-# or: python run.py path/to/other.cal.json
+uv sync --frozen
+uv run --frozen python -m openobd    # opens on the seeded 2010 Silverado #24 cal
+# or: uv run --frozen python run.py path/to/other.cal.json
 ```
+
+`requirements.txt` is generated from the lock
+(`uv export --frozen --no-hashes --format requirements-txt -o requirements.txt`)
+for plain-pip installs; regenerate it whenever `uv.lock` changes.
 
 Regenerate the seed calibration from the change-sheet source:
 
@@ -39,17 +47,20 @@ python -m openobd.seed_2010_silverado    # -> data/2010_silverado_24.cal.json
 Run the tests:
 
 ```bash
-python -m pytest tests/ -q                # headless core (calspec + logbin)
-QT_QPA_PLATFORM=offscreen python tests/smoke_gui.py   # GUI smoke
+uv run --frozen pytest -q --fail-on-skip   # unit suite; any skip fails the run
+uv run --frozen python tests/smoke_gui.py  # GUI smoke (offscreen, isolated settings)
 ```
+
+`conftest.py` and the smoke script force `QT_QPA_PLATFORM=offscreen`, so no
+display is needed. The same three commands back `.cortex/stability.json`.
 
 ## Build the Windows exe
 
 On the Windows box, from the repo root:
 
 ```bash
-python -m pip install -r requirements.txt
-pyinstaller openobd.spec
+uv sync --frozen
+uv run --frozen pyinstaller --noconfirm --clean openobd.spec
 # -> dist/openobd.exe   (single file, windowed, seed bundled)
 ```
 

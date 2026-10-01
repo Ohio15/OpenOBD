@@ -1,0 +1,28 @@
+[project]
+name = "openobd"
+# Keep in sync with openobd/__init__.py __version__.
+version = "0.15.4"
+description = "Calibration viewer/editor + log overlay for truck-mcp (2010 Silverado E38/T43)"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "PySide6>=6.6",
+    "pyserial>=3.5",
+    "pyqtgraph>=0.13",
+    # required since v0.4.0 (pyqtgraph charting); do not exclude
+    "numpy>=1.26",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pyinstaller>=6.0",
+]
+
+[tool.uv]
+# Application, not a library: uv manages the env from uv.lock without
+# building/installing openobd itself (run from the repo root).
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

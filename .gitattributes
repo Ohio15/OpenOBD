@@ -1,0 +1,4 @@
+# Stability manifest bytes are pinned by sha256 in the operator's ~/.cortex/hooks.json
+# (stability_manifest_sha256). core.autocrlf=true would check it out as CRLF
+# and silently un-pin it, so it is pinned to LF (cortex-hooks ADR 0016 convention).
+.cortex/stability.json text eol=lf

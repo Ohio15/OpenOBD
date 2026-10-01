@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "build": "uv sync --frozen && uv run --frozen python -m compileall -q openobd tools run.py && uv run --frozen pyinstaller --noconfirm --clean openobd.spec",
+  "test": "uv run --frozen pytest -q --fail-on-skip",
+  "health": "uv run --frozen python tests/smoke_gui.py",
+  "base": "origin/main"
+}
