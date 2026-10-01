@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from openobd.gt import (format_dtc, parse_dtc_response, parse_readiness,
+from openobd.gt import (format_dtc, parse_dtc_reply, parse_readiness,
                         parse_hs_responders)
 from openobd.vehnet import (ScanResult, Status, SegStatus, localize, MODULES,
                             HS, SW)
@@ -20,16 +20,20 @@ def test_format_dtc():
     assert format_dtc(0x11, 0x23) == "P1123"
 
 
-def test_parse_dtc_response_can():
-    # CAN: 43 <count> <pairs>; ELM output collapsed to hex-ish text
-    assert parse_dtc_response("43 02 03 00 01 71", "03") == ["P0300", "P0171"]
-    assert parse_dtc_response("4300", "03") == []
-    assert parse_dtc_response("NO DATA", "03") == []
+def test_parse_dtc_reply_can():
+    # ATH1 ATS0 CAF1: '<id><PCI><43 count pairs>' one frame per line
+    r = parse_dtc_reply("7E80643020300 0171", "03")
+    assert r["codes"] == [] and "7E8" in r["incomplete"]   # split frame
+    r = parse_dtc_reply("7E806430203000171", "03")
+    assert r["codes"] == ["P0300", "P0171"]
+    assert parse_dtc_reply("7E8024300", "03")["by_module"] == {"7E8": []}
+    nd = parse_dtc_reply("NO DATA", "03")
+    assert nd["codes"] == [] and nd["by_module"] == {} and not nd["incomplete"]
     # two ECUs answering, overlapping codes de-duped
-    two = "43 01 07 00 43 01 07 00"
-    assert parse_dtc_response(two, "03") == ["P0700"]
+    two = "7E80443010700 7EA0443010700"
+    assert parse_dtc_reply(two, "03")["codes"] == ["P0700"]
     # pending mode marker
-    assert parse_dtc_response("47 01 03 01", "07") == ["P0301"]
+    assert parse_dtc_reply("7E80447010301", "07")["codes"] == ["P0301"]
 
 
 def test_parse_readiness():
@@ -48,8 +52,8 @@ def test_parse_readiness():
 
 
 def test_parse_hs_responders():
-    resp = "7E8 06 41 00 BE 3F A8 13  7E9 06 41 00 80 00 00 01"
-    assert parse_hs_responders(resp) == {"7E8", "7E9"}
+    resp = "7E8 06 41 00 BE 3F A8 13  7EA 06 41 00 80 00 00 01"
+    assert parse_hs_responders(resp) == {"7E8", "7EA"}
     assert parse_hs_responders("NO DATA") == set()
 
 
@@ -60,14 +64,15 @@ def scan(port=True, iface=True, volts=12.6, hs=None, pinged=None):
 
 
 def test_localize_healthy():
-    v = localize(scan(hs={"7E8", "7E9"}, pinged={"ebcm": True}))
+    v = localize(scan(hs={"7E8", "7EA"}, pinged={"ebcm": True, "bcm": True}))
     assert v.segments["pc_gt"] == SegStatus.OK
     assert v.segments["gt_dlc"] == SegStatus.OK
     assert v.segments["dlc_hs"] == SegStatus.OK
     assert v.modules["ecm"] == Status.OK
     assert v.modules["tcm"] == Status.OK
     assert v.modules["ebcm"] == Status.OK
-    assert v.modules["bcm"] == Status.UNREACHABLE
+    assert v.modules["bcm"] == Status.OK
+    assert v.modules["ipc"] == Status.UNREACHABLE
     assert v.failure_point is None
 
 
@@ -81,7 +86,7 @@ def test_localize_no_interface():
 
 
 def test_localize_no_dlc_power():
-    v = localize(scan(volts=None))
+    v = localize(scan(volts=0.3))
     assert v.failure_point == "gt_dlc"
     assert v.segments["pc_gt"] == SegStatus.OK
 
@@ -104,7 +109,7 @@ def test_localize_single_module_down():
 def test_module_table_shape():
     hs_mods = [m for m in MODULES if m.bus == HS]
     sw_mods = [m for m in MODULES if m.bus == SW]
-    assert {m.key for m in hs_mods} == {"ecm", "tcm", "ebcm"}
+    assert {m.key for m in hs_mods} == {"ecm", "tcm", "ebcm", "bcm"}
     assert len(sw_mods) >= 5
     for m in hs_mods:
         assert m.req_id and m.resp_id

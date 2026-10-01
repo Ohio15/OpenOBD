@@ -61,8 +61,8 @@ CANONICAL_KEYS = sorted({v[0] for v in PID_TABLE.values()})
 
 # ---- GM enhanced parameters (mode 22 ReadDataByIdentifier) ----------------- #
 # Confirmed on this truck: the E38 ECM answers mode 22 (22 1940 -> 62 1940 28).
-# The T43 TCM did NOT answer 11-bit physical addressing (7E1) in testing, so
-# trans temp / gear likely need a different bus/address or the GM DID map.
+# The T43 TCM did NOT answer 7E1 in testing because it is not there: on this
+# truck the TCM is 7E2 -> 7EA (see vehnet.MODULES for the capture evidence).
 # Populate DID_TABLE once the GM DID -> parameter + scaling is known; entries
 # are polled and merged into the sample exactly like PIDs. Left EMPTY on purpose
 # so no unverified/guessed values ever reach the gauges.
@@ -115,30 +115,138 @@ def _hexonly(s: str) -> str:
     return "".join(ch for ch in s.upper() if ch in "0123456789ABCDEF")
 
 
-def parse_dtc_response(resp: str, mode: str) -> list[str]:
-    """Parse an ELM response to mode 03/07/0A into DTC strings. Handles CAN
-    framing (count byte after the response mode) and multi-ECU replies by
-    scanning every occurrence of the response-mode marker."""
+def reassemble_isotp(resp: str) -> dict[str, dict]:
+    """Reassemble ISO-TP messages per responder from a headers-on reply.
+
+    Adapter format this relies on (set in ObdxGt._prepare, confirmed with
+    OK): ATH1 (CAN id shown), ATS0 (no spaces) and ATCAF1 (auto-format on;
+    also the ATZ default in open()). In that mode every CAN frame is one line
+    — '<3-hex id><PCI><data>' — and the reader flattens lines to
+    whitespace-separated tokens, so one token is one frame. The ELM shows the
+    PCI with headers on and trims a consecutive frame to the bytes that
+    remain (seen on the truck 2026-09-26: '7E81008430303050606' then
+    '7E8210700').
+
+    Frames from different responders may interleave; each id gets its own
+    reassembly. Returns {can_id: {"messages": [payload_hex, ...],
+    "errors": [reason, ...]}}. A message whose length does not reach its
+    declared length, a sequence gap, or a CF without an FF is an ERROR for
+    that responder — never a silently short payload."""
+    state: dict[str, dict] = {}
+
+    def mod(cid):
+        return state.setdefault(cid, {"messages": [], "errors": [],
+                                      "_ff": None})
+
+    for tok in resp.upper().split():
+        if len(tok) < 5 or len(tok) % 2 == 0 or any(
+                c not in "0123456789ABCDEF" for c in tok):
+            continue                  # not '<3-hex id><whole bytes>'
+        cid, data = tok[:3], tok[3:]
+        m = mod(cid)
+        kind, low = data[0], int(data[1], 16)
+        if kind == "0":                                   # single frame
+            if m["_ff"] is not None:
+                m["errors"].append("single frame while a multi-frame "
+                                   "message was incomplete")
+                m["_ff"] = None
+            body = data[2:]
+            if low == 0 or len(body) < 2 * low:
+                m["errors"].append(f"single frame shorter than its length "
+                                   f"{low}")
+                continue
+            m["messages"].append(body[:2 * low])
+        elif kind == "1":                                 # first frame
+            if m["_ff"] is not None:
+                m["errors"].append("new first frame before the previous "
+                                   "message completed")
+            if len(data) < 4:
+                m["errors"].append("first frame without a length")
+                m["_ff"] = None
+                continue
+            m["_ff"] = {"len": int(data[1:4], 16), "buf": data[4:], "sn": 1}
+        elif kind == "2":                                 # consecutive frame
+            ff = m["_ff"]
+            if ff is None:
+                m["errors"].append(f"consecutive frame {low} without a "
+                                   "first frame")
+                continue
+            if low != ff["sn"]:
+                m["errors"].append(f"sequence gap: expected frame "
+                                   f"{ff['sn']}, got {low}")
+                m["_ff"] = None
+                continue
+            ff["buf"] += data[2:]
+            ff["sn"] = (ff["sn"] + 1) & 0xF
+        else:
+            continue                  # flow control etc. — not payload
+        ff = m["_ff"]
+        if ff is not None and len(ff["buf"]) >= 2 * ff["len"]:
+            m["messages"].append(ff["buf"][:2 * ff["len"]])
+            m["_ff"] = None
+    for cid, m in state.items():
+        ff = m.pop("_ff")
+        if ff is not None:
+            m["errors"].append(f"truncated: {len(ff['buf']) // 2} of "
+                               f"{ff['len']} bytes")
+    return state
+
+
+def parse_dtc_reply(resp: str, mode: str) -> dict:
+    """Mode 03/07/0A headers-on reply -> per-responder DTC lists.
+
+    Walks each reassembled message by its declared structure: response mode
+    byte (43/47/4A), count byte, then exactly count 2-byte DTCs. Nothing is
+    ever re-scanned, so a 0x43 inside DTC data cannot start a phantom code.
+    A 00 00 pair is not a DTC; bytes beyond the declared length (padding AA/
+    55/00) never reach this walk.
+
+    Returns {"codes": [...] de-duped across responders (order kept),
+    "by_module": {id: [codes]} for responders with a complete answer,
+    "incomplete": {id: reason} for responders whose answer could not be
+    fully read (truncation, gap, count/length mismatch, negative
+    response)}. A responder in "incomplete" is NOT EXAMINED — its codes are
+    unknown, not absent."""
     rmode = "%02X" % (int(mode, 16) + 0x40)
-    s = _hexonly(resp)
-    codes: list[str] = []
-    idx = 0
-    while True:
-        i = s.find(rmode, idx)
-        if i < 0:
-            break
-        rest = s[i + 2:]
-        if len(rest) >= 2:
-            n = int(rest[:2], 16)
-            take = rest[2:2 + n * 4] if n <= 8 else ""
-            for j in range(0, len(take) - 3, 4):
-                b1, b2 = int(take[j:j + 2], 16), int(take[j + 2:j + 4], 16)
+    out = {"codes": [], "by_module": {}, "incomplete": {}}
+    for cid, m in reassemble_isotp(resp).items():
+        if m["errors"]:
+            out["incomplete"][cid] = "; ".join(m["errors"])
+            continue
+        codes: list[str] = []
+        problem = None
+        answered = False              # a complete positive response was walked
+        for msg in m["messages"]:
+            if msg.startswith("7F"):
+                problem = f"negative response 7F {msg[2:4]} {msg[4:6]}"
+                break
+            if not msg.startswith(rmode):
+                continue              # a reply to something else
+            if len(msg) < 4:
+                problem = "response without a count byte"
+                break
+            n = int(msg[2:4], 16)
+            pairs = msg[4:]
+            if len(pairs) != 4 * n:
+                problem = (f"count says {n} DTC(s) but the message carries "
+                           f"{len(pairs) / 4:g}")
+                break
+            for j in range(0, len(pairs), 4):
+                b1, b2 = int(pairs[j:j + 2], 16), int(pairs[j + 2:j + 4], 16)
                 if b1 or b2:
                     codes.append(format_dtc(b1, b2))
-        idx = i + 2
-    # de-dup preserving order (same code from multiple ECUs)
+            answered = True
+        if problem:
+            out["incomplete"][cid] = problem
+        elif answered:
+            out["by_module"][cid] = codes
     seen: set[str] = set()
-    return [c for c in codes if not (c in seen or seen.add(c))]
+    for cid in sorted(out["by_module"]):
+        for c in out["by_module"][cid]:
+            if c not in seen:
+                seen.add(c)
+                out["codes"].append(c)
+    return out
 
 
 # Continuous + non-continuous monitors for spark-ignition, OBD-II PID 01.
@@ -168,8 +276,71 @@ def parse_readiness(data: list[int]) -> dict:
 
 
 def parse_hs_responders(resp: str) -> set[str]:
-    """Headers-on broadcast reply -> set of responding CAN ids (7E8..7EF)."""
-    return set(re.findall(r"(7E[89A-F])[0-9A-F]{2}4100", _hexonly(resp)))
+    """Headers-on functional 0100 reply -> set of responding CAN ids
+    (7E8..7EF). Every responder line is collected: the reader flattens the
+    ELM's CR-separated lines into one string, so each '7Ex <PCI> 41 00' is
+    matched wherever it sits. The PCI byte is pinned to a single-frame length
+    (01..07) so data bytes cannot masquerade as a header."""
+    return set(re.findall(r"(7E[89A-F])0[1-7]4100", _hexonly(resp)))
+
+
+def is_binary_reply(raw: bytes) -> bool:
+    """True when a reply to a TEXT command is not text. After a J2534 session
+    the OBDX GT stays in its binary J2534 mode and answers AT commands with
+    binary frames (observed on the truck 2026-09-26: ATI answered with the
+    five bytes 7F 02 41 01 3C). ELM text is printable ASCII plus CR/LF/TAB
+    and the '>' prompt; anything else (DEL 0x7F, control bytes, >= 0x80)
+    means the GT is not speaking ELM."""
+    return any(not (0x20 <= b < 0x7F or b in (0x0D, 0x0A, 0x09)) for b in raw)
+
+
+def is_elm_identity(ati: str, at1: str) -> bool:
+    """Positive identification of an ELM/OBDX text interface: ATI names an
+    ELM327 or AT@1 names the OBDX. Any other bytes are not proof of life."""
+    return "ELM" in ati.upper() or "OBDX" in at1.upper()
+
+
+def at_reply_ok(resp: str) -> bool:
+    """An AT configuration command was accepted: the reply carries OK and no
+    '?' (the ELM's 'unknown/rejected command' answer)."""
+    return "OK" in resp.upper().split() and "?" not in resp
+
+
+def reply_has_frame_from(resp: str, can_id: str) -> bool:
+    """Headers-on reply contains a frame whose CAN id is can_id. Matches frame
+    STARTS only: with spaces off (ATS0) each frame is one token beginning with
+    its id; with spaces on the id is its own 3-char token while data bytes are
+    2-char tokens. A plain substring test would let data bytes fake an id
+    (e.g. '7E8 06 43 ...' contains '643')."""
+    want = can_id.upper()
+    for tok in resp.upper().split():
+        if (len(tok) >= 3 and tok.startswith(want)
+                and all(c in "0123456789ABCDEF" for c in tok)):
+            return True
+    return False
+
+
+def parse_frames(resp: str) -> list[tuple[str, str]]:
+    """Headers-on, spaces-off (ATH1 ATS0) single-frame reply -> [(can_id,
+    payload_hex)]. Each flattened token is one frame: 3-hex id, PCI length
+    byte, then that many payload bytes. Tokens that are not well-formed
+    single frames (NO DATA, '?', multi-frame) are skipped, never guessed."""
+    frames = []
+    for tok in resp.upper().split():
+        if len(tok) < 5 or any(c not in "0123456789ABCDEF" for c in tok):
+            continue
+        n = int(tok[3:5], 16)
+        if not 1 <= n <= 7 or len(tok) < 5 + 2 * n:
+            continue
+        frames.append((tok[:3], tok[5:5 + 2 * n]))
+    return frames
+
+
+def parse_atrv(resp: str) -> Optional[float]:
+    """ATRV text reply ('12.6V') -> volts, or None when it does not parse.
+    None means UNREADABLE, never 'no voltage'."""
+    m = re.fullmatch(r"\s*(\d{1,2}(?:\.\d{1,2})?)\s*V\s*", resp.upper())
+    return float(m.group(1)) if m else None
 
 
 # Common-code descriptions (generic OBD-II; blank when unknown — never guess).
@@ -230,6 +401,14 @@ class ObdxGt:
         self.ser = None
         self.supported: set[str] = set()
         self.device = "?"
+        # The tx header the GT is KNOWN to be using, or None when a header
+        # command was refused and the real header is unknown. Requests whose
+        # meaning depends on addressing must not go out while this is None.
+        self._header: Optional[str] = None
+        # Per-reply read deadline; a binary-mode GT never sends '>' so every
+        # read in that state runs to this deadline.
+        self.read_deadline_s = 1.2
+        self.last_raw = b""
 
     @staticmethod
     def autodetect() -> Optional[str]:
@@ -258,7 +437,7 @@ class ObdxGt:
         except Exception:
             self.device = "OBDX Pro GT"
         self._probe_supported()
-        self.command("ATSH7E0", wait=0.1)  # physical ECM addr for mode-22 DIDs
+        self._set_header("7E0")  # physical ECM addr for mode-22 DIDs
 
     def close(self) -> None:
         if self.ser:
@@ -269,6 +448,9 @@ class ObdxGt:
 
     # -- raw io ------------------------------------------------------------ #
     def command(self, cmd: str, wait: float = 0.0) -> str:
+        """Send one command; returns the reply as flattened text. The raw
+        bytes are kept in self.last_raw so callers can tell a binary-mode
+        reply from ELM text (the lossy decode alone would hide it)."""
         try:
             self.ser.reset_input_buffer()
         except Exception:
@@ -281,9 +463,10 @@ class ObdxGt:
     def request_raw(self, mode_pid: str) -> str:
         return self.command(mode_pid, wait=0.0)
 
-    def _read_to_prompt(self, deadline_s: float = 1.2) -> str:
+    def _read_to_prompt(self, deadline_s: Optional[float] = None) -> str:
         buf = b""
-        end = time.monotonic() + deadline_s
+        end = time.monotonic() + (self.read_deadline_s if deadline_s is None
+                                  else deadline_s)
         while time.monotonic() < end:
             n = getattr(self.ser, "in_waiting", 0)
             if n:
@@ -292,8 +475,30 @@ class ObdxGt:
                     break
             else:
                 time.sleep(0.005)
+        self.last_raw = buf
         return (buf.decode(errors="ignore")
                 .replace("\r", " ").replace("\n", " ").replace(">", " ").strip())
+
+    # -- checked configuration ---------------------------------------------- #
+    def _at_checked(self, cmd: str, wait: float = 0.05) -> bool:
+        """Send an AT config command and confirm the GT accepted it. The real
+        GT intermittently answers '?' (seen: ATH1 -> OK, then ATSH7E0 -> ?),
+        after which the next request silently goes out with the PREVIOUS
+        setting — so every setting a result depends on is checked, and
+        retried once."""
+        for _ in range(2):
+            resp = self.command(cmd, wait=wait)
+            if not is_binary_reply(self.last_raw) and at_reply_ok(resp):
+                return True
+        return False
+
+    def _set_header(self, header: str) -> bool:
+        """Set the tx header and track the header actually in force."""
+        if self._at_checked("ATSH" + header):
+            self._header = header.upper()
+            return True
+        self._header = None
+        return False
 
     # -- pid decode -------------------------------------------------------- #
     @staticmethod
@@ -327,6 +532,11 @@ class ObdxGt:
         out: dict[str, float] = {}
         if not self.ser:
             return out
+        # Physical ECM addressing is what makes these values ECM values. If a
+        # header command was refused earlier, re-establish it; if the GT still
+        # refuses, report nothing rather than another module's bytes.
+        if self._header != "7E0" and not self._set_header("7E0"):
+            return out
         for pid, (key, fn) in PID_TABLE.items():
             if self.supported and pid not in self.supported:
                 continue
@@ -352,67 +562,227 @@ class ObdxGt:
         return out
 
     # -- diagnostics -------------------------------------------------------- #
-    def read_dtcs(self) -> dict:
-        """Stored / pending / permanent DTCs (modes 03 / 07 / 0A)."""
-        out = {}
-        for mode, key in (("03", "stored"), ("07", "pending"),
-                          ("0A", "permanent")):
-            resp = self.command(mode, wait=0.15)
-            out[key] = parse_dtc_response(resp, mode)
-        return out
+    # Addressing for the OBD service modes (decided from this codebase):
+    #   03/07/0A and 04 go FUNCTIONAL (7DF). The DTC parser is built for
+    #   multi-ECU replies (it de-dups across responders), the UI promises to
+    #   read and clear ALL codes, and J1979 defines these as functional
+    #   requests; ECM and TCM both answer 7DF on this truck. On the old
+    #   leftover 7E0 header they only ever reached the ECM.
+    #   0101 readiness goes PHYSICAL to the ECM (7E0): with headers off a
+    #   functional reply interleaves ECUs, and the first '41 01' found could
+    #   be the TCM's. The ECM owns the emissions monitors.
+    DTC_HEADER = "7DF"
+    READINESS_HEADER = "7E0"
+    CLEAR_ACK_FROM = "7E8"      # the ECM must positively acknowledge a clear
 
-    def clear_dtcs(self) -> bool:
-        """Mode 04 — clears codes AND readiness monitors. Caller confirms."""
-        resp = self.command("04", wait=0.4)
-        return "44" in _hexonly(resp)
+    def _prepare(self, header: str, headers_on: bool) -> Optional[str]:
+        """Confirm header, header display and compact formatting. Returns
+        None when ready, else the reason the request must not go out."""
+        if not self._set_header(header):
+            return f"GT refused ATSH{header}; request not sent"
+        if not self._at_checked("ATH1" if headers_on else "ATH0"):
+            return "GT refused the header-display setting; request not sent"
+        if not self._at_checked("ATS0"):
+            return "GT refused ATS0; request not sent"
+        # CAF1 is the ATZ default and nothing in this codebase turns it off,
+        # but the frame parser depends on it (PCI shown, one frame per line,
+        # adapter-driven flow control) — confirm it rather than assume it.
+        if not self._at_checked("ATCAF1"):
+            return "GT refused ATCAF1; request not sent"
+        return None
+
+    def _restore_default(self) -> None:
+        """Back to the polling state; each step checked (poll_once repairs a
+        failed header restore before trusting addressing again)."""
+        self._set_header("7E0")
+        self._at_checked("ATH0")
+
+    def read_dtcs(self) -> dict:
+        """Stored / pending / permanent DTCs (modes 03 / 07 / 0A), functional.
+
+        Returns {"examined": bool, "error": str|None, "stored": list|None,
+        "pending": ..., "permanent": ..., "incomplete": {kind: {id: why}},
+        "by_module": {kind: {id: [codes]}}}. A kind is None (NOT EXAMINED)
+        when its request could not be addressed or no responder gave a
+        complete positive answer — silence is never reported as 'no codes'.
+        A kind can hold codes AND an incomplete entry: some modules read
+        completely, others not; the UI must show both."""
+        out: dict = {"examined": False, "error": None, "stored": None,
+                     "pending": None, "permanent": None,
+                     "incomplete": {}, "by_module": {}}
+        try:
+            # headers ON: multi-frame replies are reassembled per responder
+            why = self._prepare(self.DTC_HEADER, headers_on=True)
+            if why:
+                out["error"] = why
+                return out
+            for mode, key in (("03", "stored"), ("07", "pending"),
+                              ("0A", "permanent")):
+                resp = self.command(mode, wait=0.15)
+                if is_binary_reply(self.last_raw) or "?" in resp:
+                    continue                  # no usable answer: unknown
+                res = parse_dtc_reply(resp, mode)
+                if res["incomplete"]:
+                    out["incomplete"][key] = res["incomplete"]
+                if res["by_module"]:
+                    out["by_module"][key] = res["by_module"]
+                    out[key] = res["codes"]
+            out["examined"] = any(out[k] is not None for k in
+                                  ("stored", "pending", "permanent"))
+            if not out["examined"]:
+                out["error"] = "no module answered the DTC requests"
+            return out
+        finally:
+            self._restore_default()
+
+    def clear_dtcs(self) -> dict:
+        """Mode 04, functional — clears codes AND readiness monitors in every
+        emissions ECU that accepts it. The CALLER must have confirmed with the
+        user (diagui.clear_codes does, default Cancel).
+
+        Refuses to send 04 at all unless the functional header, header display
+        and formatting are confirmed: a clear on an unverified header could
+        hit the wrong module or 'succeed' without reaching the ECM.
+        Returns {"sent": bool, "cleared": bool, "acked_by": [ids],
+        "rejected_by": {id: nrc}, "error": str|None}. cleared needs a positive
+        44 frame FROM the ECM (7E8) — not a '44' anywhere in the reply."""
+        out: dict = {"sent": False, "cleared": False, "acked_by": [],
+                     "rejected_by": {}, "error": None}
+        try:
+            why = self._prepare(self.DTC_HEADER, headers_on=True)
+            if why:
+                out["error"] = "clear refused: " + why
+                return out
+            out["sent"] = True
+            resp = self.command("04", wait=0.4)
+            if is_binary_reply(self.last_raw):
+                out["error"] = "binary reply to 04 — result unknown"
+                return out
+            for can_id, payload in parse_frames(resp):
+                if payload.startswith("44"):
+                    out["acked_by"].append(can_id)
+                elif payload.startswith("7F04") and len(payload) >= 6:
+                    out["rejected_by"][can_id] = payload[4:6]
+            out["cleared"] = self.CLEAR_ACK_FROM in out["acked_by"]
+            if not out["cleared"]:
+                nrc = out["rejected_by"].get(self.CLEAR_ACK_FROM)
+                out["error"] = (f"ECM rejected the clear (NRC {nrc})" if nrc
+                                else "no positive 44 from the ECM (7E8)")
+            return out
+        finally:
+            self._restore_default()
 
     def readiness(self) -> dict:
-        data = self._extract(self.request_raw("0101"), "0101")
-        return parse_readiness(data or [])
+        """PID 0101 from the ECM (physical 7E0). Returns parse_readiness()'s
+        dict, or {"error": ...} when it could not be examined."""
+        why = self._prepare(self.READINESS_HEADER, headers_on=False)
+        if why:
+            self._restore_default()
+            return {"error": why}
+        resp = self.request_raw("0101")
+        if is_binary_reply(self.last_raw):
+            return {"error": "binary reply to 0101"}
+        data = self._extract(resp, "0101")
+        out = parse_readiness(data or [])
+        return out if out else {"error": "ECM did not answer 0101"}
 
     def scan_network(self) -> dict:
         """One pass over the comms pipeline for the module map:
-        interface -> DLC voltage -> HS broadcast -> per-module physical ping.
-        Returns the raw facts; vehnet.localize() renders the verdict."""
-        facts = {"interface_alive": False, "dlc_volts": None,
-                 "hs_responders": set(), "pinged": {}}
-        if self.command("ATI", wait=0.1):
-            facts["interface_alive"] = True
-        m = re.search(r"([\d.]+)\s*V", self.command("ATRV", wait=0.05))
-        if m:
-            facts["dlc_volts"] = float(m.group(1))
-        # functional broadcast with headers visible
-        self.command("ATH1", wait=0.05)
+        interface -> DLC voltage -> HS functional broadcast. Returns the raw
+        facts; vehnet.scan_pipeline() adds the per-module physical pings and
+        vehnet.localize() renders the verdict.
+
+        interface_alive requires a positively identified ELM/OBDX TEXT reply;
+        binary_mode flags the GT stuck in its J2534 binary mode. dlc_volts is
+        None when ATRV did not parse (unreadable) — that is not 'no voltage'.
+        Broadcast responders are positive evidence only: the GT's ELM layer
+        has been seen returning one line when several modules answer, so an
+        id missing from hs_responders proves nothing."""
+        facts = {"interface_alive": False, "binary_mode": False,
+                 "interface_reply": "", "dlc_volts": None, "dlc_reply": "",
+                 "hs_responders": set(), "bcast_verified": False,
+                 "pinged": {}}
+        ati = self.command("ATI", wait=0.1)
+        if is_binary_reply(self.last_raw):
+            facts["binary_mode"] = True
+            facts["interface_reply"] = repr(self.last_raw)
+            return facts
+        at1 = self.command("AT@1", wait=0.1)
+        if is_binary_reply(self.last_raw):
+            facts["binary_mode"] = True
+            facts["interface_reply"] = repr(self.last_raw)
+            return facts
+        facts["interface_reply"] = f"ATI={ati!r} AT@1={at1!r}"
+        if not is_elm_identity(ati, at1):
+            return facts
+        facts["interface_alive"] = True
+
+        rv = self.command("ATRV", wait=0.05)
+        if is_binary_reply(self.last_raw):
+            facts["dlc_reply"] = repr(self.last_raw)
+        else:
+            facts["dlc_reply"] = rv
+            facts["dlc_volts"] = parse_atrv(rv)
+
+        # Functional broadcast with headers visible. The tx header must be
+        # 7DF: left at 7E0 (open() sets it for DIDs) the "broadcast" is a
+        # physical ECM request and only 7E8 can ever answer.
+        if not self._at_checked("ATH1"):
+            return facts
         try:
-            resp = self.command("0100", wait=0.5)
-            facts["hs_responders"] = parse_hs_responders(resp)
+            facts["bcast_verified"] = self._set_header("7DF")
+            if facts["bcast_verified"]:
+                resp = self.command("0100", wait=0.5)
+                if not is_binary_reply(self.last_raw):
+                    facts["hs_responders"] = parse_hs_responders(resp)
         finally:
-            self.command("ATH0", wait=0.05)
+            self._set_header("7E0")
+            self._at_checked("ATH0")
         return facts
 
-    def ping_module(self, req_id: str, resp_id: str) -> bool:
-        """Physically address one module: TesterPresent ($3E, GMLAN single
-        byte), any reply from its response id counts. Header restored after."""
-        self.command("ATH1", wait=0.05)
-        self.command("ATSH" + req_id, wait=0.05)
+    def ping_module(self, req_id: str, resp_id: str) -> Optional[bool]:
+        """Physically address one module with TesterPresent ($3E, GMLAN
+        single byte); any reply frame from its response id counts (a negative
+        response still proves the module is alive on the bus).
+
+        Returns True (answered); False (the request provably went out on
+        req_id with the receive filter on resp_id and nothing came back); or
+        None — NOT EXAMINED: the GT refused the header/filter setup or the
+        request itself, so silence would say nothing about the module."""
         try:
+            if not (self._at_checked("ATH1")
+                    and self._set_header(req_id)
+                    and self._at_checked("ATCRA" + resp_id)):
+                return None
             resp = self.command("3E", wait=0.25)
-            return resp_id.upper() in _hexonly(resp)
+            if is_binary_reply(self.last_raw) or "?" in resp:
+                return None
+            return reply_has_frame_from(resp, resp_id)
         finally:
-            self.command("ATSH7E0", wait=0.05)
-            self.command("ATH0", wait=0.05)
+            # Restore the automatic receive filter and the ECM header; each
+            # is checked. A failed header restore leaves _header None, which
+            # poll_once / request_did repair (or refuse on) before trusting
+            # addressing again.
+            self._at_checked("ATCRA")
+            self._set_header("7E0")
+            self._at_checked("ATH0")
 
     # -- GM enhanced (mode 22) --------------------------------------------- #
     def request_did(self, did: str, module: Optional[str] = None) -> Optional[list]:
-        """Mode 22 ReadDataByIdentifier. module = 11-bit tx header (e.g. '7E1')
-        to physically address a non-default module; restored to ECM after."""
-        if module:
-            self.command("ATSH" + module, wait=0.05)
+        """Mode 22 ReadDataByIdentifier. module = 11-bit tx header (e.g. '7E2')
+        to physically address a non-default module; restored to ECM after.
+        Returns None when the header cannot be confirmed — a reply to an
+        unverified header could belong to a different module."""
+        target = (module or "7E0").upper()
+        if self._header != target and not self._set_header(target):
+            if target != "7E0":
+                self._set_header("7E0")
+            return None
         try:
             data = self._extract_did(self.command("22" + did, wait=0.0), did)
         finally:
-            if module:
-                self.command("ATSH7E0", wait=0.05)
+            if target != "7E0":
+                self._set_header("7E0")
         return data
 
     @staticmethod

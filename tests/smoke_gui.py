@@ -213,9 +213,9 @@ print("live data shared layout OK: hide/re-add syncs both views, "
 # diagnostics: module map verdict rendering + codes table population using
 # REAL parser output from synthetic ELM strings (no hardware)
 from openobd.vehnet import ScanResult, Status, localize  # noqa: E402
-from openobd.gt import parse_dtc_response, parse_readiness  # noqa: E402
+from openobd.gt import parse_dtc_reply, parse_readiness  # noqa: E402
 v = localize(ScanResult(port_open=True, interface_alive=True, dlc_volts=12.5,
-                        hs_responders={"7E8", "7E9"},
+                        hs_responders={"7E8", "7EA"},
                         pinged={"ebcm": False}))
 win.diag.map_view.set_verdict(v)
 assert v.modules["ecm"] == Status.OK and v.modules["ebcm"] == Status.SILENT
@@ -224,8 +224,8 @@ win.diag.map_view.grab()  # paints without error
 win.diag._show_module("ebcm")
 assert "EBCM" in win.diag.map_details.toPlainText()
 
-dtcs = {"stored": parse_dtc_response("43 02 03 00 01 71", "03"),
-        "pending": parse_dtc_response("47 01 07 00", "07"),
+dtcs = {"stored": parse_dtc_reply("7E806430203000171", "03")["codes"],
+        "pending": parse_dtc_reply("7E80447010700", "07")["codes"],
         "permanent": []}
 ready = parse_readiness([0x82, 0x07, 0xFF, 0x04])
 win.diag.populate_codes(dtcs, ready)
@@ -233,6 +233,26 @@ assert win.diag.dtc_table.rowCount() == 3
 assert win.diag.dtc_table.item(0, 1).text() == "P0300"
 assert "ON" in win.diag.mil_label.text()
 assert win.diag.ready_table.rowCount() > 0
+# not examined must never render as "No trouble codes" / a clean MIL
+win.diag.populate_codes({"examined": False, "error": "GT refused ATSH7DF",
+                         "stored": None, "pending": None, "permanent": None},
+                        {"error": "GT refused ATSH7E0"})
+texts = [win.diag.dtc_table.item(r, 2).text()
+         for r in range(win.diag.dtc_table.rowCount())]
+assert all(t.startswith("Not examined") for t in texts), texts
+assert "No trouble codes" not in texts
+assert "not examined" in win.diag.mil_label.text()
+# a module whose multi-frame reply was truncated shows as Incomplete, and
+# the kinds never collapse to "No trouble codes"
+win.diag.populate_codes({"examined": True, "stored": ["P0711"],
+                         "pending": [], "permanent": [],
+                         "incomplete": {"stored": {"7E8": "truncated: 6 of 8 bytes"}}},
+                        ready)
+texts = [win.diag.dtc_table.item(r, 2).text()
+         for r in range(win.diag.dtc_table.rowCount())]
+assert any(t.startswith("Incomplete from 7E8") for t in texts), texts
+assert "No trouble codes" not in texts
+win.diag.populate_codes(dtcs, ready)
 print("diagnostics OK: map verdict painted,",
       win.diag.dtc_table.rowCount(), "DTC rows,",
       win.diag.ready_table.rowCount(), "monitors")
