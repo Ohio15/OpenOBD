@@ -4,7 +4,7 @@ from openobd.gt import ObdxGt, describe_no_gt
 PORT = ObdxGt.autodetect()
 if not PORT: sys.exit(describe_no_gt())
 out = sys.argv[1]
-DIDS = [l.split("\t")[0] for l in open(r"D:\Projects\OpenOBD\tools\ecm_dids.tsv")
+DIDS = [l.split("\t")[0] for l in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ecm_dids.tsv"))
         if l.strip() and not l.startswith("#") and len(l.split("\t")[0]) == 4]
 s = serial.Serial(PORT, 115200, timeout=0.4); time.sleep(0.2)
 def cmd(c, w=0.05):

@@ -7,8 +7,8 @@ log's trims / knock / shift points; and drives a live gauge dashboard.
 
 It is the **UI layer of the truck-mcp own-app suite** — it reads the same
 calibration model the `wot_analyzer` / `hpl_bridge` modules produce, and its
-dashboard reads from the same transport seam `gt.py` (the OBDX Pro GT port)
-will implement. No vendor software, no subscriptions, no `.hpt` encryption.
+dashboard drives the OBDX Pro GT live through the same `DataSource` seam it
+uses for replay. No vendor software, no subscriptions, no `.hpt` encryption.
 
 ## What it is (and isn't)
 
@@ -39,7 +39,7 @@ python -m openobd.seed_2010_silverado    # -> data/2010_silverado_24.cal.json
 Run the tests:
 
 ```bash
-python -m pytest tests/ -q                # headless core (calspec + logbin)
+python -m pytest tests/ -q                # headless suite: no Qt, no hardware
 QT_QPA_PLATFORM=offscreen python tests/smoke_gui.py   # GUI smoke
 ```
 
@@ -91,6 +91,28 @@ off disk (see *Reading truck-mcp drive logs* below):
 Diagnostics shares the dashboard's live GT connection (gauge polling pauses
 around each diagnostic exchange) or opens its own link if nothing is
 connected.
+
+## Live from the OBDX Pro GT
+
+**Dashboard → 🔌 Connect GT Pro** (or launch with `--gt`) polls the ECM through the
+OBDX Pro GT's ELM327 text mode. The GT is found by its USB id (0483:5740) and
+nothing else: with no GT, or two, the connect fails and names every serial
+port it saw, rather than guessing a port that might be the OBDLink MX+.
+
+* **Identified before it is configured.** After any pass-thru session (an
+  e38flash read, HP Tuners, a sniff) the GT stays in its binary pass-thru mode
+  and answers text commands with binary frames. Connect refuses that state
+  with the one fix known to work: **unplug the GT's USB cable (and the OBD
+  plug) for 10 s and plug it back in**. Cycling the vehicle or the DLC alone
+  does not reset it, because the GT is USB-powered. A reply that is text but
+  not an ELM327/OBDX is refused too.
+* **A GT that stops answering is shown as failed.** After two failed polls in
+  a row every gauge reads *read failed*, no last value is shown as if it were
+  live, and the status line says why. It returns to live on the next good
+  poll.
+* Battery voltage comes from mode 01 PID 42, or from the GT's own ATRV when
+  the ECM does not report it. ATRV is parsed strictly, so a garbled reply
+  leaves the gauge empty rather than inventing a number.
 
 ## Reading truck-mcp drive logs
 
@@ -164,13 +186,24 @@ openobd/
                  table binning (overlay), regime/knock analysis, shift detection   [stdlib only]
   editops.py     selection math / interpolation / TSV clipboard as pure
                  change-map planners (the GUI wraps them in undo commands)         [stdlib only]
-  transport.py   DataSource seam: LogReplaySource now, GtDataSource stub for gt.py [stdlib only]
+  coalesce.py    merge N reference cals into one best cal with provenance           [stdlib only]
+  transport.py   DataSource seam: LogReplaySource, GtDataSource (live, over gt.py)  [stdlib only]
+  gt.py          OBDX Pro GT over ELM327 text: detect, identify, poll, DTCs, scan  [pyserial]
+  vehnet.py      the truck's module map + the staged comms-fault localizer         [stdlib only]
   tmstore.py     read truck-mcp *.tmsession.db drive logs; five-state display rule [stdlib only]
+  tmsource.py    a truck-mcp drive log as a Dashboard DataSource (live or replay)   [stdlib only]
+  chanlayout.py  Live Data channel selection + grouping model                      [stdlib only]
   ctljournal.py  read truck-mcp's control journal (outstanding activations)        [stdlib only]
   seed_2010_silverado.py   builds the #24 seed calibration from the change sheet
+  j2534.py       SAE pass-thru client for the GT (full capability, including
+                 pin-switched buses). Not used by the app; kept for the SW-GMLAN
+                 work the ELM text path cannot reach                               [ctypes]
+  appsettings.py the one QSettings constructor                                      [PySide6]
   model.py       Qt table model + heatmap delegate                                 [PySide6]
   livedata.py    Live Data + Active Tests workspaces over tmstore/ctljournal       [PySide6]
-  app.py         main window / tabs / file ops                                     [PySide6]
+  stripchart.py  Chart vs. Time view over a truck-mcp session                       [PySide6]
+  diagui.py      Diagnostics workspace: Module Map + Codes & Readiness             [PySide6]
+  app.py         main window / workspaces / dashboard / file ops                   [PySide6]
 data/            the seed .cal.json
 tests/           headless unit tests + offscreen GUI smoke
 ```
@@ -184,7 +217,8 @@ truck-mcp's CLI tools and fully unit-tested without Qt. Only `model.py` /
 * `logbin.analyze_log` / `detect_shift_points` / `bin_log_to_table` are the
   concrete `wot_analyzer` the GT spec calls for — reuse them from the CLI.
 * `transport.DataSource` is the dashboard side of the `ElmTransport` seam;
-  `gt.py`'s live source implements `channels()/latest()/start()/stop()`.
+  `GtDataSource` implements `channels()/latest()/start()/stop()` over
+  `gt.ObdxGt`, plus `channel_states()` / `status_message()` for poll health.
 * `.cal.json` is the interchange format between this editor and any future
   read/flash path — a Phase 3 calibration read populates the *real* breakpoint
   tables (VE, spark, torque) into the same model, and the overlays light up.

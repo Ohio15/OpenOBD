@@ -56,16 +56,13 @@ PID_TABLE = {
     "52": ("ethanol",      lambda b: b[0] * 100.0 / 255.0),        # %
 }
 
-# canonical keys this transport can ever surface (for gauge pre-build)
-CANONICAL_KEYS = sorted({v[0] for v in PID_TABLE.values()})
-
 # ---- GM enhanced parameters (mode 22 ReadDataByIdentifier) ----------------- #
 # Confirmed on this truck: the E38 ECM answers mode 22 (22 1940 -> 62 1940 28).
 # The T43 TCM did NOT answer 7E1 in testing because it is not there: on this
 # truck the TCM is 7E2 -> 7EA (see vehnet.MODULES for the capture evidence).
-# Populate DID_TABLE once the GM DID -> parameter + scaling is known; entries
-# are polled and merged into the sample exactly like PIDs. Left EMPTY on purpose
-# so no unverified/guessed values ever reach the gauges.
+# An entry goes in ONLY once its DID -> parameter + scaling has been correlated
+# against something independent on this truck; entries are polled and merged
+# into the sample exactly like PIDs, so a guessed one would reach the gauges.
 #   key format:  (module_header_or_None, did_hex) : (canonical_key, decode(list[int]))
 #   example:     (None, "1940"): ("some_engine_param", lambda b: b[0])
 DID_TABLE = {
@@ -74,7 +71,9 @@ DID_TABLE = {
     # engine on/off and distinct from coolant; verify tracking on a drive.
     (None, "1644"): ("tft", lambda b: (b[1] - 40) * 9 / 5 + 32),
 }
-CANONICAL_KEYS = sorted(set(CANONICAL_KEYS) | {v[0] for v in DID_TABLE.values()})
+# canonical keys this transport can ever surface (for gauge pre-build)
+CANONICAL_KEYS = sorted({v[0] for v in PID_TABLE.values()}
+                        | {v[0] for v in DID_TABLE.values()})
 
 OBDX_VID = 0x0483
 OBDX_PID = 0x5740
@@ -294,6 +293,16 @@ def is_binary_reply(raw: bytes) -> bool:
     return any(not (0x20 <= b < 0x7F or b in (0x0D, 0x0A, 0x09)) for b in raw)
 
 
+#: The one recovery that is known to work (2026-09-26, 2026-10-01): the GT is
+#: USB-powered, so cycling the DLC or the vehicle alone does not reset it.
+GT_BINARY_REMEDY = ("Unplug the GT's USB cable (and the OBD plug) for 10 s, "
+                    "plug it back in, then connect again.")
+
+
+class GtBinaryMode(RuntimeError):
+    """The GT is answering text (ELM) commands in its binary J2534 mode."""
+
+
 def is_elm_identity(ati: str, at1: str) -> bool:
     """Positive identification of an ELM/OBDX text interface: ATI names an
     ELM327 or AT@1 names the OBDX. Any other bytes are not proof of life."""
@@ -428,16 +437,39 @@ class ObdxGt:
         if not self.port_name:
             raise RuntimeError(describe_no_gt())
         self.ser = serial.Serial(self.port_name, self.baud, timeout=self.timeout)
-        time.sleep(0.2)
-        self.command("ATZ", wait=0.9)
-        for c in ("ATE0", "ATL0", "ATS0", "ATH0", "ATSP0"):
-            self.command(c, wait=0.2)
         try:
-            self.device = self.command("AT@1", wait=0.2) or "OBDX Pro GT"
+            time.sleep(0.2)
+            # IDENTIFY BEFORE CONFIGURING. After a J2534 session (an e38flash
+            # read) the GT stays in its binary mode and answers every text
+            # command with binary frames; the old open() configured it blind,
+            # took the binary AT@1 reply as the device name, and the Dashboard
+            # then sat empty with no explanation (the Module Map path already
+            # caught this; the Dashboard path did not — 2026-10-01).
+            ati = self.command("ATI", wait=0.2)
+            self._refuse_binary("ATI")
+            self.command("ATZ", wait=0.9)
+            self._refuse_binary("ATZ")
+            for c in ("ATE0", "ATL0", "ATS0", "ATH0", "ATSP0"):
+                self.command(c, wait=0.2)
+            at1 = self.command("AT@1", wait=0.2)
+            self._refuse_binary("AT@1")
+            if not is_elm_identity(ati, at1):
+                raise RuntimeError(
+                    f"{self.port_name} did not identify as an ELM327/OBDX "
+                    f"interface (ATI={ati!r}, AT@1={at1!r})")
+            self.device = at1.strip() or "OBDX Pro GT"
+            self._probe_supported()
+            self._set_header("7E0")  # physical ECM addr for mode-22 DIDs
         except Exception:
-            self.device = "OBDX Pro GT"
-        self._probe_supported()
-        self._set_header("7E0")  # physical ECM addr for mode-22 DIDs
+            self.close()         # never leave the port held after a failed open
+            raise
+
+    def _refuse_binary(self, cmd: str) -> None:
+        if is_binary_reply(self.last_raw):
+            raise GtBinaryMode(
+                f"the OBDX GT answered {cmd} in its binary (J2534) mode "
+                f"({self.last_raw[:16]!r}) — a J2534 tool used it last. "
+                f"{GT_BINARY_REMEDY}")
 
     def close(self) -> None:
         if self.ser:
@@ -548,9 +580,14 @@ class ObdxGt:
             except Exception:
                 pass
         if "voltage" not in out:
-            m = re.search(r"([\d.]+)\s*V", self.command("ATRV", wait=0.05))
-            if m:
-                out["voltage"] = float(m.group(1))
+            # Strict parse, as the Module Map does: a binary or garbled reply
+            # is UNREADABLE and leaves the gauge empty, never a made-up value
+            # pulled out of noise by a loose regex.
+            rv = self.command("ATRV", wait=0.05)
+            if not is_binary_reply(self.last_raw):
+                volts = parse_atrv(rv)
+                if volts is not None:
+                    out["voltage"] = volts
         for (module, did), (key, fn) in DID_TABLE.items():
             data = self.request_did(did, module=module)
             if not data:

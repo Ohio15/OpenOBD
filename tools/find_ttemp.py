@@ -1,5 +1,6 @@
+import os
 import re
-base = r"D:\Projects\OpenOBD\tools"
+base = os.path.dirname(os.path.abspath(__file__))
 snap = base + r"\snap_ttemp.tsv"
 lines = open(snap).read().splitlines()
 ctx = {}

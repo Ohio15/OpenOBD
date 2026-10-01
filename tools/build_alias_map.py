@@ -15,8 +15,8 @@ scalars are reported, not guessed.
 """
 import json, os, re, sys, unicodedata
 
-HERE = r"C:\Users\ohio_\hpt_extract"
-ROOT = r"D:\Projects\OpenOBD"
+HERE = os.environ.get("OPENOBD_HPT_EXTRACT", os.path.join(os.path.expanduser("~"), "hpt_extract"))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TUNE = os.path.join(HERE, "tune24_read", "scalars.jsonl")
 STOCK = os.path.join(HERE, "stock_read", "scalars.jsonl")
 OUT = os.path.join(ROOT, "data", "tune24_scalar_aliases.json")

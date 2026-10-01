@@ -3,6 +3,42 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.18.4 — 2026-10-01
+
+### Fixed
+- **The Dashboard connected blind to a GT stuck in binary mode.** After any
+  pass-thru session (an e38flash read, HP Tuners, a sniff) the GT answers text
+  commands with binary frames. The Module Map already caught that, but the
+  Dashboard's `ObdxGt.open()` configured the GT without checking, used the
+  binary `AT@1` reply as the device name, and the Dashboard sat empty with no
+  explanation. `open()` now identifies the GT first (`ATI`, then `AT@1`) and
+  raises `GtBinaryMode` with the fix that works: unplug the GT's USB cable
+  and the OBD plug for 10 s. A text reply that is not an ELM327/OBDX is
+  refused too, and a failed open always releases the serial port.
+- **A GT that stopped answering left the gauges frozen, looking live.** The
+  poll loop swallowed every exception. `GtDataSource` now counts consecutive
+  failures. After two, every channel reports `failed` (the "read failed"
+  badge), `latest()` stops serving the last sample, and `status_message()`
+  puts the reason in the status line. It returns to live on the next good poll.
+- **ATRV on the poll path was parsed loosely**, with a regex that would pull
+  a number out of noise. It now uses the strict `parse_atrv` and ignores
+  binary replies, as the Module Map does.
+
+### Changed
+- README: the GT live path is documented, the "GtDataSource stub" line and
+  "will implement" wording are gone, and the architecture tree lists all 19
+  modules (`j2534.py` is noted as unused by the app).
+- `gt.py`: the comment that said `DID_TABLE` was "left EMPTY" was wrong (it
+  holds the verified TFT DID); `CANONICAL_KEYS` is defined once.
+- `tools/*.py`: no absolute paths. Repo paths derive from the script's
+  location, the HPT harvest folder is `~/hpt_extract` (override with
+  `OPENOBD_HPT_EXTRACT`), and the helper interpreter is `sys.executable`.
+
+### Tests
+10 new (`tests/test_gt_dashboard.py`), plus a GUI smoke section driving the
+real Dashboard through a failing and a recovered GT source. Five mutations of
+the fix and one of the status-line wiring are each caught.
+
 ## 0.18.3 — 2026-09-30
 
 ### Fixed

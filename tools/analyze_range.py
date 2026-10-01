@@ -1,3 +1,4 @@
+import os
 def load(p):
     d = {}
     for l in open(p):
@@ -6,7 +7,7 @@ def load(p):
         k, _, v = l.partition("\t")
         d[k] = v.strip()
     return d
-base = r"D:\Projects\OpenOBD\tools"
+base = os.path.dirname(os.path.abspath(__file__))
 P = load(base + r"\snap_park.tsv")
 D = load(base + r"\snap_drive.tsv")
 N = load(base + r"\snap_neutral.tsv")
