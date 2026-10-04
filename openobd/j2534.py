@@ -56,6 +56,10 @@ ISO15765_STMIN          = 0x1F
 SW_CAN_HS_DATA_RATE     = 0x11
 SW_CAN_SPEEDCHANGE_ENABLE = 0x12
 SW_CAN_RES_SWITCH       = 0x13
+J1962_PINS              = 0x8001    # J2534-2: pin selection for _PS protocols
+# J1962_PINS value: (pin << 8) | second pin. GM single-wire CAN is pin 1 alone.
+SW_CAN_PINS             = 0x0100
+SW_CAN_BAUD             = 33333
 
 # Return codes
 STATUS_NOERROR = 0
@@ -209,6 +213,17 @@ class J2534:
         fid = c_ulong()
         self._chk(self.dll.PassThruStartMsgFilter(ch, FLOW_CONTROL_FILTER,
                   byref(mask), byref(patt), byref(flow), byref(fid)))
+        return fid.value
+
+    def pass_filter(self, ch, proto, pattern_id: int, mask_id: int):
+        """Accept raw frames whose CAN id matches pattern_id under mask_id."""
+        def idbytes(cid): return bytes([(cid >> 24) & 0xFF, (cid >> 16) & 0xFF,
+                                        (cid >> 8) & 0xFF, cid & 0xFF])
+        mask = _mk_msg(proto, idbytes(mask_id))
+        patt = _mk_msg(proto, idbytes(pattern_id))
+        fid = c_ulong()
+        self._chk(self.dll.PassThruStartMsgFilter(ch, PASS_FILTER,
+                  byref(mask), byref(patt), None, byref(fid)))
         return fid.value
 
     def write(self, ch, tx_id, payload: bytes, proto=ISO15765, txflags=ISO15765_FRAME_PAD, timeout=200):
