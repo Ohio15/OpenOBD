@@ -193,7 +193,7 @@ def test_cli_fmt_a9_shows_status_and_hides_healthy_table():
         "records": [("C0550", "00", "01"), ("C0035", "5A", "D3"),
                     ("C0045", "00", "01")]}}
     out = dtcscan._fmt(info)
-    assert out.startswith("C0035 [D3]")
+    assert out.startswith("C0035 [D3 current]")
     assert "C0550" not in out and "C0045" not in out
     assert "3 supported-DTC table entries read; 2 healthy" in out
 

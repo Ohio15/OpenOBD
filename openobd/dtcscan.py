@@ -24,11 +24,39 @@ reads a housekeeping status (01/19/21/25) and is counted, not printed.
 """
 from __future__ import annotations
 
+import json
 import sys
 from typing import Optional
 
-from .gt import GtBinaryMode, ObdxGt, describe_no_gt
+from .gt import GtBinaryMode, ObdxGt, a9_status_is_fault, describe_no_gt
 from . import swcan, vehnet
+
+
+def _fault_text(records, codes) -> str:
+    """Each fault code ONCE, with only the statuses that make it a fault
+    (healthy duplicate records of the same code are dropped). 'current' marks
+    status bit1 (currently failed) -- the one bit verified on this truck."""
+    seen: dict = {}
+    for code, _sym, st in records:
+        if code in codes and a9_status_is_fault(st):
+            lst = seen.setdefault(code, [])
+            if st not in lst:
+                lst.append(st)
+    parts = []
+    for c in codes:
+        sts = seen.get(c, [])
+        cur = any(int(s, 16) & 0x02 for s in sts if _is_hex(s))
+        tag = "/".join(sts) + (" current" if cur else "")
+        parts.append(f"{c} [{tag}]" if tag else c)
+    return ", ".join(parts)
+
+
+def _is_hex(s: str) -> bool:
+    try:
+        int(s, 16)
+        return True
+    except (TypeError, ValueError):
+        return False
 
 
 def _fmt(info: dict) -> str:
@@ -40,12 +68,7 @@ def _fmt(info: dict) -> str:
     codes = r["codes"]
     if "dtcs" in codes:                       # GMLAN $A9 path (EBCM/BCM)
         faults = codes["dtcs"]
-        status = {}
-        for code, _sym, st in r.get("records", []):
-            if code in faults:
-                status.setdefault(code, []).append(st)
-        body = (", ".join(f"{c} [{'/'.join(status[c])}]" if c in status else c
-                          for c in faults)
+        body = (_fault_text(r.get("records", []), faults)
                 if faults else "no fault codes")
         table = codes.get("table", [])
         tail = (f"  ({len(table)} supported-DTC table entries read; "
@@ -79,10 +102,14 @@ def _fmt_sweep(sw: dict, head: str = _HS_HEAD,
     lines = [head]
     for cid, rep in sorted(sw["responders"].items()):
         who = known.get(cid, "UNACCOUNTED -- not an identified module")
-        faults = ", ".join(f"{c} [{st}]" for c, _s, st in rep["records"]
-                           if c in rep["codes"]) or "no fault codes"
-        lines.append(f"  0x{cid} {who}: {faults}  "
-                     f"({len(rep['table'])} table entries)")
+        faults = (_fault_text(rep["records"], rep["codes"])
+                  or "no fault codes")
+        lines.append(f"  0x{cid} {who}: {faults}")
+        # the full supported-DTC table is the module's fingerprint (C03xx =
+        # transfer case, C07xx = tire pressure, ...): print it, it is how an
+        # unaccounted id gets identified.
+        lines.append(f"      table ({len(rep['table'])}): "
+                     + " ".join(rep["table"]))
     for cid, nrc in sorted(sw["negatives"].items()):
         lines.append(f"  0x{cid} refused $A9 (NRC {nrc}) -- a module is there")
     if sw.get("error"):
@@ -138,7 +165,23 @@ def main(argv=None) -> int:
              "sw": _SW_HEAD}
     shown = {"vbatt": False}
 
+    saved: dict = {}
+
     def show(bus: str, res: dict) -> None:
+        # raw records to dtcscan.json FIRST (rewritten per bus, so a driver
+        # crash at close cannot lose them): every (code, symptom, status).
+        saved[bus] = {
+            "examined": res.get("examined"), "error": res.get("error"),
+            "vbatt": res.get("vbatt"), "frames": res.get("frames"),
+            "negatives": res.get("negatives", {}),
+            "responders": {cid: {"records": [list(x) for x in rep["records"]],
+                                 "faults": rep["codes"], "table": rep["table"]}
+                           for cid, rep in res.get("responders", {}).items()}}
+        try:
+            with open("dtcscan.json", "w", encoding="utf-8") as fh:
+                json.dump(saved, fh, indent=1)
+        except OSError:
+            pass
         print()
         if res.get("vbatt") is not None and not shown["vbatt"]:
             print(f"(battery at the OBD port: {res['vbatt']:.2f} V)")
