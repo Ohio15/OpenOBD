@@ -71,6 +71,17 @@ MODULES: list[ModuleDef] = [
 ]
 
 
+# HS-GMLAN ids that answer GM $A9 on this truck but whose module is NOT
+# identified, read by the DTC scan only (never placed in MODULES, never given a
+# name). Evidence: truck-mcp gmlan.KNOWN_MODULES, observed 2026-08-06 — 0x242
+# answered $A9 with an 18-entry table and is silent to every $1A ident DID; 0x24D
+# answers $1A but NAKs $A9 (NRC 11). The truck has RPO NQH (electric-shift
+# transfer case), so a TCCM exists and is not yet located; reading 0x242's
+# table is how its identity gets settled from evidence (C03xx transfer-case
+# codes would identify it), not by assumption.
+UNIDENTIFIED_GMLAN_DTC_IDS: tuple[str, ...] = ("242", "24D")
+
+
 class Status(Enum):
     UNKNOWN = "unknown"          # not scanned yet
     OK = "responding"            # answered a request this scan
@@ -273,6 +284,10 @@ def scan_all_module_dtcs(gt) -> dict:
         else:                                          # 24x GMLAN chassis/body
             res = gt.read_gmlan_dtcs(m.req_id)          # GM $A9 81, not UDS $19
         out[m.key] = {"name": m.name, "result": res}
+    for req in UNIDENTIFIED_GMLAN_DTC_IDS:
+        out[f"hs{req.lower()}"] = {
+            "name": f"HS 0x{req} (unidentified)",
+            "result": gt.read_gmlan_dtcs(req)}
     return out
 
 
