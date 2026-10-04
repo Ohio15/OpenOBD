@@ -943,6 +943,72 @@ class ObdxGt:
             self.command("ATSP0", wait=0.1)   # back to automatic protocol search
             self._restore_default()
 
+    def sweep_gmlan_dtcs(self) -> dict:
+        """FUNCTIONAL GM $A9 81 to every HS-GMLAN node at once (AllNodes 0x101,
+        extended address FE — the framing e38flash verified on this truck for
+        its 0x101 $04 clear), then list EVERY id that answered. Read-only: $A9
+        reads DTC tables, nothing is cleared or written.
+
+        This finds modules by their answer instead of by guessing an address:
+        each node reports on its own UUDT id (0x5xx) and NAKs on its USDT id
+        (0x6xx), so a responder outside the identified set is a module the
+        per-address scan cannot see. Two captures (receive filter 0x5xx, then
+        0x6xx) because one 11-bit mask cannot pass both ranges.
+
+        Returns {"examined", "error", "responders": {uudt_id: parse_a9_report},
+        "negatives": {usdt_id: nrc}, "raw"}."""
+        out: dict = {"examined": False, "error": None, "responders": {},
+                     "negatives": {}, "raw": ""}
+        req = "FE03A981FF555555"
+        if not self._at_checked("ATSP6"):
+            out["error"] = "GT rejected ATSP6 (CAN 11/500)"
+            self._restore_default()
+            return out
+        try:
+            for cmd in ("ATCAF0", "ATH1", "ATS0"):
+                if not self._at_checked(cmd):
+                    out["error"] = f"GT refused {cmd}; sweep not sent"
+                    return out
+            if not self._set_header("101"):
+                out["error"] = "could not set header 101"
+                return out
+            raws = []
+            for filt in ("500", "600"):
+                self.command("ATCRA", wait=0.05)
+                if not (self._at_checked(f"ATCF{filt}")
+                        and self._at_checked("ATCM700")):
+                    out["error"] = f"GT refused the 0x{filt} receive filter"
+                    return out
+                resp = self.command(req, wait=0.0, deadline=2.0)
+                if is_binary_reply(self.last_raw):
+                    out["error"] = "binary reply"
+                    return out
+                raws.append(resp)
+            out["raw"] = " || ".join(raws)
+            ids: list = []
+            for tok in raws[0].upper().split():
+                c = "".join(ch for ch in tok if ch in "0123456789ABCDEF")
+                if len(c) >= 13 and c[0] == "5" and c[3:5] == "81"                         and c[:3] not in ids:
+                    ids.append(c[:3])
+            for cid in ids:
+                out["responders"][cid] = parse_a9_report(raws[0], uudt_id=cid)
+            for tok in raws[1].upper().split():
+                c = "".join(ch for ch in tok if ch in "0123456789ABCDEF")
+                if len(c) >= 11 and c[0] == "6" and c[5:9] == "7FA9":
+                    out["negatives"][c[:3]] = c[9:11]
+            out["examined"] = bool(ids or out["negatives"])
+            if not out["examined"]:
+                out["error"] = ("no node answered the functional $A9 — raw kept "
+                                "for bring-up: " + (out["raw"][:160] or "(nothing)"))
+            return out
+        finally:
+            self.command("ATCRA", wait=0.05)
+            self.command("ATCF000", wait=0.05)
+            self.command("ATCM000", wait=0.05)
+            self._at_checked("ATCAF1")
+            self.command("ATSP0", wait=0.1)
+            self._restore_default()
+
     def clear_dtcs(self) -> dict:
         """Mode 04, functional — clears codes AND readiness monitors in every
         emissions ECU that accepts it. The CALLER must have confirmed with the
