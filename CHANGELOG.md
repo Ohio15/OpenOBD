@@ -3,6 +3,37 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.19.0 — 2026-10-04
+
+### Added
+- **Offline J2534 trace decoder (`openobd/j2534log.py`, `tools/j2534_decode.py`).**
+  Turns a captured GM factory-tool pass-thru session (Techline Connect / GDS2 /
+  SPS over the OBDX Pro GT's J2534 interface) into a candidate mode-22 DID table
+  — the one open item on the live gauges, since `gt.DID_TABLE` is empty until
+  each DID is correlated. Reassembles ISO-TP over raw CAN frames (same error
+  model as `gt.reassemble_isotp`: short single frame, first-frame-before-complete,
+  sequence gap and truncation are errors, never silent), pairs each `0x22`
+  request with its `0x62` response on the GM 11-bit reply id, and emits observed
+  read DIDs plus a per-service summary. Accepts JSONL / CSV / loose-hex traces.
+  `--tsv` writes the DIDs in `ecm_dids.tsv` shape so `analyze_dids.py` picks them
+  up for correlation. Tests in `tests/test_j2534log.py`, incl. a CLI end-to-end
+  case.
+- **J2534 logging proxy (`tools/j2534_trace_proxy/`).** A pass-through J2534
+  v04.04 DLL the factory tool loads instead of the real GT DLL; it forwards every
+  call and logs each frame in the decoder's JSONL format. C source + mingw / MSVC
+  build scripts + an install README. paxson has no C compiler, so the DLL is
+  built on NEXUS (or any box with mingw) and copied back; this is the one step
+  not done from this seat.
+
+### Scope (DR-011)
+- Both pieces are **readers**. The decoder classifies every service on the bus
+  but synthesises reusable output only for the read services (`0x22`, `0x01`,
+  `0x09`, DTC modes). Programming / security services (`0x27` SecurityAccess,
+  `0x34`/`0x36`/`0x37` transfer, `0x2E` write, `0x31` routine, `0x10`/`0x11`) are
+  observed and counted, with the identifiers they touched reported, but no
+  seed/key, transfer payload, or ordered sequence is ever emitted. Reconstructing
+  the flash/unlock path is deliberately out of scope. Ron runs the capture.
+
 ## 0.18.4 — 2026-10-01
 
 ### Fixed

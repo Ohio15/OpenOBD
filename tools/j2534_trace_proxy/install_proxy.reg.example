@@ -1,0 +1,23 @@
+Windows Registry Editor Version 5.00
+
+; EXAMPLE ONLY -- edit every path to match this machine, then import. Do NOT
+; import blind. This registers the trace proxy as a SEPARATE PassThru device
+; named "OBDX Pro GT (trace)"; the real OBDX device key is left untouched, so
+; you can switch back by picking the real device (or deleting this key).
+;
+; Copy Vendor / ProtocolsSupported / the CAN/ISO15765 capability values from the
+; REAL device's key under the same PassThruSupport.04.04 path -- only
+; FunctionLibrary changes, to point at the proxy DLL.
+;
+; 32-bit tool (Techline Connect is usually 32-bit) -> WOW6432Node path + x86 DLL.
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\PassThruSupport.04.04\OBDX Pro GT (trace)]
+"Name"="OBDX Pro GT (trace)"
+"Vendor"="OBDX"
+"FunctionLibrary"="C:\\obdx-proxy\\j2534_proxy_x86.dll"
+"ConfigApplication"=""
+"CAN"=dword:00000001
+"ISO15765"=dword:00000001
+"ISO15765_PS"=dword:00000001
+"SW_CAN_PS"=dword:00000001
+"CAN_PS"=dword:00000001
