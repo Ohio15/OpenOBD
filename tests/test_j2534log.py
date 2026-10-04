@@ -356,3 +356,61 @@ def test_obdx_log_ignores_non_frame_lines():
            "11:29:14:392  : PassThruIoctl - Voltage is: 1368mV\n" + OBDX_REAL)
     frames = parse_obdx_log(txt)
     assert len(frames) == 2                   # only the two Frame lines
+
+
+# --------------------------------------------------------------------------- #
+# Robustness + identity (the two inbound items)
+# --------------------------------------------------------------------------- #
+from openobd.j2534log import parse_obdx_dir, gm_partnum, _is_request_sid  # noqa: E402
+
+
+def test_non_uds_handshake_frames_are_not_services():
+    # GT low-level handshake on CAN id 0x101 with payload FE/FD — must not
+    # surface as phantom 'services'.
+    txt = (
+        "11:46:21:530  : PassThruWriteMsgs - Frame to Write: 00000101FD02100400000000\n"
+        "11:46:23:051  : PassThruWriteMsgs - Frame to Write: 00000101FE013E0000000000\n"
+        "11:46:31:672  : PassThruWriteMsgs - Frame to Write: 000007E0221940\n"
+        "11:46:31:678  : PassThruReadMsgs - Frame Found: 00 00 07 E8 62 19 40 28\n"
+    )
+    res = decode(parse_obdx_log(txt))
+    assert set(res.services) == {0x22}           # only the real request
+    assert 0xFE not in res.services and 0xFD not in res.services
+
+
+def test_gm_partnum_decode():
+    assert gm_partnum(bytes.fromhex("00C1097A")) == 12650874   # Engine Operation cal
+    assert gm_partnum(bytes.fromhex("00C0CF65")) == 12636005   # Main OS
+    assert gm_partnum(b"\x00\x01\x02") is None                 # not 4 bytes
+
+
+def test_1a_identification_capture():
+    # real lines: 1A C6 -> 5A C6 00 C1 09 7A (= 12650874)
+    txt = (
+        "11:46:31:704  : PassThruWriteMsgs - Frame to Write: 000007E01AC6\n"
+        "11:46:31:710  : PassThruReadMsgs - Frame Found: 00 00 07 E8 5A C6 00 C1 09 7A\n"
+    )
+    res = decode(parse_obdx_log(txt))
+    rows = res.identification_rows()
+    assert rows == [("C6", "7E0", "00C1097A", 12650874)]
+    assert res.services[0x1A].positive == 1
+
+
+def test_is_request_sid():
+    assert _is_request_sid(0x22) and _is_request_sid(0x1A) and _is_request_sid(0x3B)
+    assert _is_request_sid(0x85)                 # named UDS > 0x3F
+    assert not _is_request_sid(0xFE) and not _is_request_sid(0xAE)
+
+
+def test_parse_obdx_dir_natural_order(tmp_path):
+    (tmp_path / "OBDXGT_Log1 04-10-2026.txt").write_text(
+        "11:00:00:000  : PassThruWriteMsgs - Frame to Write: 000007DF0902\n")
+    (tmp_path / "OBDXGT_Log2 04-10-2026.txt").write_text(
+        "11:30:00:000  : PassThruWriteMsgs - Frame to Write: 000007E0221940\n"
+        "11:30:00:010  : PassThruReadMsgs - Frame Found: 00 00 07 E8 62 19 40 28\n")
+    frames = parse_obdx_dir(str(tmp_path))
+    assert len(frames) == 3
+    assert frames[0].can_id == 0x7DF            # Log1 first
+    res = decode(frames)
+    assert res.candidate_did_rows() == [("1940", "7E0", "28")]
+    assert res.services[0x09].requests == 1

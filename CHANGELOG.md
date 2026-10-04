@@ -3,6 +3,24 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.19.3 — 2026-10-04
+
+### Added
+- **Multi-file decode.** `parse_obdx_dir()` (and `j2534_decode.py <directory>`)
+  decode every `OBDXGT_Log*.txt` in a folder in natural order, because the GT
+  writes one file per J2534 session, so a full job (diagnostics + programming)
+  spans several.
+- **ECM identification capture.** `0x1A` read-by-local-id responses are captured
+  separately (`DecodeResult.identification` / `identification_rows()`), with
+  `gm_partnum()` decoding a 4-byte Cx value to a GM part number. The CLI prints
+  the ECM's calibration part-number set — a record of what's flashed.
+
+### Fixed
+- **No phantom services.** `_is_request_sid` filters the GT's low-level handshake
+  frames (seen on CAN id `0x101` as payloads `0xFD`/`0xFE`/`0xAE`), which were
+  surfacing as fake `unknown_0x..` services. The service summary of a real
+  programming log is now clean. Suite 292 passed.
+
 ## 0.19.2 — 2026-10-04
 
 ### Fixed — validated against a real OBDX capture

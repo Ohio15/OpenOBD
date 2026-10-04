@@ -26,23 +26,28 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from openobd.j2534log import (  # noqa: E402
-    decode, parse_trace, service_name, _READ_SERVICES, _PROGRAMMING_SERVICES,
-    _NRC_NAMES,
+    decode, parse_trace, parse_obdx_dir, service_name, _READ_SERVICES,
+    _PROGRAMMING_SERVICES, _NRC_NAMES,
 )
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("trace", help="captured trace file")
+    ap.add_argument("trace", help="captured trace file, or a DIRECTORY of "
+                                  "OBDXGT_Log*.txt (decoded together in order)")
     ap.add_argument("--format", default="auto",
-                    choices=["auto", "jsonl", "csv", "hexlines"])
+                    choices=["auto", "jsonl", "csv", "hexlines", "obdx"])
     ap.add_argument("--tsv", help="write candidate DIDs to this TSV "
                                   "(ecm_dids.tsv-compatible: did<TAB>hexdata)")
     args = ap.parse_args(argv)
 
-    with open(args.trace, encoding="utf-8", errors="replace") as fh:
-        frames = parse_trace(fh.read(), args.format)
+    if os.path.isdir(args.trace):
+        frames = parse_obdx_dir(args.trace)
+        print(f"(directory: decoded all OBDXGT_Log*.txt in {args.trace})")
+    else:
+        with open(args.trace, encoding="utf-8", errors="replace") as fh:
+            frames = parse_trace(fh.read(), args.format)
     res = decode(frames)
 
     print(f"frames parsed : {len(frames)}")
@@ -57,6 +62,14 @@ def main(argv=None):
     print(f"  {'DID':<6} {'module':<7} response bytes")
     for did, mod, hexdata in rows:
         print(f"  {did:<6} {mod:<7} {hexdata}")
+
+    idrows = res.identification_rows()
+    if idrows:
+        print(f"\nECM identification (0x1A reads): {len(idrows)}")
+        print(f"  {'id':<4} {'module':<7} {'bytes':<12} GM part #")
+        for lid, mod, hexdata, pn in idrows:
+            print(f"  {lid:<4} {mod:<7} {hexdata:<12} "
+                  f"{pn if pn is not None else ''}")
 
     print("\nservices on the bus:")
     for sid, s in res.services.items():

@@ -38,8 +38,10 @@ independent of how the capture was taken.
 from __future__ import annotations
 
 import csv
+import glob as _glob
 import io
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional
 
@@ -116,6 +118,22 @@ def service_name(sid: int) -> str:
     if sid >= 0x40 and (sid - 0x40) in _SERVICE_NAMES:
         return _SERVICE_NAMES[sid - 0x40] + "_response"
     return f"unknown_0x{sid:02X}"
+
+
+def _is_request_sid(sid: int) -> bool:
+    """A plausible UDS/OBD request SID: an OBD mode (<=0x3F) or a named UDS
+    service. This rejects the GT's low-level handshake frames (seen on CAN id
+    0x101 as payloads 0xFD/0xFE/0xAE), which are not diagnostic requests and
+    would otherwise surface as phantom 'services'."""
+    return sid <= 0x3F or sid in _SERVICE_NAMES
+
+
+def gm_partnum(data: bytes) -> Optional[int]:
+    """Decode a GM 4-byte big-endian part number (the value a 0x1A Cx ident read
+    returns). 0x00C1097A -> 12650874. Returns None if not 4 bytes."""
+    if len(data) != 4:
+        return None
+    return int.from_bytes(data, "big")
 
 
 # --------------------------------------------------------------------------- #
@@ -300,6 +318,24 @@ def parse_obdx_log(text: str) -> list[Frame]:
     return out
 
 
+def _natural_key(fn: str):
+    """Sort OBDXGT_Log1, Log2, ..., Log10 in numeric order, not lexical."""
+    import re as _re
+    return [int(t) if t.isdigit() else t.lower()
+            for t in _re.split(r"(\d+)", os.path.basename(fn))]
+
+
+def parse_obdx_dir(path: str, pattern: str = "OBDXGT_Log*.txt") -> list[Frame]:
+    """Parse every OBDX log in a directory, concatenating frames in natural
+    filename order (Log1 before Log2 before Log10). Each J2534 session is its
+    own file, so a full job (diagnostics + programming) spans several."""
+    frames: list[Frame] = []
+    for fn in sorted(_glob.glob(os.path.join(path, pattern)), key=_natural_key):
+        with open(fn, encoding="utf-8", errors="replace") as fh:
+            frames.extend(parse_obdx_log(fh.read()))
+    return frames
+
+
 def parse_trace(text: str, fmt: str = "auto") -> list[Frame]:
     """Parse a trace in jsonl / csv / hexlines / obdx. 'auto' sniffs: '{' ->
     jsonl; a PassThru/Data: line -> obdx; a comma + dir/id/data header -> csv;
@@ -466,11 +502,22 @@ class ServiceStat:
 
 @dataclass
 class DecodeResult:
-    did_observations: dict          # (module, did) -> DidObservation
+    did_observations: dict          # (module, did) -> DidObservation  (0x22)
     services: dict                  # sid -> ServiceStat
     programming_seen: bool
     messages: int
     errors: list                    # (can_id, reason)
+    identification: dict = field(default_factory=dict)  # (module, localid) -> DidObservation (0x1A)
+
+    def identification_rows(self) -> list[tuple[str, str, str, Optional[int]]]:
+        """Rows for the ECM identity: (local_id, module_hex, response_hex,
+        gm_partnum_or_None), from the 0x1A reads. The Cx ids are the calibration
+        part numbers; a 4-byte value decodes to a GM part number."""
+        rows = []
+        for (mod, lid), o in self.identification.items():
+            rows.append((lid, f"{mod:03X}", o.data.hex().upper(),
+                         gm_partnum(o.data)))
+        return sorted(rows)
 
     def candidate_did_rows(self) -> list[tuple[str, str, str]]:
         """Rows for a candidate table: (did, module_hex, response_hex),
@@ -507,6 +554,7 @@ def decode(frames: Iterable[Frame], raw_can: bool = False) -> DecodeResult:
     msgs = reassemble(frames) if raw_can else frames_as_messages(frames)
     services: dict[int, ServiceStat] = {}
     dids: dict[tuple[int, str], DidObservation] = {}
+    idents: dict[tuple[int, str], DidObservation] = {}
     errors: list[tuple[int, str]] = []
     programming = False
 
@@ -527,6 +575,8 @@ def decode(frames: Iterable[Frame], raw_can: bool = False) -> DecodeResult:
         if m.direction != "tx" or not m.payload:
             continue
         sid = m.payload[0]
+        if not _is_request_sid(sid):
+            continue                      # GT handshake / non-UDS, not a service
         s = stat(sid)
         s.requests += 1
         if sid in _PROGRAMMING_SERVICES:
@@ -559,6 +609,17 @@ def decode(frames: Iterable[Frame], raw_can: bool = False) -> DecodeResult:
                             ts_first=m.ts_first)
                     else:
                         o.count += 1
+                elif sid == 0x1A and len(m.payload) >= 2 and len(r.payload) >= 2:
+                    # GM read-by-local-id: 1-byte id; response 5A <id> <data>.
+                    lid = f"{m.payload[1]:02X}"
+                    key = (m.can_id, lid)
+                    o = idents.get(key)
+                    if o is None:
+                        idents[key] = DidObservation(
+                            module=m.can_id, did=lid, data=r.payload[2:],
+                            ts_first=m.ts_first)
+                    else:
+                        o.count += 1
                 break
             if rsid == 0x7F and len(r.payload) >= 2 and r.payload[1] == sid:
                 used[j] = True
@@ -573,6 +634,7 @@ def decode(frames: Iterable[Frame], raw_can: bool = False) -> DecodeResult:
         programming_seen=programming,
         messages=len([m for m in msgs if not m.error]),
         errors=errors,
+        identification=idents,
     )
 
 
