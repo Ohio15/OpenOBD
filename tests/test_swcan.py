@@ -168,8 +168,10 @@ class _BinaryGt:
         raise GtBinaryMode("binary")
 
 
-def test_cli_in_binary_mode_still_runs_both_sweeps(monkeypatch, capsys):
+def test_cli_in_binary_mode_still_runs_both_sweeps(monkeypatch, capsys,
+                                                    tmp_path):
     from openobd import dtcscan
+    monkeypatch.chdir(tmp_path)                 # dtcscan.json lands here
     sessions = []
 
     def fake_sweep_buses(buses, on_result, j=None, **kw):
@@ -186,6 +188,9 @@ def test_cli_in_binary_mode_still_runs_both_sweeps(monkeypatch, capsys):
     assert sessions == [["hs", "sw"]]          # ONE pass-thru session
     assert "pass-thru (binary) mode" in out and "12.50 V" in out
     assert out.count("12.50 V") == 1
+    import json
+    saved = json.loads((tmp_path / "dtcscan.json").read_text())
+    assert set(saved) == {"hs", "sw"} and saved["sw"]["vbatt"] == 12.5
 
 
 def test_sweep_buses_opens_and_closes_the_device_once():
@@ -221,6 +226,22 @@ def test_sweep_buses_open_failure_returns_error_and_delivers_nothing():
     err = swcan.sweep_buses(["sw"], lambda b, r: got.append(b),
                             FakePassThru(fail_open=True))
     assert "open failed" in err and got == []
+
+
+def test_fmt_sweep_dedupes_faults_and_prints_table():
+    from openobd import dtcscan
+    rep = {"codes": ["B1000", "C0755"],
+           "table": ["B1000", "C0750", "C0755", "C0327"],
+           "records": [("B1000", "00", "05"), ("B1000", "00", "05"),
+                       ("B1000", "00", "01"), ("C0755", "00", "01"),
+                       ("C0755", "00", "13"), ("C0750", "00", "01")]}
+    txt = dtcscan._fmt_sweep({"examined": True, "error": None,
+                              "responders": {"558": rep}, "negatives": {}},
+                             head="H", known={})
+    assert "B1000 [05]" in txt and txt.count("B1000 [") == 1
+    assert "C0755 [13 current]" in txt          # bit1 set
+    assert "[01" not in txt                     # healthy statuses dropped
+    assert "table (4): B1000 C0750 C0755 C0327" in txt
 
 
 def test_fmt_sw_sweep_prints_by_address():

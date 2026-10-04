@@ -3,6 +3,19 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.23.3 — 2026-10-04
+
+### Changed
+- First successful SW-GMLAN body-bus sweep on the truck (17:17): 11 modules
+  answered (0x542-0x55D) and 0x641 refused. To IDENTIFY them, the sweep now
+  prints every responder's full supported-DTC table (its fingerprint: C03xx =
+  transfer case, C07xx = tire pressure) and writes every raw (code, symptom,
+  status) record to `dtcscan.json`, rewritten per bus so a driver crash cannot
+  lose it.
+- Fault codes print once each with only their fault statuses (healthy
+  duplicate records of the same code were printed too); status bit1 (currently
+  failed) is marked "current".
+
 ## 0.23.2 — 2026-10-04
 
 ### Fixed
