@@ -13,3 +13,4 @@ build.log
 _build.bat
 tools/*.log
 tools/*.tsv
+/dtcscan.out
