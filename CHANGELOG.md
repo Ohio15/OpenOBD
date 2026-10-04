@@ -3,6 +3,21 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.19.1 — 2026-10-04
+
+### Added
+- **OBDX native-log capture path (`parse_obdx_log`).** The OBDX Pro J2534 driver
+  can log its own pass-thru traffic — `LoggingEnabled:1` in
+  `%APPDATA%\OBDX Pro\J2534\Settings\OBDXGT_Config.cfg`, files land in the
+  sibling `Logs\` dir — so a factory session can be captured with no proxy DLL
+  to compile. `parse_obdx_log` reads that log; `j2534_decode.py --format obdx`
+  (and `auto`) accept it. The decoder downstream is format-independent.
+- **Inferred, pending validation.** OBDX does not document the log line format,
+  so the parser matches the standard J2534 debug-log convention (direction from
+  the `PassThru*Msgs` call, bytes after `Data:`, first 4 bytes = CAN id) and is
+  deliberately tolerant. It MUST be validated against the first real OBDX
+  capture; if the labels differ, only `_OBDX_*` in `j2534log.py` changes.
+
 ## 0.19.0 — 2026-10-04
 
 ### Added

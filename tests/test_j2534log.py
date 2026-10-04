@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from openobd.j2534log import (  # noqa: E402
     Frame, decode, reassemble, parse_trace, parse_jsonl, parse_csv,
-    parse_hexlines, suggest_scaling, service_name,
+    parse_hexlines, parse_obdx_log, suggest_scaling, service_name,
 )
 
 
@@ -284,3 +284,41 @@ def test_cli_decodes_trace_and_writes_tsv(tmp_path, capsys):
     body = out_tsv.read_text()
     assert "1940\t28" in body
     assert "2701" not in body                        # no security id leaks to the DID table
+
+
+# --------------------------------------------------------------------------- #
+# OBDX native-log adapter (parse_obdx_log) -- TOLERANT; format inferred from the
+# standard J2534 debug-log convention, to be validated against a real capture.
+# --------------------------------------------------------------------------- #
+OBDX_SAMPLE = """\
+[15:10:22.123] PassThruWriteMsgs Channel:1 NumMsgs:1
+    Msg[0] ProtocolID:6 TxFlags:0x40 DataSize:7 Data: 00 00 07 E0 03 22 19 40
+[15:10:22.140] PassThruReadMsgs Channel:1 NumMsgs:1
+    Msg[0] ProtocolID:6 RxStatus:0x0 DataSize:9 Data: 00 00 07 E8 04 62 19 40 28
+"""
+
+
+def test_obdx_log_direction_and_id_from_convention():
+    frames = parse_obdx_log(OBDX_SAMPLE)
+    assert len(frames) == 2
+    assert frames[0].direction == "tx" and frames[0].can_id == 0x7E0
+    assert frames[0].data == bytes.fromhex("03221940")
+    assert frames[1].direction == "rx" and frames[1].can_id == 0x7E8
+    assert frames[1].data == bytes.fromhex("0462194028")
+
+
+def test_obdx_log_decodes_end_to_end():
+    res = decode(parse_obdx_log(OBDX_SAMPLE))
+    assert res.candidate_did_rows() == [("1940", "7E0", "28")]
+
+
+def test_parse_trace_auto_detects_obdx():
+    frames = parse_trace(OBDX_SAMPLE)        # no format hint
+    assert len(frames) == 2 and frames[0].can_id == 0x7E0
+
+
+def test_obdx_log_ignores_non_frame_lines():
+    txt = ("VERSION:1.0.0.0\nLoggingEnabled:1\n"
+           "[15:00:00.000] PassThruOpen\n" + OBDX_SAMPLE)
+    frames = parse_obdx_log(txt)
+    assert len(frames) == 2                   # the two Data: lines only

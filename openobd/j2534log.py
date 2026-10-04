@@ -235,13 +235,93 @@ def parse_hexlines(text: str) -> list[Frame]:
     return out
 
 
+import re
+
+# The OBDX Pro J2534 driver's own debug log (enabled by LoggingEnabled:1 in
+# %APPDATA%\OBDX Pro\J2534\Settings\OBDXGT_Config.cfg; files land in the sibling
+# Logs\ dir) is an alternative to the logging proxy -- no DLL to compile. OBDX
+# does not document the line format, so this parser matches the STANDARD J2534
+# debug-log convention and is deliberately tolerant:
+#
+#   * direction comes from the most recent PassThru call line -- a line naming
+#     WriteMsgs / StartPeriodicMsg is "tx", one naming ReadMsgs is "rx"; an
+#     explicit " TX "/" RX " token on the data line overrides.
+#   * a data line carries the frame bytes after a "Data:" label, or is itself a
+#     run of hex byte pairs. For ISO15765/CAN the first 4 bytes are the
+#     arbitration id (big-endian) and the rest is the CAN data field.
+#
+# VALIDATE against the first real OBDX capture before trusting the output: if
+# OBDX's labels differ, adjust _OBDX_* below. The decoder downstream is
+# format-independent, so only this extractor is at risk.
+_OBDX_TX = re.compile(r"writemsg|startperiodic|\btx\b", re.I)
+_OBDX_RX = re.compile(r"readmsg|\brx\b", re.I)
+_OBDX_TS = re.compile(r"(\d{1,2}:\d{2}:\d{2}[.,]\d{1,6})|\+?(\d+)\s*us", re.I)
+_OBDX_HEXRUN = re.compile(r"(?:[0-9A-Fa-f]{2}[\s:]+){3,}[0-9A-Fa-f]{2}")
+
+
+def _obdx_ts(line: str, ordinal: int) -> float:
+    m = _OBDX_TS.search(line)
+    if not m:
+        return float(ordinal)
+    if m.group(1):
+        hh, mm, rest = m.group(1).replace(",", ".").split(":")
+        return int(hh) * 3600 + int(mm) * 60 + float(rest)
+    return float(m.group(2)) / 1e6
+
+
+def parse_obdx_log(text: str) -> list[Frame]:
+    """Parse the OBDX Pro J2534 driver's native debug log (see note above).
+    Tolerant by design; validate against a real capture."""
+    out: list[Frame] = []
+    cur_dir: Optional[str] = None
+    ordinal = 0
+    for line in text.splitlines():
+        low = line.lower()
+        # a function-call line sets the direction for the frames under it
+        if "passthru" in low or _OBDX_TX.search(line) or _OBDX_RX.search(line):
+            if _OBDX_RX.search(line) and "readmsg" in low:
+                cur_dir = "rx"
+            elif _OBDX_TX.search(line) and ("writemsg" in low or "periodic" in low):
+                cur_dir = "tx"
+        # does this line carry frame bytes?
+        hexpart = None
+        idx = low.rfind("data:")
+        if idx >= 0:
+            hexpart = line[idx + 5:]
+        else:
+            m = _OBDX_HEXRUN.search(line)
+            if m:
+                hexpart = m.group(0)
+        if hexpart is None:
+            continue
+        line_dir = cur_dir
+        if _OBDX_RX.search(line) and "readmsg" not in low:
+            line_dir = "rx"
+        elif _OBDX_TX.search(line) and "writemsg" not in low and "periodic" not in low:
+            line_dir = "tx"
+        if line_dir is None:
+            continue
+        data = _coerce_data(hexpart)
+        if len(data) < 4:
+            continue
+        out.append(Frame(ts=_obdx_ts(line, ordinal), direction=line_dir,
+                         can_id=(data[0] << 24) | (data[1] << 16) |
+                                (data[2] << 8) | data[3],
+                         data=data[4:]))
+        ordinal += 1
+    return out
+
+
 def parse_trace(text: str, fmt: str = "auto") -> list[Frame]:
-    """Parse a trace in jsonl / csv / hexlines. 'auto' sniffs the first
-    non-comment line: '{' -> jsonl, a comma with a 'dir'/'id' header -> csv,
+    """Parse a trace in jsonl / csv / hexlines / obdx. 'auto' sniffs: '{' ->
+    jsonl; a PassThru/Data: line -> obdx; a comma + dir/id/data header -> csv;
     else hexlines."""
     if fmt != "auto":
         return {"jsonl": parse_jsonl, "csv": parse_csv,
-                "hexlines": parse_hexlines}[fmt](text)
+                "hexlines": parse_hexlines, "obdx": parse_obdx_log}[fmt](text)
+    low = text.lower()
+    if re.search(r"passthru(read|write)msgs|loggingenabled", low):
+        return parse_obdx_log(text)
     for line in text.splitlines():
         s = line.strip()
         if not s or s.startswith("#"):
