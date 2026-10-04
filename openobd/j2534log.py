@@ -253,58 +253,46 @@ import re
 # VALIDATE against the first real OBDX capture before trusting the output: if
 # OBDX's labels differ, adjust _OBDX_* below. The decoder downstream is
 # format-independent, so only this extractor is at risk.
-_OBDX_TX = re.compile(r"writemsg|startperiodic|\btx\b", re.I)
-_OBDX_RX = re.compile(r"readmsg|\brx\b", re.I)
-_OBDX_TS = re.compile(r"(\d{1,2}:\d{2}:\d{2}[.,]\d{1,6})|\+?(\d+)\s*us", re.I)
-_OBDX_HEXRUN = re.compile(r"(?:[0-9A-Fa-f]{2}[\s:]+){3,}[0-9A-Fa-f]{2}")
+# Validated against a real capture (OBDXGT firmware 1.0.2.0, 2026-10-04): the GT
+# logs one frame per line, direction and bytes on the SAME line:
+#   "<ts>  : PassThruWriteMsgs - Frame to Write: 000007DF0902"     (tx, no spaces)
+#   "<ts>  : PassThruReadMsgs - Frame Found: 00 00 07 E8 49 02 ..."(rx, spaced)
+# Timestamp is HH:MM:SS:mmm at the line start (note the FOURTH field is ms, not a
+# decimal). For ISO15765/CAN the first 4 bytes are the arbitration id
+# (big-endian); the remainder is the CAN data field. Both 11-bit (000007E0 /
+# 000007E8 / 000007DF) and 29-bit (18DA10F1 / 18DAF110 / 18DB33F1 functional)
+# addressing appear -- _resp_id_for handles both.
+_OBDX_TX_LABEL = "frame to write:"
+_OBDX_RX_LABEL = "frame found:"
+_OBDX_TS = re.compile(r"^\s*(\d{1,2}):(\d{2}):(\d{2}):(\d{1,3})\b")
 
 
 def _obdx_ts(line: str, ordinal: int) -> float:
-    m = _OBDX_TS.search(line)
+    m = _OBDX_TS.match(line)
     if not m:
         return float(ordinal)
-    if m.group(1):
-        hh, mm, rest = m.group(1).replace(",", ".").split(":")
-        return int(hh) * 3600 + int(mm) * 60 + float(rest)
-    return float(m.group(2)) / 1e6
+    h, mm, s, ms = (int(g) for g in m.groups())
+    return h * 3600 + mm * 60 + s + ms / 1000.0
 
 
 def parse_obdx_log(text: str) -> list[Frame]:
-    """Parse the OBDX Pro J2534 driver's native debug log (see note above).
-    Tolerant by design; validate against a real capture."""
+    """Parse the OBDX Pro J2534 driver's native debug log (format above)."""
     out: list[Frame] = []
-    cur_dir: Optional[str] = None
     ordinal = 0
     for line in text.splitlines():
         low = line.lower()
-        # a function-call line sets the direction for the frames under it
-        if "passthru" in low or _OBDX_TX.search(line) or _OBDX_RX.search(line):
-            if _OBDX_RX.search(line) and "readmsg" in low:
-                cur_dir = "rx"
-            elif _OBDX_TX.search(line) and ("writemsg" in low or "periodic" in low):
-                cur_dir = "tx"
-        # does this line carry frame bytes?
-        hexpart = None
-        idx = low.rfind("data:")
+        idx = low.find(_OBDX_TX_LABEL)
         if idx >= 0:
-            hexpart = line[idx + 5:]
+            direction, hexpart = "tx", line[idx + len(_OBDX_TX_LABEL):]
         else:
-            m = _OBDX_HEXRUN.search(line)
-            if m:
-                hexpart = m.group(0)
-        if hexpart is None:
-            continue
-        line_dir = cur_dir
-        if _OBDX_RX.search(line) and "readmsg" not in low:
-            line_dir = "rx"
-        elif _OBDX_TX.search(line) and "writemsg" not in low and "periodic" not in low:
-            line_dir = "tx"
-        if line_dir is None:
-            continue
+            idx = low.find(_OBDX_RX_LABEL)
+            if idx < 0:
+                continue
+            direction, hexpart = "rx", line[idx + len(_OBDX_RX_LABEL):]
         data = _coerce_data(hexpart)
         if len(data) < 4:
             continue
-        out.append(Frame(ts=_obdx_ts(line, ordinal), direction=line_dir,
+        out.append(Frame(ts=_obdx_ts(line, ordinal), direction=direction,
                          can_id=(data[0] << 24) | (data[1] << 16) |
                                 (data[2] << 8) | data[3],
                          data=data[4:]))
@@ -320,7 +308,8 @@ def parse_trace(text: str, fmt: str = "auto") -> list[Frame]:
         return {"jsonl": parse_jsonl, "csv": parse_csv,
                 "hexlines": parse_hexlines, "obdx": parse_obdx_log}[fmt](text)
     low = text.lower()
-    if re.search(r"passthru(read|write)msgs|loggingenabled", low):
+    if ("frame to write:" in low or "frame found:" in low
+            or "loggingenabled" in low):
         return parse_obdx_log(text)
     for line in text.splitlines():
         s = line.strip()
@@ -426,14 +415,32 @@ def reassemble(frames: Iterable[Frame]) -> list[IsoTpMessage]:
     return out
 
 
+def frames_as_messages(frames: Iterable[Frame]) -> list[IsoTpMessage]:
+    """Treat each frame as one COMPLETE message. This is the truth for a J2534
+    ISO15765 capture (OBDX native log, the logging proxy): the DLL/device does
+    ISO-TP reassembly internally and hands the application a whole UDS message
+    with NO PCI byte, so a frame's data IS the UDS payload. Validated against the
+    2026-10-04 capture, where a VIN request logs as id+`0902` (not `020902`) and
+    the reply as id+`490201<vin>` with no ISO-TP framing."""
+    return [IsoTpMessage(f.can_id, f.direction, f.data, f.ts, f.ts)
+            for f in frames if f.data]
+
+
 # --------------------------------------------------------------------------- #
 # UDS/OBD decode + pairing
 # --------------------------------------------------------------------------- #
 def _resp_id_for(tx_id: int) -> Optional[int]:
-    """GM 11-bit convention: a physical request on 7E0..7E7 is answered on
-    7E8..7EF. 7DF is functional broadcast (any 7E8..7EF may answer)."""
+    """The arbitration id a physical request is answered on, or None for a
+    functional broadcast (any ECU may answer; the decoder then pairs by service).
+
+    11-bit: 7E0..7E7 -> 7E8..7EF; 7DF is broadcast.
+    29-bit GM UDS: 0x18DA<target>F1 -> 0x18DA F1<target>; 0x18DB33F1 is
+    broadcast. Validated against the 2026-10-04 capture (18DA10F1 / 18DAF110)."""
     if 0x7E0 <= tx_id <= 0x7E7:
         return tx_id + 0x08
+    if (tx_id & 0xFFFF0000) == 0x18DA0000 and (tx_id & 0xFF) == 0xF1:
+        target = (tx_id >> 8) & 0xFF
+        return 0x18DA0000 | (0xF1 << 8) | target
     return None
 
 
@@ -488,11 +495,16 @@ def _ident_hex(service: int, req_payload: bytes) -> Optional[str]:
     return None
 
 
-def decode(frames: Iterable[Frame]) -> DecodeResult:
-    """Decode a frame list into read-DID observations and a per-service
-    summary. Requests (tx) are paired to the next response (rx) on the paired
-    arbitration id; a 0x62 reply yields a DID observation."""
-    msgs = reassemble(frames)
+def decode(frames: Iterable[Frame], raw_can: bool = False) -> DecodeResult:
+    """Decode a frame list into read-DID observations and a per-service summary.
+    Requests (tx) are paired to the next response (rx) on the paired arbitration
+    id; a 0x62 reply yields a DID observation.
+
+    raw_can=False (default): each frame is already a COMPLETE J2534 ISO15765
+    message (id + pure UDS payload, no PCI) -- what a J2534 capture produces,
+    because the DLL reassembles ISO-TP. raw_can=True: frames are raw CAN carrying
+    ISO-TP PCI and are reassembled first (a protocol-CAN capture)."""
+    msgs = reassemble(frames) if raw_can else frames_as_messages(frames)
     services: dict[int, ServiceStat] = {}
     dids: dict[tuple[int, str], DidObservation] = {}
     errors: list[tuple[int, str]] = []

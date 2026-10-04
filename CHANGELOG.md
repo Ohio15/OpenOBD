@@ -3,6 +3,26 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.19.2 — 2026-10-04
+
+### Fixed — validated against a real OBDX capture
+- **OBDX log format corrected.** The guessed line format in 0.19.1 was wrong.
+  A real capture (OBDXGT fw 1.0.2.0) logs one frame per line as
+  `… : PassThruWriteMsgs - Frame to Write: <hex>` (tx) and
+  `… : PassThruReadMsgs - Frame Found: <spaced hex>` (rx), timestamp
+  `HH:MM:SS:mmm`. `parse_obdx_log` now matches that exactly.
+- **Complete-message model.** The J2534 DLL reassembles ISO-TP internally, so a
+  capture carries whole UDS messages with **no PCI byte** (a VIN request logs as
+  `0902`, not `020902`). `decode()` now treats each frame as a complete message
+  by default (`frames_as_messages`); `decode(..., raw_can=True)` keeps the
+  ISO-TP reassembly path for a protocol-CAN capture. This was re-running
+  reassembly on already-assembled messages and producing phantom errors.
+- **29-bit addressing.** `_resp_id_for` now pairs GM 29-bit UDS
+  (`0x18DA<ecu>F1` → `0x18DAF1<ecu>`) as well as 11-bit, since the factory tool
+  uses both.
+- Validated on the real log: 7 frames, 0 reassembly errors, VIN read (mode 09)
+  correctly identified, unanswered mode-22 F802 probe flagged. Suite 287 passed.
+
 ## 0.19.1 — 2026-10-04
 
 ### Added
