@@ -3,6 +3,22 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.23.2 — 2026-10-04
+
+### Fixed
+- **The OBDX pass-thru driver killed the scan process.** First truck run of the
+  binary-mode path: the driver (a .NET DLL) threw an unhandled
+  `InvalidOperationException: The port is closed` from its background serial
+  thread after a device close, terminating Python, and the buffered output
+  died with it. Now: ONE device session per run (`swcan.sweep_buses`), each
+  bus on its own channel, every result handed to the caller before the single
+  close; dtcscan prints each result as it lands, line-buffered even when
+  redirected to dtcscan.out.
+
+### Known
+- The driver's close race itself is in the vendor DLL. If it still fires at
+  the final close, every result has already been printed.
+
 ## 0.23.1 — 2026-10-04
 
 ### Fixed
