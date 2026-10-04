@@ -41,6 +41,14 @@ def test_uds19_multiple_codes():
     assert len(r["codes"]) == 3
 
 
+def test_uds19_test_not_completed_only_is_not_a_fault():
+    # status 0x50 = bits 4 and 6 only (test not completed) -> table entry
+    resp = sf("643", "5902FF" + "40350050" + "40450009")
+    r = parse_uds19_reply(resp, "643")
+    assert r["codes"] == ["C0045"]
+    assert len(r["records"]) == 2
+
+
 def test_uds19_no_dtc_filler_skipped():
     resp = sf("643", "5902FF00000000")      # all-zero DTC = 'no codes' filler
     r = parse_uds19_reply(resp, "643")
@@ -168,6 +176,27 @@ def test_cli_fmt_uds_codes():
     assert dtcscan._fmt(info) == "C0035"
 
 
+def test_cli_fmt_a9_shows_status_and_hides_healthy_table():
+    info = {"name": "EBCM (ABS)", "result": {
+        "examined": True, "error": None,
+        "codes": {"dtcs": ["C0035"], "table": ["C0550", "C0035", "C0045"]},
+        "records": [("C0550", "00", "01"), ("C0035", "5A", "D3"),
+                    ("C0045", "00", "01")]}}
+    out = dtcscan._fmt(info)
+    assert out.startswith("C0035 [D3]")
+    assert "C0550" not in out and "C0045" not in out
+    assert "3 supported-DTC table entries read; 2 healthy" in out
+
+
+def test_cli_fmt_a9_clean_table_says_no_fault_codes():
+    info = {"name": "BCM", "result": {
+        "examined": True, "error": None,
+        "codes": {"dtcs": [], "table": ["B0005", "B1000"]},
+        "records": [("B0005", "00", "01"), ("B1000", "00", "19")]}}
+    out = dtcscan._fmt(info)
+    assert out.startswith("no fault codes") and "2 healthy" in out
+
+
 def test_cli_fmt_obd_and_unreachable_and_unexamined():
     obd = {"name": "ECM", "result": {"examined": True, "error": None,
            "codes": {"stored": ["P0010"], "pending": []}}}
@@ -200,17 +229,44 @@ REAL_EBCM = ("8145500001000000 8148990001000000 8149000001000000 "
              "8140450001000000 8140405A01000000 8140400001000000")
 
 
-def test_a9_real_ebcm_capture_decodes_c0035():
+def test_a9_real_ebcm_capture_is_table_not_faults():
+    # The 2026-10-04 capture: every entry carries housekeeping status 01, so it
+    # is the module's supported-DTC TABLE and holds no fault. This test used to
+    # assert C0035 was a fault here — that was the defect.
     r = parse_a9_report(REAL_EBCM, uudt_id="543")
     assert r["examined"] is True
-    assert "C0035" in r["codes"]              # the known ground-truth fault
-    assert "C0045" in r["codes"] and "C0040" in r["codes"]
-    assert r["codes"].count("C0035") == 1     # deduped (symptom 5A and 00)
+    assert r["codes"] == []
+    assert r["table"] == ["C0550", "C0899", "C0900", "C0035", "C0045", "C0040"]
+    assert r["table"].count("C0035") == 1     # deduped (symptom 5A and 00)
+
+
+def test_a9_live_c0035_status_d3_is_a_fault():
+    # D3 is the status truck-mcp read on the live LF wheel-speed fault.
+    r = parse_a9_report(a9("40", "35", status="D3") + " " + a9("45", "50"))
+    assert r["codes"] == ["C0035"]
+    assert r["table"] == ["C0035", "C0550"]
+
+
+def test_a9_status_rule():
+    from openobd.gt import a9_status_is_fault
+    for healthy in ("01", "19", "21", "25"):
+        assert a9_status_is_fault(healthy) is False
+    assert a9_status_is_fault("03") is True    # bit1 = currently failed
+    assert a9_status_is_fault("D3") is True
+    assert a9_status_is_fault("40") is True    # unknown status is never clean
+    assert a9_status_is_fault("zz") is True    # unparseable is never clean
+
+
+def test_a9_fault_if_any_record_for_code_is_faulty():
+    # same DTC, two symptoms: the healthy entry first must not mask the fault
+    r = parse_a9_report(a9("40", "35", "00", "01") + " " + a9("40", "35", "5A", "D3"))
+    assert r["codes"] == ["C0035"]
+    assert r["records"] == [("C0035", "00", "01"), ("C0035", "5A", "D3")]
 
 
 def test_a9_decodes_c0035_noid():
-    r = parse_a9_report(a9("40", "35"))
-    assert r["codes"] == ["C0035"] and r["records"] == [("C0035", "5A", "01")]
+    r = parse_a9_report(a9("40", "35", status="D3"))
+    assert r["codes"] == ["C0035"] and r["records"] == [("C0035", "5A", "D3")]
 
 
 def test_a9_id_prefixed_still_supported():
@@ -229,8 +285,10 @@ def test_a9_negative_response():
 
 
 def test_a9_dedups_repeated_dtc():
-    r = parse_a9_report(a9("40", "35", "5A") + " " + a9("40", "35", "00"))
+    r = parse_a9_report(a9("40", "35", "5A", "D3") + " " + a9("40", "35", "00", "D3")
+                        + " " + a9("40", "35", "5A", "D3"))
     assert r["codes"] == ["C0035"]
+    assert len(r["records"]) == 2             # identical frame counted once
 
 
 class GmlanFakeGt:
@@ -262,10 +320,11 @@ GmlanFakeGt.read_gmlan_dtcs = ObdxGt.read_gmlan_dtcs
 
 
 def test_read_gmlan_dtcs_reads_c0035():
-    gt = GmlanFakeGt(a9("40", "35"))
+    gt = GmlanFakeGt(a9("40", "35", status="D3") + " " + a9("45", "50"))
     out = gt.read_gmlan_dtcs("243")
     assert out["examined"] is True and out["error"] is None
     assert out["codes"]["dtcs"] == ["C0035"]
+    assert out["codes"]["table"] == ["C0035", "C0550"]
     # addressed the EBCM's report id, and the teardown really ran
     assert "ATCRA543" in gt.cmds
     assert "ATSP0" in gt.cmds and "ATCAF1" in gt.cmds and "restore" in gt.cmds

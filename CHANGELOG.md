@@ -3,6 +3,24 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.22.3 — 2026-10-04
+
+### Fixed
+- **The EBCM/BCM scan listed the whole supported-DTC table as faults.** GMLAN
+  `$A9 81` with mask FF returns every DTC the calibration supports, each with a
+  status byte. `parse_a9_report` ignored that byte, so the first truck scan
+  printed 35 ABS and 47 body "codes". It now applies truck-mcp's verified rule
+  (`gmlan.fault_codes`): a code is a fault only when status bit1 (currently
+  failed) is set or the status is not a housekeeping value (01/19/21/25).
+  Unknown statuses count as faults. The full table moves to `codes["table"]`.
+- The 0.22.2 "C0035 verified" claim was wrong. The real capture shows C0035 at
+  status 01, a healthy table entry; the live fault read D3 in August. The test
+  that asserted otherwise is rewritten.
+- Same class in `parse_uds19_reply`: records whose only status bits are
+  "test not completed" (ISO 14229 bits 4 and 6) are no longer reported as codes.
+- `dtcscan` prints each fault with its status byte and counts the healthy
+  table entries instead of listing them.
+
 ## 0.22.2 — 2026-10-04
 
 ### Fixed — $A9 report frame format (VERIFIED on the truck, C0035 decoded)

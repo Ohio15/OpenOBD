@@ -255,6 +255,13 @@ _SPARK_MONITORS = ["Catalyst", "Heated catalyst", "EVAP system",
                    "O2 heater", "EGR system"]
 
 
+# ISO 14229-1 DTC status bits that mean a test FAILED: testFailed (0),
+# testFailedThisOperationCycle (1), pendingDTC (2), confirmedDTC (3),
+# testFailedSinceLastClear (5), warningIndicatorRequested (7). Bits 4 and 6 are
+# 'test not completed' and never make a record a fault on their own.
+UDS_FAULT_STATUS_BITS = 0xAF
+
+
 def parse_uds19_reply(resp: str, resp_id: Optional[str] = None) -> dict:
     """UDS ReadDTCInformation $19 02 (reportDTCByStatusMask) reply, headers-on.
 
@@ -264,6 +271,11 @@ def parse_uds19_reply(resp: str, resp_id: Optional[str] = None) -> dict:
     only that id is parsed, so a physically addressed module's reply cannot be
     confused with another's. The GMLAN chassis/body modules (EBCM, BCM) answer
     this service; the powertrain modules use the 2-byte OBD modes instead.
+
+    The request mask is FF, so a module also returns records whose only set
+    bits are 'test not completed' (ISO 14229 status bits 4 and 6) — those are
+    NOT faults. "codes" holds only records with a failure bit set
+    (UDS_FAULT_STATUS_BITS); every record stays in "records".
 
     Returns {"codes": [SAE strings], "records": [(code, ftb, status)],
     "errors": [reason], "examined": bool}. An all-zero DTC (00 00 00) is the
@@ -285,9 +297,26 @@ def parse_uds19_reply(resp: str, resp_id: Optional[str] = None) -> dict:
                 if d0 == 0 and d1 == 0 and ftb == 0:
                     continue                  # 'no DTC' filler record
                 code = format_dtc(d0, d1)
-                out["codes"].append(code)
                 out["records"].append((code, ftb, status))
+                if status & UDS_FAULT_STATUS_BITS and code not in out["codes"]:
+                    out["codes"].append(code)
     return out
+
+
+# GMLAN $A9 status byte (truck-mcp gmlan.py, verified on this truck
+# 2026-08-03): bit1 = currently failed, bit7 = warning lamp; 01/19/21/25 are the
+# housekeeping values healthy supported-DTC entries carry.
+A9_BASELINE_STATUSES = frozenset({0x01, 0x19, 0x21, 0x25})
+
+
+def a9_status_is_fault(status: str) -> bool:
+    """True when an $A9 status byte marks a real fault, not a table entry.
+    An unparseable status is treated as a fault — unknown is never clean."""
+    try:
+        v = int(status, 16)
+    except (TypeError, ValueError):
+        return True
+    return bool(v & 0x02) or v not in A9_BASELINE_STATUSES
 
 
 def parse_a9_report(resp: str, uudt_id: Optional[str] = None) -> dict:
@@ -301,11 +330,23 @@ def parse_a9_report(resp: str, uudt_id: Optional[str] = None) -> dict:
     negative response arrives USDT on request+0x400: '<id>037FA9<nrc>'.
 
     When uudt_id is given only that id's frames are counted, so a neighbouring
-    module's report cannot bleed in. Returns {"codes": [SAE], "records":
-    [(code, symptom, status)], "examined": bool, "negative": nrc|None}.
-    'examined' is True once any $A9 report frame (even the 00 00 marker) or a
-    negative is seen — silence stays 'not examined', never 'no codes'."""
-    out: dict = {"codes": [], "records": [], "examined": False, "negative": None}
+    module's report cannot bleed in.
+
+    THE TABLE IS NOT THE FAULT LIST. With mask FF the module reports EVERY DTC
+    its calibration supports, each with a status byte; a healthy entry carries a
+    housekeeping status (01/19/21/25, observed on this truck by truck-mcp). A
+    code is a FAULT only when its status has bit1 (currently failed) set or is
+    not a housekeeping value — the same rule as truck-mcp gmlan.fault_codes
+    (a live C0035 reads status D3; the 2026-10-04 post-SPS capture read 01).
+    Unknown statuses count as faults: an unrecognised status is never clean.
+
+    Returns {"codes": [SAE faults], "table": [every SAE code reported],
+    "records": [(code, symptom, status)] (unique triples), "examined": bool,
+    "negative": nrc|None}. 'examined' is True once any $A9 report frame (even
+    the 00 00 marker) or a negative is seen — silence stays 'not examined',
+    never 'no codes'."""
+    out: dict = {"codes": [], "table": [], "records": [], "examined": False,
+                 "negative": None}
     want = uudt_id.upper() if uudt_id else None
     seen: set = set()
     for tok in resp.upper().split():
@@ -340,11 +381,17 @@ def parse_a9_report(resp: str, uudt_id: Optional[str] = None) -> dict:
         if b1 == 0 and b2 == 0:
             continue                                             # end-of-table
         code = format_dtc(b1, b2)
-        if code in seen:          # a DTC repeats with different symptom bytes
+        rec = (code, symptom, status)
+        if rec in seen:           # the module repeats frames within one capture
             continue
-        seen.add(code)
-        out["codes"].append(code)
-        out["records"].append((code, symptom, status))
+        seen.add(rec)
+        out["records"].append(rec)
+        if code not in out["table"]:
+            out["table"].append(code)
+        # a DTC repeats with different symptom bytes; it is a fault if ANY of
+        # its entries is, so evaluate every record, not just the first one.
+        if a9_status_is_fault(status) and code not in out["codes"]:
+            out["codes"].append(code)
     return out
 
 
@@ -833,14 +880,17 @@ class ObdxGt:
         RESTORE automatic protocol search + CAF. Verified sequence ported from
         truck-mcp (read_chassis_dtcs), which reads this truck's C0035 live.
 
-        Returns {"examined", "error", "codes": {"dtcs": [..]}, "records",
-        "raw"}. Needs the STN/OBDX ST commands (STP/STFAP); if the GT rejects
+        Returns {"examined", "error", "codes": {"dtcs": [faults], "table":
+        [every reported code]}, "records", "raw"}. "dtcs" holds only codes whose
+        status marks a fault (see parse_a9_report); the rest of the module's
+        supported-DTC table is in "table" and is NOT a fault list. Needs the STN/OBDX ST commands (STP/STFAP); if the GT rejects
         STP the error says so."""
         req = int(req_id, 16)
         uudt = f"{req + 0x300:03X}"           # report frames (EBCM 543, BCM 541)
         usdt = f"{req + 0x400:03X}"           # negative responses (643 / 641)
         out: dict = {"examined": False, "error": None,
-                     "codes": {"dtcs": []}, "records": [], "raw": ""}
+                     "codes": {"dtcs": [], "table": []}, "records": [],
+                     "raw": ""}
         if sw:
             out["error"] = "SW-CAN GMLAN not supported over the GT's ELM yet"
             self._restore_default()
@@ -876,7 +926,8 @@ class ObdxGt:
                 pn = parse_a9_report(resp2, uudt_id=usdt)
                 if pn["negative"]:
                     p["negative"] = pn["negative"]
-            out["codes"]["dtcs"] = p["codes"]
+            out["codes"]["dtcs"] = p["codes"]          # faults only
+            out["codes"]["table"] = p["table"]         # every supported entry
             out["records"] = p["records"]
             out["examined"] = p["examined"]
             if p["negative"]:

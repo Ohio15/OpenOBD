@@ -3,8 +3,10 @@ dtcscan.py -- headless per-module DTC read over the OBDX Pro GT.
 
 Reads DTCs from every reachable module and prints them as text:
   * ECM and TCM via the OBD modes 03/07/0A (functional read_dtcs sees these too),
-  * EBCM and BCM via UDS $19 02 -- the GMLAN chassis/body modules the functional
-    read CANNOT reach, because they do not answer the OBD broadcast,
+  * EBCM and BCM via GMLAN $A9 81 -- the chassis/body modules the functional
+    read CANNOT reach, because they do not answer the OBD broadcast. $A9 returns
+    the module's whole supported-DTC table; only entries whose status byte marks
+    a fault are printed (status shown in brackets), the rest are counted,
   * the SW-GMLAN modules (IPC, SDM, HVAC, radio, TCCM) have no HS diagnostic id
     on this path and are reported 'unreachable', never silently dropped.
 
@@ -16,10 +18,9 @@ The GT must be free (close the OpenOBD GUI / Techline first) and out of binary
 mode (replug USB + OBD for 10 s if it answers in J2534 binary). Exit codes:
 0 ok, 3 interface/connect problem.
 
-VERIFY ON THE TRUCK: the EBCM read uses UDS $19 by default. Your known C0035
-(left-front wheel speed) is the ground truth -- if the EBCM line shows C0035, the
-$19 path is correct for this module; if the EBCM NAKs $19, it uses a GM legacy
-DTC service instead and we switch the EBCM/BCM path to that.
+VERIFY ON THE TRUCK: the known LF wheel-speed fault (C0035) read status D3
+when it was live (truck-mcp, 2026-08-03). A healthy or not-yet-retested entry
+reads a housekeeping status (01/19/21/25) and is counted, not printed.
 """
 from __future__ import annotations
 
@@ -36,8 +37,20 @@ def _fmt(info: dict) -> str:
     if not r["examined"]:
         return f"NOT EXAMINED -- {r.get('error') or 'no answer'}"
     codes = r["codes"]
-    if "dtcs" in codes:                       # UDS path (EBCM/BCM)
-        return ", ".join(codes["dtcs"]) if codes["dtcs"] else "no codes"
+    if "dtcs" in codes:                       # GMLAN $A9 path (EBCM/BCM)
+        faults = codes["dtcs"]
+        status = {}
+        for code, _sym, st in r.get("records", []):
+            if code in faults:
+                status.setdefault(code, []).append(st)
+        body = (", ".join(f"{c} [{'/'.join(status[c])}]" if c in status else c
+                          for c in faults)
+                if faults else "no fault codes")
+        table = codes.get("table", [])
+        tail = (f"  ({len(table)} supported-DTC table entries read; "
+                f"{len(table) - len(faults)} healthy)") if table else ""
+        err = f"  [{r['error']}]" if r.get("error") else ""
+        return body + tail + err
     parts = []                                # OBD path (ECM/TCM)
     for k in ("stored", "pending", "permanent"):
         if k in codes:
