@@ -3,6 +3,30 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.21.0 — 2026-10-04
+
+### Added — per-module DTC read (reaches the EBCM/BCM, not just the OBD channel)
+- **`gt.read_module_dtcs(req_id, resp_id, uds=)`** reads DTCs from ONE module by
+  physical addressing: the ISO15765 powertrain modules (ECM, TCM) via OBD modes
+  03/07/0A, the GMLAN chassis/body modules (EBCM, BCM) via UDS `$19 02`, which the
+  functional `read_dtcs()` cannot reach because they don't answer the OBD
+  broadcast. Header restored to the ECM afterward; silence is "not examined",
+  never "no codes".
+- **`gt.parse_uds19_reply`** decodes a `$19 02` reply (3-byte DTC + status),
+  per-responder, reusing the ISO-TP reassembler and `format_dtc`.
+- **`vehnet.scan_all_module_dtcs(gt)`** reads every reachable module in one pass;
+  SW-GMLAN modules (IPC, SDM, HVAC, radio, TCCM) have no HS id and are reported
+  `unreachable`, not dropped.
+- **`openobd/dtcscan.py`** — headless `python -m openobd.dtcscan`: connect the GT
+  and print per-module codes as text. 13 tests (UDS parse incl. C0035, the OBD
+  and UDS read paths, NAK→legacy hint, silence handling, orchestration, CLI
+  formatting). Full suite 318.
+
+### To verify on the truck
+- The EBCM path uses UDS `$19` by default; the known **C0035** is the ground
+  truth. If the EBCM line shows C0035 the path is correct; if it NAKs `$19`, the
+  module uses a GM legacy DTC service and we switch the EBCM/BCM path to that.
+
 ## 0.20.1 — 2026-10-04
 
 ### Added — UAC-style approval popup (closed-loop step A, increment 2)

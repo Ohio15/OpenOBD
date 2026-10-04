@@ -248,6 +248,32 @@ def scan_pipeline(gt) -> ScanResult:
         dlc_reply=facts.get("dlc_reply", ""))
 
 
+def scan_all_module_dtcs(gt) -> dict:
+    """Read DTCs from every reachable module, one physical read each.
+
+    HS modules that carry a diagnostic id are read directly: the ISO15765
+    powertrain ids (7Ex — ECM, TCM) via OBD modes 03/07/0A, the GMLAN
+    chassis/body ids (24x — EBCM, BCM) via UDS $19 02. This reaches the EBCM/BCM
+    that the functional read_dtcs() cannot, because they do not answer the OBD
+    broadcast. SW-GMLAN modules (IPC, SDM, HVAC, radio, TCCM) carry no HS id and
+    are reported 'unreachable' on this path — never silently dropped.
+
+    Returns {module_key: {"name": str, "result": <read_module_dtcs dict>}} for a
+    read, or {..., "unreachable": reason} for a module that has no HS id. The
+    EBCM path is UDS $19 by default; verify it on the truck against the known
+    C0035 (a GM legacy service is the fallback if the module NAKs $19)."""
+    out: dict = {}
+    for m in MODULES:
+        if m.bus != HS or not m.req_id or not m.resp_id:
+            out[m.key] = {"name": m.name,
+                          "unreachable": "no HS diagnostic id (SW-GMLAN only)"}
+            continue
+        uds = not m.req_id.upper().startswith("7E")   # 24x GMLAN chassis/body
+        out[m.key] = {"name": m.name,
+                      "result": gt.read_module_dtcs(m.req_id, m.resp_id, uds=uds)}
+    return out
+
+
 def _module(key: str) -> Optional[ModuleDef]:
     for m in MODULES:
         if m.key == key:

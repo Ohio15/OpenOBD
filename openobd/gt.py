@@ -255,6 +255,41 @@ _SPARK_MONITORS = ["Catalyst", "Heated catalyst", "EVAP system",
                    "O2 heater", "EGR system"]
 
 
+def parse_uds19_reply(resp: str, resp_id: Optional[str] = None) -> dict:
+    """UDS ReadDTCInformation $19 02 (reportDTCByStatusMask) reply, headers-on.
+
+    Shape: 59 02 <statusAvailabilityMask> then N records of 4 bytes each — a
+    3-byte DTC (SAE 2-byte code + 1-byte failure-type byte) and a 1-byte status.
+    Reassembled per responder (reuses reassemble_isotp); when resp_id is given
+    only that id is parsed, so a physically addressed module's reply cannot be
+    confused with another's. The GMLAN chassis/body modules (EBCM, BCM) answer
+    this service; the powertrain modules use the 2-byte OBD modes instead.
+
+    Returns {"codes": [SAE strings], "records": [(code, ftb, status)],
+    "errors": [reason], "examined": bool}. An all-zero DTC (00 00 00) is the
+    'no DTCs' filler and is skipped, never counted. 'examined' is True only when
+    a 59 02 positive reply was actually seen — silence is never 'no codes'."""
+    out: dict = {"codes": [], "records": [], "errors": [], "examined": False}
+    for cid, m in reassemble_isotp(resp).items():
+        if resp_id and cid.upper() != resp_id.upper():
+            continue
+        out["errors"].extend(m["errors"])
+        for msg in m["messages"]:
+            b = [int(msg[i:i + 2], 16) for i in range(0, len(msg) - 1, 2)]
+            if len(b) < 3 or b[0] != 0x59 or b[1] != 0x02:
+                continue
+            out["examined"] = True
+            rec = b[3:]                       # after 59 02 <availabilityMask>
+            for i in range(0, len(rec) - 3, 4):
+                d0, d1, ftb, status = rec[i], rec[i + 1], rec[i + 2], rec[i + 3]
+                if d0 == 0 and d1 == 0 and ftb == 0:
+                    continue                  # 'no DTC' filler record
+                code = format_dtc(d0, d1)
+                out["codes"].append(code)
+                out["records"].append((code, ftb, status))
+    return out
+
+
 def parse_readiness(data: list[int]) -> dict:
     """PID 0101 payload (4 bytes) -> MIL, DTC count, monitor table."""
     if not data or len(data) < 4:
@@ -668,6 +703,60 @@ class ObdxGt:
                                   ("stored", "pending", "permanent"))
             if not out["examined"]:
                 out["error"] = "no module answered the DTC requests"
+            return out
+        finally:
+            self._restore_default()
+
+    def read_module_dtcs(self, req_id: str, resp_id: str,
+                         uds: bool = False) -> dict:
+        """DTCs from ONE module, PHYSICALLY addressed (tx header = req_id, reply
+        expected on resp_id), with the header restored to the ECM (7E0) after.
+
+        uds=False: OBD modes 03/07/0A (2-byte DTCs) — the ISO15765 powertrain
+        modules (ECM 7E0/7E8, TCM 7E2/7EA). uds=True: UDS $19 02 FF (3-byte DTC
+        + status) — the GMLAN chassis/body modules (EBCM 243/643, BCM 241/641)
+        which do NOT answer the functional OBD broadcast, so the functional
+        read_dtcs() cannot see them.
+
+        Returns {"examined": bool, "error": str|None, "codes": {...}, "raw":
+        {...}}. For OBD: codes = {kind: [codes]} filtered to this module's
+        resp_id. For UDS: codes = {"dtcs": [codes]}. Silence is reported as
+        'not examined', never as 'no codes'."""
+        target = req_id.upper()
+        want = resp_id.upper()
+        out: dict = {"examined": False, "error": None, "codes": {}, "raw": {}}
+        why = self._prepare(target, headers_on=True)
+        if why:
+            out["error"] = why
+            self._restore_default()
+            return out
+        try:
+            if uds:
+                resp = self.command("1902FF", wait=0.3)
+                out["raw"]["1902"] = resp
+                if is_binary_reply(self.last_raw) or "?" in resp:
+                    out["error"] = "no usable answer to $19 02"
+                else:
+                    r = parse_uds19_reply(resp, want)
+                    out["codes"]["dtcs"] = r["codes"]
+                    out["examined"] = r["examined"]
+                    if r["errors"]:
+                        out["error"] = "; ".join(r["errors"])
+                    elif not r["examined"]:
+                        out["error"] = ("no 59 02 reply — the module may use a "
+                                        "GM legacy DTC service, not UDS $19")
+            else:
+                for mode, key in (("03", "stored"), ("07", "pending"),
+                                  ("0A", "permanent")):
+                    resp = self.command(mode, wait=0.15)
+                    out["raw"][key] = resp
+                    if is_binary_reply(self.last_raw) or "?" in resp:
+                        continue
+                    res = parse_dtc_reply(resp, mode)
+                    out["codes"][key] = res["by_module"].get(want, [])
+                    out["examined"] = True
+            if not out["examined"] and not out["error"]:
+                out["error"] = "module did not answer the DTC request"
             return out
         finally:
             self._restore_default()
