@@ -342,11 +342,14 @@ def parse_a9_report(resp: str, uudt_id: Optional[str] = None) -> dict:
 
     Returns {"codes": [SAE faults], "table": [every SAE code reported],
     "records": [(code, symptom, status)] (unique triples), "examined": bool,
-    "negative": nrc|None}. 'examined' is True once any $A9 report frame (even
-    the 00 00 marker) or a negative is seen — silence stays 'not examined',
-    never 'no codes'."""
+    "negative": nrc|None, "complete": bool}. 'examined' is True once any $A9
+    report frame (even the 00 00 marker) or a negative is seen — silence stays
+    'not examined', never 'no codes'. 'complete' is True only when the 00 00
+    END-OF-TABLE marker arrived: a capture cut short (the adapter stopped
+    listening mid-table — seen 2026-10-04, the BCM read 46 of 66 entries over
+    ELM) is examined but NOT complete, and must be reported as such."""
     out: dict = {"codes": [], "table": [], "records": [], "examined": False,
-                 "negative": None}
+                 "negative": None, "complete": False}
     want = uudt_id.upper() if uudt_id else None
     seen: set = set()
     for tok in resp.upper().split():
@@ -379,7 +382,8 @@ def parse_a9_report(resp: str, uudt_id: Optional[str] = None) -> dict:
             continue
         out["examined"] = True
         if b1 == 0 and b2 == 0:
-            continue                                             # end-of-table
+            out["complete"] = True                               # end-of-table
+            continue
         code = format_dtc(b1, b2)
         rec = (code, symptom, status)
         if rec in seen:           # the module repeats frames within one capture
@@ -871,6 +875,19 @@ class ObdxGt:
         finally:
             self._restore_default()
 
+    def _long_listen(self) -> bool:
+        """Keep the adapter listening through a multi-frame $A9 table. An
+        ELM-style adapter ends reception (and prints '>') once no frame has
+        arrived for its timeout, ~200 ms by default with adaptive timing; a
+        module that pauses longer mid-table loses everything after the pause.
+        ATAT0 + ATSTFF fixes the wait at the maximum (~1 s). Returns False if
+        the GT refused either; the completeness check still catches a cut."""
+        return self._at_checked("ATAT0") and self._at_checked("ATSTFF")
+
+    def _restore_listen(self) -> None:
+        self._at_checked("ATST32")            # ELM default timeout (~200 ms)
+        self._at_checked("ATAT1")             # adaptive timing back on
+
     def read_gmlan_dtcs(self, req_id: str, sw: bool = False,
                         uudt_id: Optional[str] = None,
                         usdt_id: Optional[str] = None) -> dict:
@@ -895,7 +912,7 @@ class ObdxGt:
         usdt = (usdt_id or f"{req + 0x400:03X}").upper()
         out: dict = {"examined": False, "error": None,
                      "codes": {"dtcs": [], "table": []}, "records": [],
-                     "raw": ""}
+                     "raw": "", "complete": False}
         if sw:
             out["error"] = "SW-CAN GMLAN not supported over the GT's ELM yet"
             self._restore_default()
@@ -916,7 +933,8 @@ class ObdxGt:
                 out["error"] = f"could not set header {req_id}"
                 return out
             self.command(f"ATCRA{uudt}", wait=0.05)   # accept the report id
-            resp = self.command("03A981FF55555555", wait=0.0, deadline=1.6)
+            listen_ok = self._long_listen()
+            resp = self.command("03A981FF55555555", wait=0.0, deadline=6.0)
             out["raw"] = resp
             if is_binary_reply(self.last_raw):
                 out["error"] = "binary reply"
@@ -926,7 +944,7 @@ class ObdxGt:
             # was silent, so a clean report is never masked by a stray frame.
             if not p["examined"]:
                 self.command(f"ATCRA{usdt}", wait=0.05)
-                resp2 = self.command("03A981FF55555555", wait=0.0, deadline=0.8)
+                resp2 = self.command("03A981FF55555555", wait=0.0, deadline=3.0)
                 out["raw"] = f"{resp} || {resp2}"
                 pn = parse_a9_report(resp2, uudt_id=usdt)
                 if pn["negative"]:
@@ -935,14 +953,20 @@ class ObdxGt:
             out["codes"]["table"] = p["table"]         # every supported entry
             out["records"] = p["records"]
             out["examined"] = p["examined"]
+            out["complete"] = p["complete"]
             if p["negative"]:
                 out["error"] = f"module negative response (NRC {p['negative']})"
+            elif p["examined"] and not p["complete"]:
+                out["error"] = ("INCOMPLETE: no end-of-table marker, the capture "
+                                "was cut short" + ("" if listen_ok else
+                                " (GT refused the long-listen setting)"))
             elif not p["examined"]:
                 out["error"] = ("no $A9 report decoded — raw kept for bring-up: "
                                 + (out["raw"][:160] or "(nothing returned)"))
             return out
         finally:
             # leave the GT as the rest of the app expects.
+            self._restore_listen()
             self.command("ATCRA", wait=0.05)  # reset the receive filter
             self._at_checked("ATCAF1")
             self.command("ATSP0", wait=0.1)   # back to automatic protocol search
@@ -977,6 +1001,7 @@ class ObdxGt:
             if not self._set_header("101"):
                 out["error"] = "could not set header 101"
                 return out
+            self._long_listen()
             raws = []
             for filt in ("500", "600"):
                 self.command("ATCRA", wait=0.05)
@@ -984,7 +1009,7 @@ class ObdxGt:
                         and self._at_checked("ATCM700")):
                     out["error"] = f"GT refused the 0x{filt} receive filter"
                     return out
-                resp = self.command(req, wait=0.0, deadline=2.0)
+                resp = self.command(req, wait=0.0, deadline=6.0)
                 if is_binary_reply(self.last_raw):
                     out["error"] = "binary reply"
                     return out
@@ -1007,6 +1032,7 @@ class ObdxGt:
                                 "for bring-up: " + (out["raw"][:160] or "(nothing)"))
             return out
         finally:
+            self._restore_listen()
             self.command("ATCRA", wait=0.05)
             self.command("ATCF000", wait=0.05)
             self.command("ATCM000", wait=0.05)

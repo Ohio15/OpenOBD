@@ -3,6 +3,22 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.24.1 — 2026-10-04
+
+### Fixed
+- **Text-mode `$A9` reads were cut short** (the BCM gave 46 of its 66 table
+  entries over ELM, all 66 over pass-thru). An ELM-style adapter stops
+  listening and prints its prompt once no frame has arrived for its timeout
+  (~200 ms, adaptive); a module pausing longer mid-table lost the rest. The
+  per-module read and the functional sweep now set ATAT0 + ATSTFF (fixed ~1 s
+  wait) for the capture, restore ATST32 + ATAT1 after, and wait up to 6 s.
+- **Class fix: a cut table can no longer pass as a short one.** Every GM `$A9`
+  table ends with a 00 00 end-of-table marker (verified: one per table in the
+  2026-08-06 truck capture, BCM after 76 reports, EBCM after 45).
+  `parse_a9_report` returns `complete`; a read without the marker is reported
+  "INCOMPLETE" in dtcscan (per-module lines and both sweeps) and in
+  dtcscan.json, with the data it did get.
+
 ## 0.24.0 — 2026-10-04
 
 ### Added

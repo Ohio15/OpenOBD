@@ -330,10 +330,13 @@ class GmlanFakeGt:
 
 
 GmlanFakeGt.read_gmlan_dtcs = ObdxGt.read_gmlan_dtcs
+GmlanFakeGt._long_listen = ObdxGt._long_listen
+GmlanFakeGt._restore_listen = ObdxGt._restore_listen
 
 
 def test_read_gmlan_dtcs_reads_c0035():
-    gt = GmlanFakeGt(a9("40", "35", status="D3") + " " + a9("45", "50"))
+    gt = GmlanFakeGt(a9("40", "35", status="D3") + " " + a9("45", "50")
+                     + " " + a9("00", "00"))
     out = gt.read_gmlan_dtcs("243")
     assert out["examined"] is True and out["error"] is None
     assert out["codes"]["dtcs"] == ["C0035"]
@@ -439,3 +442,37 @@ def test_read_gmlan_dtcs_uses_explicit_ids_for_tccm():
     out = gt.read_gmlan_dtcs("7E4", uudt_id="5EC", usdt_id="7EC")
     assert "ATCRA5EC" in gt.cmds
     assert out["codes"]["dtcs"] == ["C0398"]
+
+
+# --------------------------------------------------------------------------- #
+# truncation (2026-10-04: BCM read 46 of 66 entries over ELM)
+# --------------------------------------------------------------------------- #
+def test_a9_complete_only_with_end_marker():
+    full = a9("40", "35", status="D3") + " " + a9("00", "00")
+    cut = a9("40", "35", status="D3")
+    assert parse_a9_report(full)["complete"] is True
+    assert parse_a9_report(cut)["complete"] is False
+    assert parse_a9_report(cut)["examined"] is True
+
+
+def test_a9_end_marker_from_another_id_does_not_complete():
+    r = parse_a9_report("54381403500D3000000 54181000000000000",
+                        uudt_id="543")
+    assert r["examined"] is True and r["complete"] is False
+
+
+def test_read_gmlan_flags_a_cut_table_and_sets_long_listen():
+    gt = GmlanFakeGt(a9("40", "35", status="D3"))          # no end marker
+    out = gt.read_gmlan_dtcs("243")
+    assert out["complete"] is False and "INCOMPLETE" in out["error"]
+    assert out["codes"]["dtcs"] == ["C0035"]               # data still kept
+    i_at0, i_st = gt.cmds.index("ATAT0"), gt.cmds.index("ATSTFF")
+    i_req = gt.cmds.index("03A981FF55555555")
+    assert i_at0 < i_req and i_st < i_req                  # set BEFORE request
+    assert "ATST32" in gt.cmds and "ATAT1" in gt.cmds      # restored after
+
+
+def test_read_gmlan_complete_table_has_no_error():
+    gt = GmlanFakeGt(a9("40", "35", status="D3") + " " + a9("00", "00"))
+    out = gt.read_gmlan_dtcs("243")
+    assert out["complete"] is True and out["error"] is None

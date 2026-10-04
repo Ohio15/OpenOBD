@@ -106,7 +106,9 @@ def _fmt_sweep(sw: dict, head: str = _HS_HEAD,
         who = known.get(cid, "UNACCOUNTED -- not an identified module")
         faults = (_fault_text(rep["records"], rep["codes"])
                   or "no fault codes")
-        lines.append(f"  0x{cid} {who}: {faults}")
+        cut = ("" if rep.get("complete", True) else
+               "  [INCOMPLETE: no end-of-table marker, table may be cut short]")
+        lines.append(f"  0x{cid} {who}: {faults}{cut}")
         # the full supported-DTC table is the module's fingerprint (C03xx =
         # transfer case, C07xx = tire pressure, ...): print it, it is how an
         # unaccounted id gets identified.
@@ -177,7 +179,8 @@ def main(argv=None) -> int:
             "vbatt": res.get("vbatt"), "frames": res.get("frames"),
             "negatives": res.get("negatives", {}),
             "responders": {cid: {"records": [list(x) for x in rep["records"]],
-                                 "faults": rep["codes"], "table": rep["table"]}
+                                 "faults": rep["codes"], "table": rep["table"],
+                                 "complete": rep.get("complete")}
                            for cid, rep in res.get("responders", {}).items()}}
         try:
             with open("dtcscan.json", "w", encoding="utf-8") as fh:
