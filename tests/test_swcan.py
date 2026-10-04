@@ -139,6 +139,51 @@ def test_channel_disconnected_and_device_closed_after_success():
     assert ("disconnect", 7) in fake.calls and fake.calls[-1] == "close"
 
 
+def test_hs_bus_uses_plain_can_500k_without_pin_config():
+    fake = FakePassThru(functional=[frame(0x543, "8140355AD3000000")])
+    out = swcan.sweep(fake, bus="hs", capture_s=0.01, per_id_s=0.0)
+    assert ("connect", jt.CAN, 500000) in fake.calls
+    assert not any(c[0] == "set_config" for c in fake.calls
+                   if isinstance(c, tuple))
+    assert ("filter", jt.CAN, 0x500, 0x700) in fake.calls
+    assert out["responders"]["543"]["codes"] == ["C0035"]
+
+
+def test_unknown_bus_refused_before_opening():
+    import pytest
+    fake = FakePassThru()
+    with pytest.raises(ValueError):
+        swcan.sweep(fake, bus="ms")
+
+
+class _BinaryGt:
+    """ObdxGt stand-in whose open() reports binary mode."""
+    autodetect = staticmethod(lambda: "COM3")
+
+    def __init__(self, port):
+        pass
+
+    def open(self):
+        from openobd.gt import GtBinaryMode
+        raise GtBinaryMode("binary")
+
+
+def test_cli_in_binary_mode_still_runs_both_sweeps(monkeypatch, capsys):
+    from openobd import dtcscan
+    buses = []
+
+    def fake_sweep(j=None, *, bus="sw", **kw):
+        buses.append(bus)
+        return {"examined": False, "error": "nothing", "responders": {},
+                "negatives": {}, "vbatt": 12.5, "frames": 0}
+    monkeypatch.setattr(dtcscan, "ObdxGt", _BinaryGt)
+    monkeypatch.setattr(dtcscan.swcan, "sweep", fake_sweep)
+    assert dtcscan.main() == 0
+    out = capsys.readouterr().out
+    assert buses == ["hs", "sw"]
+    assert "pass-thru (binary) mode" in out and "12.50 V" in out
+
+
 def test_fmt_sw_sweep_prints_by_address():
     from openobd import dtcscan
     rep = {"codes": ["C0327"], "table": ["C0327"],

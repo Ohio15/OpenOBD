@@ -60,12 +60,20 @@ def summarize(frames: list[bytes]) -> dict:
     return out
 
 
-def sweep(j=None, *, capture_s: float = 2.0, per_id_s: float = 0.3) -> dict:
-    """Run the SW-CAN $A9 sweep. `j` is an openobd pass-thru client (injected
+def sweep(j=None, *, bus: str = "sw", capture_s: float = 2.0,
+          per_id_s: float = 0.3) -> dict:
+    """Run the $A9 sweep on one bus through the pass-thru driver: bus "sw" is
+    single-wire GMLAN (33.3 kbps, pin 1); bus "hs" is HS-GMLAN (500 kbps, the
+    default CAN pins 6/14) — the same read the ELM path does, usable when the
+    GT is already in binary mode. `j` is an openobd pass-thru client (injected
     by tests; built from the registered OBDX driver otherwise). Returns
     {"examined", "error", "responders", "negatives", "vbatt", "frames"};
     silence is NOT EXAMINED, never 'clean'."""
     from . import j2534 as jt
+    if bus not in ("sw", "hs"):
+        raise ValueError(f"unknown bus {bus!r}")
+    proto = jt.SW_CAN_PS if bus == "sw" else jt.CAN
+    baud = jt.SW_CAN_BAUD if bus == "sw" else 500000
     out: dict = {"examined": False, "error": None, "responders": {},
                  "negatives": {}, "vbatt": None, "frames": 0}
     try:
@@ -82,10 +90,11 @@ def sweep(j=None, *, capture_s: float = 2.0, per_id_s: float = 0.3) -> dict:
             out["vbatt"] = j.read_vbatt()
         except Exception:                                     # noqa: BLE001
             pass
-        ch = j.connect(jt.SW_CAN_PS, jt.SW_CAN_BAUD)
-        j.set_config(ch, [(jt.J1962_PINS, jt.SW_CAN_PINS)])
-        j.pass_filter(ch, jt.SW_CAN_PS, 0x500, 0x700)       # UUDT reports
-        j.pass_filter(ch, jt.SW_CAN_PS, 0x600, 0x700)       # USDT refusals
+        ch = j.connect(proto, baud)
+        if bus == "sw":                  # _PS protocols need their pins set
+            j.set_config(ch, [(jt.J1962_PINS, jt.SW_CAN_PINS)])
+        j.pass_filter(ch, proto, 0x500, 0x700)              # UUDT reports
+        j.pass_filter(ch, proto, 0x600, 0x700)              # USDT refusals
 
         def collect(seconds: float) -> None:
             # read at least once, so a reply already queued is never dropped
@@ -95,17 +104,17 @@ def sweep(j=None, *, capture_s: float = 2.0, per_id_s: float = 0.3) -> dict:
                 if time.monotonic() >= end:
                     break
 
-        j.write(ch, FUNCTIONAL_ID, A9_FUNCTIONAL, proto=jt.SW_CAN_PS, txflags=0)
+        j.write(ch, FUNCTIONAL_ID, A9_FUNCTIONAL, proto=proto, txflags=0)
         collect(capture_s)
         heard = {int.from_bytes(f[:4], "big") & 0x7FF for f in frames
                  if len(f) >= 5}
         for req in PHYSICAL_IDS:
             if (req + 0x300) in heard or (req + 0x400) in heard:
                 continue
-            j.write(ch, req, A9_PHYSICAL, proto=jt.SW_CAN_PS, txflags=0)
+            j.write(ch, req, A9_PHYSICAL, proto=proto, txflags=0)
             collect(per_id_s)
     except Exception as e:                                    # noqa: BLE001
-        out["error"] = f"SW-CAN sweep failed: {e}"
+        out["error"] = f"{bus.upper()}-CAN sweep failed: {e}"
     finally:
         if ch is not None:
             try:
@@ -121,6 +130,7 @@ def sweep(j=None, *, capture_s: float = 2.0, per_id_s: float = 0.3) -> dict:
     out["responders"], out["negatives"] = s["responders"], s["negatives"]
     out["examined"] = bool(out["responders"] or out["negatives"])
     if not out["examined"] and not out["error"]:
-        out["error"] = (f"no SW-CAN node answered $A9 ({len(frames)} frames "
-                        "captured) -- bus asleep, wrong pin, or no SW driver")
+        out["error"] = (f"no {bus.upper()}-CAN node answered $A9 ({len(frames)} "
+                        "frames captured) -- bus asleep, wrong pins, or the "
+                        "driver lacks the protocol")
     return out

@@ -3,6 +3,16 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.23.1 — 2026-10-04
+
+### Fixed
+- A GT left in pass-thru (binary) mode no longer aborts the scan. The first
+  0.23.0 run left the GT in binary mode, and the next run stopped at the
+  text-mode connect even though binary mode is exactly what the pass-thru
+  sweeps need. dtcscan now catches GtBinaryMode, skips only the text-mode
+  reads, and runs BOTH `$A9` sweeps through pass-thru (HS-GMLAN on plain CAN
+  500k, then SW-GMLAN). `swcan.sweep(bus="hs"|"sw")`.
+
 ## 0.23.0 — 2026-10-04
 
 ### Added
