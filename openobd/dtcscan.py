@@ -59,6 +59,30 @@ def _fmt(info: dict) -> str:
     return (" | ".join(parts) if parts else "no usable answer") + tail
 
 
+# HS-GMLAN UUDT ids identified on this truck (vehnet.MODULES evidence).
+_KNOWN_UUDT = {"541": "BCM", "543": "EBCM (ABS)"}
+
+
+def _fmt_sweep(sw: dict) -> str:
+    """Functional $A9 sweep -> text. Every id that answered is listed; an id
+    outside the identified set is flagged, with its fault codes if any."""
+    head = "Functional $A9 sweep (all HS-GMLAN nodes, 0x101):"
+    if not sw.get("examined"):
+        return f"{head}\n  NOT EXAMINED -- {sw.get('error') or 'no answer'}"
+    lines = [head]
+    for cid, rep in sorted(sw["responders"].items()):
+        who = _KNOWN_UUDT.get(cid, "UNACCOUNTED -- not an identified module")
+        faults = ", ".join(f"{c} [{st}]" for c, _s, st in rep["records"]
+                           if c in rep["codes"]) or "no fault codes"
+        lines.append(f"  0x{cid} {who}: {faults}  "
+                     f"({len(rep['table'])} table entries)")
+    for cid, nrc in sorted(sw["negatives"].items()):
+        lines.append(f"  0x{cid} refused $A9 (NRC {nrc}) -- a module is there")
+    if sw.get("error"):
+        lines.append(f"  [{sw['error']}]")
+    return "\n".join(lines)
+
+
 def main(argv=None) -> int:
     port = ObdxGt.autodetect()
     if not port:
@@ -76,6 +100,8 @@ def main(argv=None) -> int:
         width = max(len(i["name"]) for i in res.values())
         for info in res.values():
             print(f"  {info['name']:<{width}}  {_fmt(info)}")
+        print()
+        print(_fmt_sweep(gt.sweep_gmlan_dtcs()))
     finally:
         gt.close()
     return 0

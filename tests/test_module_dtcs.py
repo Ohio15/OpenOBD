@@ -363,3 +363,69 @@ def test_scan_all_routes_gmlan_to_a9():
     vehnet.scan_all_module_dtcs(g)
     assert set(g.obd) == {"7E0", "7E2"}          # ECM/TCM via OBD
     assert set(g.gm) == {"243", "241", "242", "24D"}   # all via GMLAN $A9
+
+
+# --------------------------------------------------------------------------- #
+# functional $A9 sweep (gt.sweep_gmlan_dtcs + dtcscan._fmt_sweep)
+# --------------------------------------------------------------------------- #
+class SweepFakeGt(GmlanFakeGt):
+    """Answers the functional $A9 with headers-on UUDT/USDT frames."""
+    def __init__(self, uudt, usdt, refuse=()):
+        super().__init__("")
+        self._uudt, self._usdt, self._refuse = uudt, usdt, refuse
+        self._filt = None
+
+    def command(self, cmd, wait=0.0, deadline=None):
+        self.cmds.append(cmd)
+        if cmd in self._refuse:
+            return "?"
+        if cmd.startswith("ATCF"):
+            self._filt = cmd[4:]
+        if cmd == "FE03A981FF555555":
+            return self._uudt if self._filt == "500" else self._usdt
+        return "OK"
+
+    def _at_checked(self, cmd, wait=0.05):
+        return self.command(cmd) != "?"
+
+    def _set_header(self, h):
+        return self.command("ATSH" + h) != "?"
+
+
+def test_sweep_lists_every_responder_and_negative():
+    from openobd.gt import ObdxGt
+    uudt = ("54181A645077F000000 54181000000000000 "
+            "5438140355AD3000000 5438145500001000000 "
+            "5488143270011000000")
+    gt = SweepFakeGt(uudt, "64D037FA911000000")
+    out = ObdxGt.sweep_gmlan_dtcs(gt)
+    assert out["examined"] is True and out["error"] is None
+    assert set(out["responders"]) == {"541", "543", "548"}
+    assert out["responders"]["543"]["codes"] == ["C0035"]
+    assert out["responders"]["548"]["codes"] == ["C0327"]
+    assert out["negatives"] == {"64D": "11"}
+    assert "ATSH101" in gt.cmds and "FE03A981FF555555" in gt.cmds
+    assert gt.cmds[-1] != "FE03A981FF555555"     # state restored after
+
+
+def test_sweep_refused_filter_sends_nothing():
+    from openobd.gt import ObdxGt
+    gt = SweepFakeGt("", "", refuse=("ATCF500",))
+    out = ObdxGt.sweep_gmlan_dtcs(gt)
+    assert out["examined"] is False and "0x500" in out["error"]
+    assert "FE03A981FF555555" not in gt.cmds
+
+
+def test_sweep_silence_is_not_examined():
+    from openobd.gt import ObdxGt
+    out = ObdxGt.sweep_gmlan_dtcs(SweepFakeGt("NO DATA", "NO DATA"))
+    assert out["examined"] is False and "raw kept" in out["error"]
+
+
+def test_fmt_sweep_flags_unaccounted():
+    rep = {"codes": ["C0327"], "table": ["C0327", "C0306"],
+           "records": [("C0327", "00", "11"), ("C0306", "00", "01")]}
+    txt = dtcscan._fmt_sweep({"examined": True, "error": None,
+                              "responders": {"548": rep}, "negatives": {"64D": "11"}})
+    assert "0x548 UNACCOUNTED" in txt and "C0327 [11]" in txt
+    assert "0x64D refused $A9 (NRC 11)" in txt

@@ -3,6 +3,17 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.22.5 — 2026-10-04
+
+### Added
+- Functional `$A9` sweep (`ObdxGt.sweep_gmlan_dtcs`): one read-only DTC request
+  to every HS-GMLAN node (AllNodes 0x101, FE-framed as e38flash verified),
+  then every id that answered is listed. Responders outside the identified set
+  are flagged UNACCOUNTED with their fault codes; `$A9` refusals are listed as
+  "a module is there". This locates modules by their answer instead of by
+  guessing addresses (for the truck's unlocated transfer case module). The
+  dtcscan CLI prints it after the per-module lines.
+
 ## 0.22.4 — 2026-10-04
 
 ### Added
