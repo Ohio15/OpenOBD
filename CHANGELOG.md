@@ -3,6 +3,27 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.20.0 — 2026-10-04
+
+### Added — phone approve/deny gate (closed-loop step A, increment 1)
+- **`openobd/approval.py`.** The mechanism that lets the agent run ECM READS
+  behind a phone approve/deny instead of a terminal hand-off (Ron's 2026-10-03
+  decision). The agent is the gated party, so the design makes it unable to
+  approve its own action: the agent only requests and verifies; a decision is
+  signed with a key the agent does not hold and read from a store it cannot
+  write; each approval is bound to one random request id, fresh (TTL), and
+  single-use. Writes are never gate-eligible — they stay hard-gated.
+- `ApprovalGate.request()` sends the prompt via a `Notifier` seam; `check()` /
+  `await_decision()` return a verified, fresh, unconsumed approval or raise on
+  deny / expiry / forgery / replay. `sign_decision` / `verify_decision` are the
+  one shared signature definition for the trusted endpoint and the agent.
+  `RecordingNotifier` and `JsonlDecisionSource` are the dev/next-increment seams.
+  13 tests, incl. forged-key, tampered-field, wrong-request, replay, expiry.
+- Does NOT touch the hazard-guard. Wiring DR-011 to consult this gate is the
+  operator's change. Next: the ntfy-button transport + the trusted callback
+  endpoint that signs decisions + the key placement, then the OpenOBD read tool.
+  Suite 305 passed.
+
 ## 0.19.3 — 2026-10-04
 
 ### Added
