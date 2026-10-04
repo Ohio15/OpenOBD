@@ -3,6 +3,15 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.25.1 — 2026-10-04
+
+### Fixed
+- `_run_tccm_read.bat` needed the position label as an argument, so a
+  double-click printed usage and closed instantly; three truck reads silently
+  did nothing. It now asks for the knob position when started without one and
+  pauses so the result can be read. The discover script also pauses at the end
+  and says up front that its window stays quiet while it works.
+
 ## 0.25.0 — 2026-10-04
 
 ### Added
