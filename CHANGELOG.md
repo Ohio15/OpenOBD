@@ -3,6 +3,29 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.22.0 — 2026-10-04
+
+### Added — GMLAN $A9 DTC read for the EBCM/BCM
+- The chassis/body modules NAK UDS `$19` (confirmed on the truck). They answer
+  GM service **`$A9 81`** instead. **`gt.read_gmlan_dtcs(req_id)`** reads them:
+  select raw HS-CAN (`STP 31`), CAF off, narrow receive filters for the module's
+  UUDT report id (req+0x300, EBCM 0x543) and USDT negative id (req+0x400), send
+  `03 A9 81 FF`, capture the report frames, then RESTORE automatic protocol
+  search and CAF. The sequence is ported from truck-mcp's `read_chassis_dtcs`,
+  which reads this truck's C0035 live.
+- **`gt.parse_a9_report`** decodes the per-frame UUDT reports (2-byte GMLAN DTC
+  via `format_dtc`, symptom + status), filtered to the module's id; the 00 00
+  marker is a clean "no codes", silence stays "not examined".
+- **`command(..., deadline=)`** adds a capture window for the multi-frame report.
+- `vehnet.scan_all_module_dtcs` now routes the powertrain modules (ECM, TCM) to
+  the OBD modes and the GMLAN modules (EBCM, BCM) to `$A9`. 22 module-DTC tests;
+  full suite 327. `_run_dtcs.bat` launcher added.
+
+### To verify on the truck
+- Re-run `_run_dtcs.bat`: the EBCM should now list **C0035** (your known
+  left-front wheel-speed fault). That is the ground-truth confirmation of the
+  `$A9` path. If STP is rejected or the EBCM stays silent, the error says so.
+
 ## 0.21.0 — 2026-10-04
 
 ### Added — per-module DTC read (reaches the EBCM/BCM, not just the OBD channel)

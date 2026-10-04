@@ -129,28 +129,31 @@ def test_read_module_silence_is_not_no_codes():
 # --------------------------------------------------------------------------- #
 class RecordingGt:
     def __init__(self):
-        self.reads = []
+        self.obd = []
+        self.gmlan = []
 
     def read_module_dtcs(self, req_id, resp_id, uds=False):
-        self.reads.append((req_id, resp_id, uds))
+        self.obd.append(req_id)
         return {"examined": True, "error": None, "codes": {}, "raw": {}}
+
+    def read_gmlan_dtcs(self, req_id, sw=False):
+        self.gmlan.append(req_id)
+        return {"examined": True, "error": None, "codes": {"dtcs": []}, "raw": ""}
 
 
 def test_scan_all_reads_hs_and_marks_sw_unreachable():
-    gt = RecordingGt()
-    res = vehnet.scan_all_module_dtcs(gt)
+    res = vehnet.scan_all_module_dtcs(RecordingGt())
     # HS modules with ids are read; SW modules are unreachable
     assert "result" in res["ecm"] and "result" in res["tcm"]
     assert "result" in res["ebcm"] and "result" in res["bcm"]
     assert "unreachable" in res["ipc"] and "unreachable" in res["tccm"]
 
 
-def test_scan_all_picks_uds_for_gmlan_obd_for_powertrain():
+def test_scan_all_routes_powertrain_to_obd_gmlan_to_a9():
     gt = RecordingGt()
     vehnet.scan_all_module_dtcs(gt)
-    byreq = {r[0]: r[2] for r in gt.reads}        # req_id -> uds flag
-    assert byreq["7E0"] is False and byreq["7E2"] is False   # ECM/TCM = OBD
-    assert byreq["243"] is True and byreq["241"] is True     # EBCM/BCM = UDS $19
+    assert set(gt.obd) == {"7E0", "7E2"}          # ECM/TCM via OBD modes
+    assert set(gt.gmlan) == {"243", "241"}        # EBCM/BCM via GMLAN $A9
 
 
 # --------------------------------------------------------------------------- #
@@ -173,3 +176,107 @@ def test_cli_fmt_obd_and_unreachable_and_unexamined():
     une = {"name": "EBCM", "result": {"examined": False, "error": "no 59 02 reply",
            "codes": {}}}
     assert "NOT EXAMINED" in dtcscan._fmt(une) and "59 02" in dtcscan._fmt(une)
+
+
+# --------------------------------------------------------------------------- #
+# GMLAN $A9 read (EBCM/BCM) -- the verified chassis/body path (not UDS $19)
+# --------------------------------------------------------------------------- #
+from openobd.gt import parse_a9_report  # noqa: E402
+
+
+def a9frame(cid, b1, b2, symptom="0C", status="0A"):
+    return f"{cid}81{b1}{b2}{symptom}{status}"
+
+
+def test_a9_decodes_c0035_on_543():
+    # EBCM report frame: 543 81 40 35 (C0035) symptom 0C status 0A
+    r = parse_a9_report(a9frame("543", "40", "35"), uudt_id="543")
+    assert r["examined"] is True
+    assert r["codes"] == ["C0035"]
+    assert r["records"] == [("C0035", "0C", "0A")]
+
+
+def test_a9_end_marker_is_clean_not_silent():
+    r = parse_a9_report(a9frame("543", "00", "00"), uudt_id="543")
+    assert r["examined"] is True and r["codes"] == []
+
+
+def test_a9_negative_response():
+    r = parse_a9_report("641037FA912", uudt_id="541")
+    assert r["negative"] == "12" and r["codes"] == []
+
+
+def test_a9_filters_foreign_uudt_id():
+    # a BCM frame (541) must not count when reading the EBCM (want 543)
+    resp = a9frame("543", "40", "35") + " " + a9frame("541", "11", "22")
+    r = parse_a9_report(resp, uudt_id="543")
+    assert r["codes"] == ["C0035"]
+
+
+def test_a9_multiple_codes():
+    resp = " ".join([a9frame("543", "40", "35"), a9frame("543", "40", "40"),
+                     a9frame("543", "00", "00")])
+    r = parse_a9_report(resp, uudt_id="543")
+    assert r["codes"] == ["C0035", "C0040"]
+
+
+class GmlanFakeGt:
+    def __init__(self, report, stp_ok=True, binary=False):
+        self._report, self._stp_ok, self._binary = report, stp_ok, binary
+        self.last_raw = b"ok"
+        self.cmds = []
+
+    def _at_checked(self, cmd, wait=0.05):
+        self.cmds.append(cmd)
+        return self._stp_ok if cmd.startswith("STP") else True
+
+    def _set_header(self, h):
+        self.cmds.append("SH:" + h)
+        return True
+
+    def _restore_default(self):
+        self.cmds.append("restore")
+
+    def command(self, cmd, wait=0.0, deadline=None):
+        self.cmds.append(cmd)
+        if cmd.startswith("03A981"):
+            self.last_raw = b"" if self._binary else b"ok"
+            return "" if self._binary else self._report
+        return "OK"
+
+
+GmlanFakeGt.read_gmlan_dtcs = ObdxGt.read_gmlan_dtcs
+
+
+def test_read_gmlan_dtcs_reads_c0035():
+    gt = GmlanFakeGt(a9frame("543", "40", "35"))
+    out = gt.read_gmlan_dtcs("243")
+    assert out["examined"] is True and out["error"] is None
+    assert out["codes"]["dtcs"] == ["C0035"]
+    # teardown really ran: automatic protocol + CAF restored
+    assert "ATSP0" in gt.cmds and "ATCAF1" in gt.cmds and "restore" in gt.cmds
+
+
+def test_read_gmlan_dtcs_stp_rejected():
+    gt = GmlanFakeGt("", stp_ok=False)
+    out = gt.read_gmlan_dtcs("243")
+    assert out["examined"] is False and "STP" in out["error"]
+
+
+def test_read_gmlan_dtcs_negative():
+    gt = GmlanFakeGt("643037FA922")
+    out = gt.read_gmlan_dtcs("243")
+    assert out["examined"] is False and "NRC 22" in out["error"]
+
+
+def test_scan_all_routes_gmlan_to_a9():
+    class G:
+        def __init__(self): self.obd = []; self.gm = []
+        def read_module_dtcs(self, req, resp, uds=False):
+            self.obd.append(req); return {"examined": True, "codes": {}, "error": None}
+        def read_gmlan_dtcs(self, req, sw=False):
+            self.gm.append(req); return {"examined": True, "codes": {"dtcs": []}, "error": None}
+    g = G()
+    vehnet.scan_all_module_dtcs(g)
+    assert set(g.obd) == {"7E0", "7E2"}          # ECM/TCM via OBD
+    assert set(g.gm) == {"243", "241"}           # EBCM/BCM via GMLAN $A9

@@ -268,9 +268,11 @@ def scan_all_module_dtcs(gt) -> dict:
             out[m.key] = {"name": m.name,
                           "unreachable": "no HS diagnostic id (SW-GMLAN only)"}
             continue
-        uds = not m.req_id.upper().startswith("7E")   # 24x GMLAN chassis/body
-        out[m.key] = {"name": m.name,
-                      "result": gt.read_module_dtcs(m.req_id, m.resp_id, uds=uds)}
+        if m.req_id.upper().startswith("7E"):          # ISO15765 powertrain
+            res = gt.read_module_dtcs(m.req_id, m.resp_id, uds=False)
+        else:                                          # 24x GMLAN chassis/body
+            res = gt.read_gmlan_dtcs(m.req_id)          # GM $A9 81, not UDS $19
+        out[m.key] = {"name": m.name, "result": res}
     return out
 
 

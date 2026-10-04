@@ -290,6 +290,44 @@ def parse_uds19_reply(resp: str, resp_id: Optional[str] = None) -> dict:
     return out
 
 
+def parse_a9_report(resp: str, uudt_id: Optional[str] = None) -> dict:
+    """GMLAN service $A9 81 (reportDTCByStatusMask) report — the read the GMLAN
+    chassis/body modules (EBCM, BCM) answer instead of UDS $19, VERIFIED live on
+    this truck via truck-mcp (gmlan.decode_a9_frame / A9_READ_BY_MASK).
+
+    Report frames come back UUDT on request+0x300 (EBCM 0x243 -> 0x543), one per
+    line: '<id>81<b1><b2><symptom><status>' where <b1><b2> is a 2-byte GMLAN DTC
+    (0x4035 -> C0035, via format_dtc) and 00 00 is the end-of-table marker. A
+    negative response arrives USDT on request+0x400: '<id>037FA9<nrc>'.
+
+    When uudt_id is given only that id's frames are counted, so a neighbouring
+    module's report cannot bleed in. Returns {"codes": [SAE], "records":
+    [(code, symptom, status)], "examined": bool, "negative": nrc|None}.
+    'examined' is True once any $A9 report frame (even the 00 00 marker) or a
+    negative is seen — silence stays 'not examined', never 'no codes'."""
+    out: dict = {"codes": [], "records": [], "examined": False, "negative": None}
+    want = uudt_id.upper() if uudt_id else None
+    for tok in resp.upper().split():
+        c = "".join(ch for ch in tok if ch in "0123456789ABCDEF")
+        if len(c) >= 11 and c[5:7] == "7F" and c[7:9] == "A9":   # negative resp
+            out["negative"] = c[9:11]
+            continue
+        if len(c) >= 13 and c[3:5] == "81":                      # $A9 report
+            if want and c[:3] != want:
+                continue
+            try:
+                b1, b2, status = int(c[5:7], 16), int(c[7:9], 16), int(c[11:13], 16)
+            except ValueError:
+                continue
+            out["examined"] = True
+            if b1 == 0 and b2 == 0:
+                continue                                         # end-of-table
+            code = format_dtc(b1, b2)
+            out["codes"].append(code)
+            out["records"].append((code, c[9:11], f"{status:02X}"))
+    return out
+
+
 def parse_readiness(data: list[int]) -> dict:
     """PID 0101 payload (4 bytes) -> MIL, DTC count, monitor table."""
     if not data or len(data) < 4:
@@ -514,10 +552,15 @@ class ObdxGt:
                 self.ser = None
 
     # -- raw io ------------------------------------------------------------ #
-    def command(self, cmd: str, wait: float = 0.0) -> str:
+    def command(self, cmd: str, wait: float = 0.0,
+                deadline: Optional[float] = None) -> str:
         """Send one command; returns the reply as flattened text. The raw
         bytes are kept in self.last_raw so callers can tell a binary-mode
-        reply from ELM text (the lossy decode alone would hide it)."""
+        reply from ELM text (the lossy decode alone would hide it).
+
+        deadline overrides the default read window — a raw GMLAN $A9 report
+        trickles several UUDT frames in over ~1 s, longer than a normal command,
+        so the capture must wait for them (no prompt arrives until they stop)."""
         try:
             self.ser.reset_input_buffer()
         except Exception:
@@ -525,7 +568,7 @@ class ObdxGt:
         self.ser.write((cmd + "\r").encode())
         if wait:
             time.sleep(wait)
-        return self._read_to_prompt()
+        return self._read_to_prompt(deadline_s=deadline)
 
     def request_raw(self, mode_pid: str) -> str:
         return self.command(mode_pid, wait=0.0)
@@ -759,6 +802,62 @@ class ObdxGt:
                 out["error"] = "module did not answer the DTC request"
             return out
         finally:
+            self._restore_default()
+
+    def read_gmlan_dtcs(self, req_id: str, sw: bool = False) -> dict:
+        """DTCs from a GMLAN chassis/body module (EBCM 0x243, BCM 0x241) via GM
+        service $A9 81, which they answer instead of UDS $19. Raw-CAN mode:
+        select the raw HS (or SW) protocol, turn CAF off, set narrow receive
+        filters for the module's UUDT report id (req+0x300) and USDT negative id
+        (req+0x400), send 03 A9 81 FF (padded), capture the report frames, then
+        RESTORE automatic protocol search + CAF. Verified sequence ported from
+        truck-mcp (read_chassis_dtcs), which reads this truck's C0035 live.
+
+        Returns {"examined", "error", "codes": {"dtcs": [..]}, "records",
+        "raw"}. Needs the STN/OBDX ST commands (STP/STFAP); if the GT rejects
+        STP the error says so."""
+        req = int(req_id, 16)
+        uudt = f"{req + 0x300:03X}"           # report frames (EBCM 543, BCM 541)
+        usdt = f"{req + 0x400:03X}"           # negative responses (643 / 641)
+        out: dict = {"examined": False, "error": None,
+                     "codes": {"dtcs": []}, "records": [], "raw": ""}
+        stp = "61" if sw else "31"            # SW-CAN 33k / HS-CAN 500k, raw 11-bit
+        if not self._at_checked(f"STP {stp}"):
+            out["error"] = (f"GT rejected 'STP {stp}' — raw GMLAN mode "
+                            "unavailable (no ST command support?)")
+            self._restore_default()
+            return out
+        try:
+            if sw:
+                self.command("STCSWM 2", wait=0.1)     # SW-CAN normal mode
+            self._at_checked("ATCAF0")                 # raw framing, no auto ISO-TP
+            self.command("STFAC", wait=0.05)           # clear filters
+            self._at_checked(f"STFAP {uudt},7FF")      # accept the report id
+            self._at_checked(f"STFAP {usdt},7FF")      # accept the negative id
+            if not self._set_header(req_id.upper()):
+                out["error"] = f"could not set header {req_id}"
+                return out
+            resp = self.command("03A981FF55555555", wait=0.0, deadline=1.6)
+            out["raw"] = resp
+            if is_binary_reply(self.last_raw):
+                out["error"] = "binary reply"
+                return out
+            p = parse_a9_report(resp, uudt_id=uudt)
+            out["codes"]["dtcs"] = p["codes"]
+            out["records"] = p["records"]
+            out["examined"] = p["examined"]
+            if p["negative"]:
+                out["error"] = f"module negative response (NRC {p['negative']})"
+            elif not p["examined"]:
+                out["error"] = ("no $A9 report — module silent or the reply did "
+                                "not decode as an $A9/E9 frame")
+            return out
+        finally:
+            # leave the GT as the rest of the app expects: auto protocol, CAF on,
+            # no manual filters, default header.
+            self.command("STFAC", wait=0.05)
+            self.command("ATSP0", wait=0.1)
+            self._at_checked("ATCAF1")
             self._restore_default()
 
     def clear_dtcs(self) -> dict:
