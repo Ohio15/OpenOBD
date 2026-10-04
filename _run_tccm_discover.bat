@@ -8,5 +8,8 @@ REM (XXXX = the last "progress" value in that file).
 cd /d D:\Projects\OpenOBD
 set "PYTHONHOME="
 set "PYTHONUNBUFFERED=1"
+echo Discovering (read-only). Progress is written to didscan-discover.out and
+echo didscan-7E4-supported.jsonl as it goes; this window stays quiet until done.
 "D:\Projects\OpenOBD\.venv\Scripts\python.exe" -m openobd.didscan --module 7E4 --discover %* > didscan-discover.out 2>&1
 type didscan-discover.out
+pause
