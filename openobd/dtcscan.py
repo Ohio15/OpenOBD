@@ -91,6 +91,12 @@ def _fmt_sweep(sw: dict, head: str = _HS_HEAD,
 
 
 def main(argv=None) -> int:
+    # line-buffered even when redirected to dtcscan.out, so a driver crash
+    # (the OBDX pass-thru DLL can kill the process) loses nothing printed.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
     port = ObdxGt.autodetect()
     if not port:
         print(describe_no_gt())
@@ -111,8 +117,6 @@ def main(argv=None) -> int:
         print(f"OBDX Pro GT on {port} is in pass-thru (binary) mode -- the "
               "text-mode reads (ECM/TCM OBD codes, per-module lines) are "
               "skipped. Unplug USB + OBD for 10 s to get them next time.\n")
-        print(_fmt_sweep(swcan.sweep(bus="hs"),
-                         head=_HS_HEAD.replace("0x101", "0x101, via pass-thru")))
     else:
         try:
             print(f"OBDX Pro GT on {port} -- per-module DTC scan\n")
@@ -128,11 +132,23 @@ def main(argv=None) -> int:
     # reachable through the GT's pass-thru driver, which leaves the GT in binary
     # mode until it is unplugged. No SW module is identified yet, so every
     # responder prints by address.
-    print()
-    sw = swcan.sweep(bus="sw")
-    if sw.get("vbatt") is not None:
-        print(f"(battery at the OBD port: {sw['vbatt']:.2f} V)")
-    print(_fmt_sweep(sw, head=_SW_HEAD, known={}))
+    # ONE pass-thru session for every bus (see swcan.sweep_buses: the OBDX
+    # driver can kill the process at close), each result printed as it lands.
+    heads = {"hs": _HS_HEAD.replace("0x101", "0x101, via pass-thru"),
+             "sw": _SW_HEAD}
+    shown = {"vbatt": False}
+
+    def show(bus: str, res: dict) -> None:
+        print()
+        if res.get("vbatt") is not None and not shown["vbatt"]:
+            print(f"(battery at the OBD port: {res['vbatt']:.2f} V)")
+            shown["vbatt"] = True
+        known = _KNOWN_UUDT if bus == "hs" else {}
+        print(_fmt_sweep(res, head=heads[bus], known=known))
+
+    err = swcan.sweep_buses(["hs", "sw"] if binary else ["sw"], show)
+    if err:
+        print(f"\nPass-thru sweeps NOT EXAMINED -- {err}")
     print("\nNOTE: the GT is now in pass-thru (binary) mode. Unplug its USB and "
           "OBD plug for 10 s before the next full scan (this scan still works "
           "without it, but skips the text-mode reads).")

@@ -170,18 +170,57 @@ class _BinaryGt:
 
 def test_cli_in_binary_mode_still_runs_both_sweeps(monkeypatch, capsys):
     from openobd import dtcscan
-    buses = []
+    sessions = []
 
-    def fake_sweep(j=None, *, bus="sw", **kw):
-        buses.append(bus)
-        return {"examined": False, "error": "nothing", "responders": {},
-                "negatives": {}, "vbatt": 12.5, "frames": 0}
+    def fake_sweep_buses(buses, on_result, j=None, **kw):
+        sessions.append(list(buses))
+        for b in buses:
+            on_result(b, {"examined": False, "error": "nothing",
+                          "responders": {}, "negatives": {}, "vbatt": 12.5,
+                          "frames": 0})
+        return None
     monkeypatch.setattr(dtcscan, "ObdxGt", _BinaryGt)
-    monkeypatch.setattr(dtcscan.swcan, "sweep", fake_sweep)
+    monkeypatch.setattr(dtcscan.swcan, "sweep_buses", fake_sweep_buses)
     assert dtcscan.main() == 0
     out = capsys.readouterr().out
-    assert buses == ["hs", "sw"]
+    assert sessions == [["hs", "sw"]]          # ONE pass-thru session
     assert "pass-thru (binary) mode" in out and "12.50 V" in out
+    assert out.count("12.50 V") == 1
+
+
+def test_sweep_buses_opens_and_closes_the_device_once():
+    fake = FakePassThru(functional=[frame(0x543, "8100000000000000")])
+    got = []
+    err = swcan.sweep_buses(["hs", "sw"], lambda b, r: got.append(b), fake,
+                            capture_s=0.01, per_id_s=0.0)
+    assert err is None and got == ["hs", "sw"]
+    assert fake.calls.count("open") == 1 and fake.calls.count("close") == 1
+    assert fake.calls[-1] == "close"
+    connects = [c for c in fake.calls if isinstance(c, tuple) and c[0] == "connect"]
+    assert [c[1] for c in connects] == [jt.CAN, jt.SW_CAN_PS]
+    # each result delivered BEFORE the device close
+    assert sum(1 for c in fake.calls if isinstance(c, tuple)
+               and c[0] == "disconnect") == 2
+
+
+def test_sweep_buses_delivers_results_before_close():
+    order = []
+
+    class Spy(FakePassThru):
+        def close(self):
+            order.append("close")
+            super().close()
+    fake = Spy(functional=[frame(0x543, "8100000000000000")])
+    swcan.sweep_buses(["hs", "sw"], lambda b, r: order.append(b), fake,
+                      capture_s=0.01, per_id_s=0.0)
+    assert order == ["hs", "sw", "close"]
+
+
+def test_sweep_buses_open_failure_returns_error_and_delivers_nothing():
+    got = []
+    err = swcan.sweep_buses(["sw"], lambda b, r: got.append(b),
+                            FakePassThru(fail_open=True))
+    assert "open failed" in err and got == []
 
 
 def test_fmt_sw_sweep_prints_by_address():

@@ -22,7 +22,7 @@ unplugged (USB and OBD, 10 s). The CLI runs this step LAST and says so.
 from __future__ import annotations
 
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from .gt import parse_a9_report
 
@@ -60,36 +60,18 @@ def summarize(frames: list[bytes]) -> dict:
     return out
 
 
-def sweep(j=None, *, bus: str = "sw", capture_s: float = 2.0,
-          per_id_s: float = 0.3) -> dict:
-    """Run the $A9 sweep on one bus through the pass-thru driver: bus "sw" is
-    single-wire GMLAN (33.3 kbps, pin 1); bus "hs" is HS-GMLAN (500 kbps, the
-    default CAN pins 6/14) — the same read the ELM path does, usable when the
-    GT is already in binary mode. `j` is an openobd pass-thru client (injected
-    by tests; built from the registered OBDX driver otherwise). Returns
-    {"examined", "error", "responders", "negatives", "vbatt", "frames"};
-    silence is NOT EXAMINED, never 'clean'."""
-    from . import j2534 as jt
+def _sweep_channel(j, jt, bus: str, capture_s: float, per_id_s: float) -> dict:
+    """One bus on an ALREADY OPEN device: connect a channel, sweep, disconnect.
+    Never opens or closes the device (see sweep_buses for why)."""
     if bus not in ("sw", "hs"):
         raise ValueError(f"unknown bus {bus!r}")
     proto = jt.SW_CAN_PS if bus == "sw" else jt.CAN
     baud = jt.SW_CAN_BAUD if bus == "sw" else 500000
     out: dict = {"examined": False, "error": None, "responders": {},
                  "negatives": {}, "vbatt": None, "frames": 0}
-    try:
-        if j is None:
-            j = jt.J2534()
-        j.open()
-    except Exception as e:                                    # noqa: BLE001
-        out["error"] = f"pass-thru open failed: {e}"
-        return out
     ch: Optional[int] = None
     frames: list[bytes] = []
     try:
-        try:
-            out["vbatt"] = j.read_vbatt()
-        except Exception:                                     # noqa: BLE001
-            pass
         ch = j.connect(proto, baud)
         if bus == "sw":                  # _PS protocols need their pins set
             j.set_config(ch, [(jt.J1962_PINS, jt.SW_CAN_PINS)])
@@ -121,10 +103,6 @@ def sweep(j=None, *, bus: str = "sw", capture_s: float = 2.0,
                 j.disconnect(ch)
             except Exception:                                 # noqa: BLE001
                 pass
-        try:
-            j.close()
-        except Exception:                                     # noqa: BLE001
-            pass
     out["frames"] = len(frames)
     s = summarize(frames)
     out["responders"], out["negatives"] = s["responders"], s["negatives"]
@@ -134,3 +112,61 @@ def sweep(j=None, *, bus: str = "sw", capture_s: float = 2.0,
                         "frames captured) -- bus asleep, wrong pins, or the "
                         "driver lacks the protocol")
     return out
+
+
+def sweep_buses(buses, on_result: Callable[[str, dict], None], j=None, *,
+                capture_s: float = 2.0, per_id_s: float = 0.3) -> Optional[str]:
+    """Sweep several buses in ONE device session, handing each result to
+    on_result as soon as it exists (so the caller can print and flush it).
+
+    One session per process, on purpose: the OBDX GT driver is a .NET DLL whose
+    background serial thread can read the port after PassThruClose and kill the
+    whole process with an unhandled InvalidOperationException ('The port is
+    closed') -- observed on the truck 2026-10-04 with one open/close per bus.
+    So the device is opened once, every bus gets its own channel, and the close
+    is the last thing that happens, after every result has been delivered.
+    Returns an error string if the device could not be opened, else None."""
+    from . import j2534 as jt
+    for b in buses:
+        if b not in ("sw", "hs"):
+            raise ValueError(f"unknown bus {b!r}")
+    try:
+        if j is None:
+            j = jt.J2534()
+        j.open()
+    except Exception as e:                                    # noqa: BLE001
+        return f"pass-thru open failed: {e}"
+    try:
+        vbatt = None
+        try:
+            vbatt = j.read_vbatt()
+        except Exception:                                     # noqa: BLE001
+            pass
+        for b in buses:
+            res = _sweep_channel(j, jt, b, capture_s, per_id_s)
+            res["vbatt"] = vbatt
+            on_result(b, res)
+    finally:
+        try:
+            j.close()
+        except Exception:                                     # noqa: BLE001
+            pass
+    return None
+
+
+def sweep(j=None, *, bus: str = "sw", capture_s: float = 2.0,
+          per_id_s: float = 0.3) -> dict:
+    """Run the $A9 sweep on one bus in its own device session: bus "sw" is
+    single-wire GMLAN (33.3 kbps, pin 1); bus "hs" is HS-GMLAN (500 kbps, the
+    default CAN pins 6/14). Returns {"examined", "error", "responders",
+    "negatives", "vbatt", "frames"}; silence is NOT EXAMINED, never 'clean'.
+    Use sweep_buses for more than one bus in a process."""
+    if bus not in ("sw", "hs"):
+        raise ValueError(f"unknown bus {bus!r}")
+    got: dict = {}
+    err = sweep_buses([bus], lambda b, r: got.update(r), j,
+                      capture_s=capture_s, per_id_s=per_id_s)
+    if err:
+        return {"examined": False, "error": err, "responders": {},
+                "negatives": {}, "vbatt": None, "frames": 0}
+    return got
