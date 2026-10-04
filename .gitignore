@@ -15,3 +15,6 @@ tools/*.log
 tools/*.tsv
 /dtcscan.out
 /dtcscan.json
+/didscan-*.jsonl
+/didscan-*.json
+/didscan-*.out
