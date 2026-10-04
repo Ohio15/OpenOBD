@@ -3,6 +3,16 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.27.0 — 2026-10-04
+
+### Added
+- `openobd/canrec.py` + `_run_canrec.bat`: LISTEN-ONLY recorder of HS-GMLAN
+  diagnostic traffic through the GT's pass-thru driver, for capturing what
+  another scan tool sends (the Autel on the Y-splitter running the TCCM Range
+  Actuator Learn). Raw CAN 500k with pass filters on the diagnostic id ranges
+  only (7E0-7EF, 7DF, 101, 24x, 54x, 5Ex, 64x); every frame with a timestamp
+  to canrec-<label>.jsonl. No transmit path (pinned by a test).
+
 ## 0.26.0 — 2026-10-04
 
 ### Added

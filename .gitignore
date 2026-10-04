@@ -19,3 +19,4 @@ tools/*.tsv
 /didscan-*.json
 /didscan-*.out
 /didscan-*.csv
+/canrec-*.jsonl
