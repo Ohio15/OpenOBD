@@ -395,8 +395,6 @@ jobs:
 
             Auto-applied by dep-auto-apply.yml (Layer B). Per-ecosystem notes
             are in the PR body. Tests passed locally inside the workflow run.
-
-            Co-Authored-By: dev-standards-bot <noreply@anthropic.com>
           title: "chore: weekly auto-apply ${{ steps.agg.outputs.date_str }}"
           body: |
             ## Weekly auto-apply (Layer B)
@@ -440,8 +438,6 @@ jobs:
 
             Auto-applied by dep-auto-apply.yml (Layer B). Tests failed inside
             the workflow run; this PR is opened as a DRAFT for human triage.
-
-            Co-Authored-By: dev-standards-bot <noreply@anthropic.com>
           title: "chore(broken): weekly auto-apply ${{ steps.agg.outputs.date_str }} — tests failed"
           draft: true
           body: |
