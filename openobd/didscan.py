@@ -169,6 +169,31 @@ def read_keys(sess: Session, keys: Iterable[str]) -> dict:
     return out
 
 
+def watch(sess: Session, keys: list, seconds: float,
+          on_row: Callable[[float, dict], None],
+          clock: Callable[[], float] = time.monotonic) -> int:
+    """Re-read `keys` as fast as the module answers for `seconds`, handing
+    each pass to on_row(t_since_start, {key: hex|None}). Read-only (the same
+    $22/$1A sender). Returns the number of passes."""
+    t0 = clock()
+    n = 0
+    while True:
+        row = read_keys(sess, keys)
+        n += 1
+        t = clock() - t0
+        on_row(t, row)
+        if t >= seconds:
+            return n
+
+
+#: the TCCM identifiers that moved with the knob on 2026-10-04 (2HI/AUTO/4HI/
+#: 4LO snapshots): 3114/3115 actuator position pair, 3142 knob request, 3140
+#: status, plus the other position-correlated bytes.
+#: Kept to six so a pass is ~0.2 s (the module answers ~30 reads/s).
+TCCM_WATCH = ["22:3114", "22:3115", "22:3142", "22:3140", "22:312A",
+              "22:3176"]
+
+
 def diff(snapshots: dict) -> list:
     """{label: {key: hex}} -> [(key, {label: hex})] for every key whose value
     is not identical across all labels (a key missing in one counts)."""
@@ -203,6 +228,9 @@ def main(argv=None) -> int:
     mode.add_argument("--discover", action="store_true")
     mode.add_argument("--read", metavar="LABEL")
     mode.add_argument("--diff", nargs="+", metavar="FILE")
+    mode.add_argument("--watch", metavar="LABEL",
+                      help="record the TCCM watch set ~10x/s to a CSV")
+    ap.add_argument("--seconds", type=float, default=25.0)
     ap.add_argument("--start", default="0000")
     ap.add_argument("--end", default="FFFF")
     ap.add_argument("--no-idents", action="store_true")
@@ -231,7 +259,22 @@ def main(argv=None) -> int:
         return 3
     try:
         with Session(j, req, resp) as sess:
-            if a.discover:
+            if a.watch:
+                outp = f"didscan-{mod}-watch-{a.watch}.csv"
+                keys = TCCM_WATCH
+                print(f"recording {len(keys)} identifiers for {a.seconds:.0f} s "
+                      f"-> {outp}. TURN THE KNOB NOW.")
+                with open(outp, "w", encoding="utf-8") as fh:
+                    fh.write("t_s," + ",".join(keys) + "\n")
+
+                    def row(t, vals):
+                        fh.write(f"{t:.3f}," + ",".join(
+                            vals.get(k) or "" for k in keys) + "\n")
+                        fh.flush()
+                    n = watch(sess, keys, a.seconds, row)
+                print(f"done: {n} passes ({n / max(a.seconds, 0.001):.1f}/s) "
+                      f"-> {outp}")
+            elif a.discover:
                 start, end = int(a.start, 16), int(a.end, 16)
                 print(f"discovering {mod}: $1A idents + $22 {start:04X}-{end:04X}"
                       " (read-only). Hits are saved as they arrive.")

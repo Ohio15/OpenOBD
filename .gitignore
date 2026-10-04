@@ -18,3 +18,4 @@ tools/*.tsv
 /didscan-*.jsonl
 /didscan-*.json
 /didscan-*.out
+/didscan-*.csv

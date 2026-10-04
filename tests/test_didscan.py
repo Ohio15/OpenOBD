@@ -131,6 +131,26 @@ def test_reply_from_another_module_is_ignored():
     assert res["hits"] == {} and res["silent"] == 1
 
 
+def test_watch_records_passes_until_time_is_up():
+    fake = FakeModule(dids={0x3114: "0271", 0x3115: "026F"})
+    ticks = iter([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+    rows = []
+    with sess(fake) as s:
+        n = didscan.watch(s, ["22:3114", "22:3115"], 0.3,
+                          lambda t, v: rows.append((t, v)),
+                          clock=lambda: next(ticks))
+    assert n == 3 and len(rows) == 3
+    assert rows[0][1] == {"22:3114": "0271", "22:3115": "026F"}
+    sent = [c[2][:2] for c in fake.calls if isinstance(c, tuple) and c[0] == "write"]
+    assert set(sent) == {"22"}                          # read-only
+
+
+def test_tccm_watch_set_is_small_and_reads_only():
+    assert len(didscan.TCCM_WATCH) <= 6
+    assert all(k.startswith("22:") for k in didscan.TCCM_WATCH)
+    assert {"22:3114", "22:3115", "22:3142"} <= set(didscan.TCCM_WATCH)
+
+
 def test_cli_diff(tmp_path, capsys):
     for lbl, v in (("2HI", "01"), ("4HI", "02")):
         (tmp_path / f"{lbl}.json").write_text(json.dumps(
