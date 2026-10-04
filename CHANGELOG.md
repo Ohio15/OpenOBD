@@ -3,6 +3,17 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.22.2 — 2026-10-04
+
+### Fixed — $A9 report frame format (VERIFIED on the truck, C0035 decoded)
+- The GT returns the `$A9` report frames WITHOUT a CAN id prefix (ATCRA + headers
+  off): `81 <hi> <lo> <symptom> <status>` padded to 8 bytes, e.g.
+  `8140355A01000000` = C0035. `parse_a9_report` now decodes that form (keeping
+  the id-prefixed form too), dedups a DTC that repeats with different symptom
+  bytes, and handles the no-id negative `7F A9 <nrc>`. A verbatim slice of the
+  real EBCM capture is a test fixture; C0035 (the known left-front fault) decodes
+  — ground truth for the whole GMLAN read path. Suite 328.
+
 ## 0.22.1 — 2026-10-04
 
 ### Fixed — GMLAN $A9 uses ELM, not STN (the GT is not an STN device)

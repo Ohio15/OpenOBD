@@ -307,24 +307,44 @@ def parse_a9_report(resp: str, uudt_id: Optional[str] = None) -> dict:
     negative is seen — silence stays 'not examined', never 'no codes'."""
     out: dict = {"codes": [], "records": [], "examined": False, "negative": None}
     want = uudt_id.upper() if uudt_id else None
+    seen: set = set()
     for tok in resp.upper().split():
         c = "".join(ch for ch in tok if ch in "0123456789ABCDEF")
-        if len(c) >= 11 and c[5:7] == "7F" and c[7:9] == "A9":   # negative resp
+        # negative response, with or without a 3-char CAN id prefix.
+        if len(c) >= 6 and c[0:2] == "7F" and c[2:4] == "A9":
+            out["negative"] = c[4:6]
+            continue
+        if len(c) >= 11 and c[5:7] == "7F" and c[7:9] == "A9":
             out["negative"] = c[9:11]
             continue
-        if len(c) >= 13 and c[3:5] == "81":                      # $A9 report
-            if want and c[:3] != want:
+        # $A9 report frame '81 <b1> <b2> <symptom> <status>'. VERIFIED on the GT
+        # 2026-10-04: with ATCRA + headers off the GT returns it WITHOUT a CAN id
+        # prefix (e.g. '8140355A01000000' = C0035). A 3-char-id-prefixed form is
+        # also accepted for completeness.
+        if c[0:2] == "81" and len(c) >= 10:
+            off = 0
+        elif len(c) >= 13 and c[3:5] == "81":
+            if want and c[0:3] != want:
                 continue
-            try:
-                b1, b2, status = int(c[5:7], 16), int(c[7:9], 16), int(c[11:13], 16)
-            except ValueError:
-                continue
-            out["examined"] = True
-            if b1 == 0 and b2 == 0:
-                continue                                         # end-of-table
-            code = format_dtc(b1, b2)
-            out["codes"].append(code)
-            out["records"].append((code, c[9:11], f"{status:02X}"))
+            off = 3
+        else:
+            continue
+        try:
+            b1 = int(c[off + 2:off + 4], 16)
+            b2 = int(c[off + 4:off + 6], 16)
+            symptom = c[off + 6:off + 8]
+            status = c[off + 8:off + 10]
+        except ValueError:
+            continue
+        out["examined"] = True
+        if b1 == 0 and b2 == 0:
+            continue                                             # end-of-table
+        code = format_dtc(b1, b2)
+        if code in seen:          # a DTC repeats with different symptom bytes
+            continue
+        seen.add(code)
+        out["codes"].append(code)
+        out["records"].append((code, symptom, status))
     return out
 
 

@@ -184,40 +184,53 @@ def test_cli_fmt_obd_and_unreachable_and_unexamined():
 from openobd.gt import parse_a9_report  # noqa: E402
 
 
-def a9frame(cid, b1, b2, symptom="0C", status="0A"):
-    return f"{cid}81{b1}{b2}{symptom}{status}"
+# Real GT $A9 report format (verified on the EBCM 2026-10-04): NO CAN id prefix,
+# '81 <hi> <lo> <symptom> <status>' padded to 8 bytes. 8140355A01... = C0035.
+def a9(b1, b2, symptom="5A", status="01"):
+    return f"81{b1}{b2}{symptom}{status}000000"
 
 
-def test_a9_decodes_c0035_on_543():
-    # EBCM report frame: 543 81 40 35 (C0035) symptom 0C status 0A
-    r = parse_a9_report(a9frame("543", "40", "35"), uudt_id="543")
+def a9_id(cid, b1, b2):           # the id-prefixed variant (also supported)
+    return f"{cid}81{b1}{b2}0C0A"
+
+
+# a verbatim slice of the real EBCM capture
+REAL_EBCM = ("8145500001000000 8148990001000000 8149000001000000 "
+             "8140355A01000000 8140350001000000 8140455A01000000 "
+             "8140450001000000 8140405A01000000 8140400001000000")
+
+
+def test_a9_real_ebcm_capture_decodes_c0035():
+    r = parse_a9_report(REAL_EBCM, uudt_id="543")
     assert r["examined"] is True
+    assert "C0035" in r["codes"]              # the known ground-truth fault
+    assert "C0045" in r["codes"] and "C0040" in r["codes"]
+    assert r["codes"].count("C0035") == 1     # deduped (symptom 5A and 00)
+
+
+def test_a9_decodes_c0035_noid():
+    r = parse_a9_report(a9("40", "35"))
+    assert r["codes"] == ["C0035"] and r["records"] == [("C0035", "5A", "01")]
+
+
+def test_a9_id_prefixed_still_supported():
+    r = parse_a9_report(a9_id("543", "40", "35"), uudt_id="543")
     assert r["codes"] == ["C0035"]
-    assert r["records"] == [("C0035", "0C", "0A")]
 
 
 def test_a9_end_marker_is_clean_not_silent():
-    r = parse_a9_report(a9frame("543", "00", "00"), uudt_id="543")
+    r = parse_a9_report(a9("00", "00"))
     assert r["examined"] is True and r["codes"] == []
 
 
 def test_a9_negative_response():
-    r = parse_a9_report("641037FA912", uudt_id="541")
-    assert r["negative"] == "12" and r["codes"] == []
+    assert parse_a9_report("7FA912")["negative"] == "12"       # no-id form
+    assert parse_a9_report("641037FA912")["negative"] == "12"  # id-prefixed form
 
 
-def test_a9_filters_foreign_uudt_id():
-    # a BCM frame (541) must not count when reading the EBCM (want 543)
-    resp = a9frame("543", "40", "35") + " " + a9frame("541", "11", "22")
-    r = parse_a9_report(resp, uudt_id="543")
+def test_a9_dedups_repeated_dtc():
+    r = parse_a9_report(a9("40", "35", "5A") + " " + a9("40", "35", "00"))
     assert r["codes"] == ["C0035"]
-
-
-def test_a9_multiple_codes():
-    resp = " ".join([a9frame("543", "40", "35"), a9frame("543", "40", "40"),
-                     a9frame("543", "00", "00")])
-    r = parse_a9_report(resp, uudt_id="543")
-    assert r["codes"] == ["C0035", "C0040"]
 
 
 class GmlanFakeGt:
@@ -249,7 +262,7 @@ GmlanFakeGt.read_gmlan_dtcs = ObdxGt.read_gmlan_dtcs
 
 
 def test_read_gmlan_dtcs_reads_c0035():
-    gt = GmlanFakeGt(a9frame("543", "40", "35"))
+    gt = GmlanFakeGt(a9("40", "35"))
     out = gt.read_gmlan_dtcs("243")
     assert out["examined"] is True and out["error"] is None
     assert out["codes"]["dtcs"] == ["C0035"]
