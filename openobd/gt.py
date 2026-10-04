@@ -821,43 +821,55 @@ class ObdxGt:
         usdt = f"{req + 0x400:03X}"           # negative responses (643 / 641)
         out: dict = {"examined": False, "error": None,
                      "codes": {"dtcs": []}, "records": [], "raw": ""}
-        stp = "61" if sw else "31"            # SW-CAN 33k / HS-CAN 500k, raw 11-bit
-        if not self._at_checked(f"STP {stp}"):
-            out["error"] = (f"GT rejected 'STP {stp}' — raw GMLAN mode "
-                            "unavailable (no ST command support?)")
+        if sw:
+            out["error"] = "SW-CAN GMLAN not supported over the GT's ELM yet"
+            self._restore_default()
+            return out
+        # The OBDX Pro GT is NOT an STN device (it rejects STP), so the raw read
+        # is done with plain ELM327 commands: force CAN 11/500 (the HS bus), turn
+        # CAF off for raw framing, set the tx header, and widen the receive filter
+        # to the module's non-standard report id (req+0x300) with ATCRA. The full
+        # response is always kept in out["raw"] so a first truck run reveals the
+        # exact frame shape even if the decode misses — bring-up over inference.
+        if not self._at_checked("ATSP6"):     # ISO 15765-4 CAN 11-bit 500k
+            out["error"] = "GT rejected ATSP6 (CAN 11/500)"
             self._restore_default()
             return out
         try:
-            if sw:
-                self.command("STCSWM 2", wait=0.1)     # SW-CAN normal mode
-            self._at_checked("ATCAF0")                 # raw framing, no auto ISO-TP
-            self.command("STFAC", wait=0.05)           # clear filters
-            self._at_checked(f"STFAP {uudt},7FF")      # accept the report id
-            self._at_checked(f"STFAP {usdt},7FF")      # accept the negative id
+            self._at_checked("ATCAF0")        # raw framing (supply PCI ourselves)
             if not self._set_header(req_id.upper()):
                 out["error"] = f"could not set header {req_id}"
                 return out
+            self.command(f"ATCRA{uudt}", wait=0.05)   # accept the report id
             resp = self.command("03A981FF55555555", wait=0.0, deadline=1.6)
             out["raw"] = resp
             if is_binary_reply(self.last_raw):
                 out["error"] = "binary reply"
                 return out
             p = parse_a9_report(resp, uudt_id=uudt)
+            # a negative comes on the USDT id — look there only if the report id
+            # was silent, so a clean report is never masked by a stray frame.
+            if not p["examined"]:
+                self.command(f"ATCRA{usdt}", wait=0.05)
+                resp2 = self.command("03A981FF55555555", wait=0.0, deadline=0.8)
+                out["raw"] = f"{resp} || {resp2}"
+                pn = parse_a9_report(resp2, uudt_id=usdt)
+                if pn["negative"]:
+                    p["negative"] = pn["negative"]
             out["codes"]["dtcs"] = p["codes"]
             out["records"] = p["records"]
             out["examined"] = p["examined"]
             if p["negative"]:
                 out["error"] = f"module negative response (NRC {p['negative']})"
             elif not p["examined"]:
-                out["error"] = ("no $A9 report — module silent or the reply did "
-                                "not decode as an $A9/E9 frame")
+                out["error"] = ("no $A9 report decoded — raw kept for bring-up: "
+                                + (out["raw"][:160] or "(nothing returned)"))
             return out
         finally:
-            # leave the GT as the rest of the app expects: auto protocol, CAF on,
-            # no manual filters, default header.
-            self.command("STFAC", wait=0.05)
-            self.command("ATSP0", wait=0.1)
+            # leave the GT as the rest of the app expects.
+            self.command("ATCRA", wait=0.05)  # reset the receive filter
             self._at_checked("ATCAF1")
+            self.command("ATSP0", wait=0.1)   # back to automatic protocol search
             self._restore_default()
 
     def clear_dtcs(self) -> dict:

@@ -3,6 +3,18 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.22.1 — 2026-10-04
+
+### Fixed — GMLAN $A9 uses ELM, not STN (the GT is not an STN device)
+- The truck showed the OBDX Pro GT rejects `STP` — it is not an STN chip, so
+  0.22.0's STN sequence (STP/STFAP) could never run. `read_gmlan_dtcs` now uses
+  plain ELM327: force CAN 11/500 (`ATSP6`), CAF off, set the tx header, widen the
+  receive filter to the module's report id with `ATCRA`, send `03 A9 81 FF`,
+  then restore automatic protocol + CAF. The full GT response is always kept in
+  `raw` (and surfaced in the error when nothing decodes) so the first truck run
+  reveals the exact frame shape — bring-up over inference, since no tool has run
+  `$A9` over the GT's ELM firmware before.
+
 ## 0.22.0 — 2026-10-04
 
 ### Added — GMLAN $A9 DTC read for the EBCM/BCM

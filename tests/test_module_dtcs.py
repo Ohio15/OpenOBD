@@ -221,14 +221,14 @@ def test_a9_multiple_codes():
 
 
 class GmlanFakeGt:
-    def __init__(self, report, stp_ok=True, binary=False):
-        self._report, self._stp_ok, self._binary = report, stp_ok, binary
+    def __init__(self, report, atsp_ok=True, binary=False):
+        self._report, self._atsp_ok, self._binary = report, atsp_ok, binary
         self.last_raw = b"ok"
         self.cmds = []
 
     def _at_checked(self, cmd, wait=0.05):
         self.cmds.append(cmd)
-        return self._stp_ok if cmd.startswith("STP") else True
+        return self._atsp_ok if cmd.startswith("ATSP") else True
 
     def _set_header(self, h):
         self.cmds.append("SH:" + h)
@@ -253,14 +253,15 @@ def test_read_gmlan_dtcs_reads_c0035():
     out = gt.read_gmlan_dtcs("243")
     assert out["examined"] is True and out["error"] is None
     assert out["codes"]["dtcs"] == ["C0035"]
-    # teardown really ran: automatic protocol + CAF restored
+    # addressed the EBCM's report id, and the teardown really ran
+    assert "ATCRA543" in gt.cmds
     assert "ATSP0" in gt.cmds and "ATCAF1" in gt.cmds and "restore" in gt.cmds
 
 
-def test_read_gmlan_dtcs_stp_rejected():
-    gt = GmlanFakeGt("", stp_ok=False)
+def test_read_gmlan_dtcs_atsp_rejected():
+    gt = GmlanFakeGt("", atsp_ok=False)
     out = gt.read_gmlan_dtcs("243")
-    assert out["examined"] is False and "STP" in out["error"]
+    assert out["examined"] is False and "ATSP6" in out["error"]
 
 
 def test_read_gmlan_dtcs_negative():
