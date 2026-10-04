@@ -3,6 +3,25 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.24.0 — 2026-10-04
+
+### Added
+- **TCCM identified: 7E4/7EC on HS-GMLAN, DTCs via GM `$A9` on UUDT 0x5EC.**
+  The pass-thru functional sweep (17:20) got a transfer-case DTC table from
+  0x5EC (C0306 C0321 C0374 C0379 C0387 C0392 C0396 C0397 C0398 ...), the
+  "unidentified 7EC responder" since August. It never answered the 24x
+  chassis addressing. The module map now places the TCCM on HS (7E4/7EC), the
+  per-module scan reads it with `$A9` using its real report/NAK ids
+  (`read_gmlan_dtcs(uudt_id=, usdt_id=)`, `vehnet.GMLAN_ROUTED`), and the
+  topology ping includes it.
+- Sweep output names the powertrain-block UUDTs: 0x5E8 ECM, 0x5EA TCM,
+  0x5EB FPCM, 0x5EC TCCM.
+
+### Truck finding
+- TCCM C0398 status DB (current, lamp commanded): Range Position Correlation
+  -- the shift motor's incremental position sensor and the rotational position
+  sensor disagree by 5% or more. This is the Service 4WD message.
+
 ## 0.23.3 — 2026-10-04
 
 ### Changed

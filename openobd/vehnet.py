@@ -45,8 +45,12 @@ class ModuleDef:
 #     (7E2 -> 7EA), 243 -> 643 = EBCM, 241 = BCM.
 #   * HP Tuners reached the BCM at 0x541 UUDT and the EBCM at 0x543 UUDT,
 #     i.e. both sit on HS-GMLAN. The BCM is ALSO the gateway to SW-GMLAN.
-# 7EB, 7EC and 64D answered too but their modules are not identified; they are
+# 7EB and 64D answered too but their modules are not identified; they are
 # deliberately left out rather than given invented names.
+#   * 7EC IS IDENTIFIED (2026-10-04, OpenOBD 0.23.3 functional $A9 sweep over
+#     pass-thru): it reported on UUDT 0x5EC with a transfer-case DTC table
+#     (C0306 C0321 C0374 C0379 C0387 C0392 C0396 C0397 C0398 ...) = the TCCM,
+#     request 7E4. It never answered the 24x chassis addressing.
 # SW modules carry no HS ids — unreachable from this path.
 MODULES: list[ModuleDef] = [
     ModuleDef("ecm",  "ECM (E38)",        HS, "7E0", "7E8", True,
@@ -66,8 +70,9 @@ MODULES: list[ModuleDef] = [
               "Climate control head and actuators"),
     ModuleDef("radio", "Radio",           SW, None, None, False,
               "Entertainment head unit"),
-    ModuleDef("tccm", "TCCM (4WD)",       SW, None, None, False,
-              "Transfer case shift control"),
+    ModuleDef("tccm", "TCCM (4WD)",       HS, "7E4", "7EC", False,
+              "Transfer case shift control (RPO NQH) -- HS powertrain block, "
+              "GM $A9 reports on 0x5EC"),
 ]
 
 
@@ -80,6 +85,10 @@ MODULES: list[ModuleDef] = [
 # table is how its identity gets settled from evidence (C03xx transfer-case
 # codes would identify it), not by assumption.
 UNIDENTIFIED_GMLAN_DTC_IDS: tuple[str, ...] = ("242", "24D")
+
+# Modules on a 7Ex request id whose DTCs come from GM $A9 (not the OBD modes),
+# with the UUDT report id and USDT negative id measured on this truck.
+GMLAN_ROUTED: dict[str, tuple[str, str]] = {"tccm": ("5EC", "7EC")}
 
 
 class Status(Enum):
@@ -279,7 +288,10 @@ def scan_all_module_dtcs(gt) -> dict:
             out[m.key] = {"name": m.name,
                           "unreachable": "no HS diagnostic id (SW-GMLAN only)"}
             continue
-        if m.req_id.upper().startswith("7E"):          # ISO15765 powertrain
+        if m.key in GMLAN_ROUTED:                      # 7Ex node read by $A9
+            uudt, usdt = GMLAN_ROUTED[m.key]
+            res = gt.read_gmlan_dtcs(m.req_id, uudt_id=uudt, usdt_id=usdt)
+        elif m.req_id.upper().startswith("7E"):        # ISO15765 powertrain
             res = gt.read_module_dtcs(m.req_id, m.resp_id, uds=False)
         else:                                          # 24x GMLAN chassis/body
             res = gt.read_gmlan_dtcs(m.req_id)          # GM $A9 81, not UDS $19
