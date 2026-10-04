@@ -27,7 +27,7 @@ from __future__ import annotations
 import sys
 from typing import Optional
 
-from .gt import ObdxGt, describe_no_gt
+from .gt import GtBinaryMode, ObdxGt, describe_no_gt
 from . import swcan, vehnet
 
 
@@ -96,32 +96,46 @@ def main(argv=None) -> int:
         print(describe_no_gt())
         return 3
     gt = ObdxGt(port)
+    binary = False
     try:
         gt.open()
+    except GtBinaryMode:
+        # The GT is already in pass-thru (binary) mode. The text-mode reads
+        # (OBD modes for ECM/TCM, per-address $A9) cannot run, but both $A9
+        # sweeps can — through the pass-thru driver, which binary mode IS.
+        binary = True
     except RuntimeError as e:
         print(f"GT connect failed: {e}")
         return 3
-    try:
-        print(f"OBDX Pro GT on {port} -- per-module DTC scan\n")
-        res = vehnet.scan_all_module_dtcs(gt)
-        width = max(len(i["name"]) for i in res.values())
-        for info in res.values():
-            print(f"  {info['name']:<{width}}  {_fmt(info)}")
-        print()
-        print(_fmt_sweep(gt.sweep_gmlan_dtcs()))
-    finally:
-        gt.close()
+    if binary:
+        print(f"OBDX Pro GT on {port} is in pass-thru (binary) mode -- the "
+              "text-mode reads (ECM/TCM OBD codes, per-module lines) are "
+              "skipped. Unplug USB + OBD for 10 s to get them next time.\n")
+        print(_fmt_sweep(swcan.sweep(bus="hs"),
+                         head=_HS_HEAD.replace("0x101", "0x101, via pass-thru")))
+    else:
+        try:
+            print(f"OBDX Pro GT on {port} -- per-module DTC scan\n")
+            res = vehnet.scan_all_module_dtcs(gt)
+            width = max(len(i["name"]) for i in res.values())
+            for info in res.values():
+                print(f"  {info['name']:<{width}}  {_fmt(info)}")
+            print()
+            print(_fmt_sweep(gt.sweep_gmlan_dtcs()))
+        finally:
+            gt.close()
     # LAST, after the serial port is released: the single-wire body bus is only
     # reachable through the GT's pass-thru driver, which leaves the GT in binary
     # mode until it is unplugged. No SW module is identified yet, so every
     # responder prints by address.
     print()
-    sw = swcan.sweep()
+    sw = swcan.sweep(bus="sw")
     if sw.get("vbatt") is not None:
         print(f"(battery at the OBD port: {sw['vbatt']:.2f} V)")
     print(_fmt_sweep(sw, head=_SW_HEAD, known={}))
     print("\nNOTE: the GT is now in pass-thru (binary) mode. Unplug its USB and "
-          "OBD plug for 10 s before the next scan.")
+          "OBD plug for 10 s before the next full scan (this scan still works "
+          "without it, but skips the text-mode reads).")
     return 0
 
 
