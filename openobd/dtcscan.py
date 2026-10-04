@@ -25,9 +25,10 @@ reads a housekeeping status (01/19/21/25) and is counted, not printed.
 from __future__ import annotations
 
 import sys
+from typing import Optional
 
 from .gt import ObdxGt, describe_no_gt
-from . import vehnet
+from . import swcan, vehnet
 
 
 def _fmt(info: dict) -> str:
@@ -63,15 +64,21 @@ def _fmt(info: dict) -> str:
 _KNOWN_UUDT = {"541": "BCM", "543": "EBCM (ABS)"}
 
 
-def _fmt_sweep(sw: dict) -> str:
-    """Functional $A9 sweep -> text. Every id that answered is listed; an id
-    outside the identified set is flagged, with its fault codes if any."""
-    head = "Functional $A9 sweep (all HS-GMLAN nodes, 0x101):"
+_HS_HEAD = "Functional $A9 sweep (all HS-GMLAN nodes, 0x101):"
+_SW_HEAD = ("SW-GMLAN body bus $A9 sweep (single-wire, pin 1, via pass-thru; "
+            "functional 0x101 then 0x241-0x25F):")
+
+
+def _fmt_sweep(sw: dict, head: str = _HS_HEAD,
+               known: Optional[dict] = None) -> str:
+    """$A9 sweep -> text. Every id that answered is listed; an id outside the
+    identified set is flagged, with its fault codes if any."""
+    known = _KNOWN_UUDT if known is None else known
     if not sw.get("examined"):
         return f"{head}\n  NOT EXAMINED -- {sw.get('error') or 'no answer'}"
     lines = [head]
     for cid, rep in sorted(sw["responders"].items()):
-        who = _KNOWN_UUDT.get(cid, "UNACCOUNTED -- not an identified module")
+        who = known.get(cid, "UNACCOUNTED -- not an identified module")
         faults = ", ".join(f"{c} [{st}]" for c, _s, st in rep["records"]
                            if c in rep["codes"]) or "no fault codes"
         lines.append(f"  0x{cid} {who}: {faults}  "
@@ -104,6 +111,17 @@ def main(argv=None) -> int:
         print(_fmt_sweep(gt.sweep_gmlan_dtcs()))
     finally:
         gt.close()
+    # LAST, after the serial port is released: the single-wire body bus is only
+    # reachable through the GT's pass-thru driver, which leaves the GT in binary
+    # mode until it is unplugged. No SW module is identified yet, so every
+    # responder prints by address.
+    print()
+    sw = swcan.sweep()
+    if sw.get("vbatt") is not None:
+        print(f"(battery at the OBD port: {sw['vbatt']:.2f} V)")
+    print(_fmt_sweep(sw, head=_SW_HEAD, known={}))
+    print("\nNOTE: the GT is now in pass-thru (binary) mode. Unplug its USB and "
+          "OBD plug for 10 s before the next scan.")
     return 0
 
 

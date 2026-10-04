@@ -3,6 +3,26 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.23.0 — 2026-10-04
+
+### Added
+- **Single-wire GMLAN body bus (SW-CAN, 33.3 kbps, pin 1) through the GT's
+  pass-thru driver** (`openobd/swcan.py`). The GT's ELM327 text mode has no
+  single-wire protocol and rejects the STN extensions, but its pass-thru driver
+  registers SW_CAN_PS and SW_ISO15765_PS. The new sweep sends only `$A9 81`
+  (read DTCs): functional to AllNodes 0x101, then physical 0x241-0x25F for ids
+  not yet heard, and lists every responder with status-filtered fault codes.
+  This is where the transfer case module is expected to be.
+- Pass-thru client: `pass_filter()`, `J1962_PINS` pin selection (SW-CAN = pin
+  1), SW-CAN baud constant.
+- dtcscan runs the SW sweep LAST, after the serial port is released, prints
+  the OBD-port battery voltage, and warns that the GT is left in binary mode
+  (unplug USB + OBD for 10 s before the next scan).
+
+### Not yet proven on hardware
+- The SW sweep is tested against a fake pass-thru client only. The first truck
+  run is its bring-up.
+
 ## 0.22.5 — 2026-10-04
 
 ### Added
