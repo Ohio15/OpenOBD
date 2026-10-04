@@ -3,6 +3,22 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.26.0 — 2026-10-04
+
+### Added
+- `didscan --watch LABEL`: read-only live recording (~5 samples/s, 25 s) of the
+  TCCM identifiers that moved with the knob, to a CSV. `_run_tccm_watch.bat`.
+  Purpose: during an AUTO -> 4HI attempt, tell "the TCCM never drives the
+  motor" from "the motor turns but the mechanism/second sensor does not
+  follow" (C0398).
+
+### Truck finding (2026-10-04, 2HI/AUTO/4HI/4LO snapshots)
+- 22:3142 = knob request (2HI 02, AUTO 05, 4HI 04, 4LO 03): the TCCM sees
+  the selector correctly.
+- 22:3114 / 22:3115 = actuator position pair (2HI 375/374, AUTO 625/623):
+  the two readings agree to 1-2 counts at rest. The actuator moved 2HI ->
+  AUTO and then stayed at 625 for the 4HI and 4LO requests.
+
 ## 0.25.1 — 2026-10-04
 
 ### Fixed
