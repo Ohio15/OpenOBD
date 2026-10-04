@@ -161,7 +161,17 @@ def test_scan_all_routes_powertrain_to_obd_gmlan_to_a9():
     gt = RecordingGt()
     vehnet.scan_all_module_dtcs(gt)
     assert set(gt.obd) == {"7E0", "7E2"}          # ECM/TCM via OBD modes
-    assert set(gt.gmlan) == {"243", "241"}        # EBCM/BCM via GMLAN $A9
+    # EBCM/BCM, then the unidentified HS-GMLAN ids, via GMLAN $A9
+    assert set(gt.gmlan) == {"243", "241", "242", "24D"}
+
+
+def test_scan_all_reads_unidentified_ids_by_address_only():
+    res = vehnet.scan_all_module_dtcs(RecordingGt())
+    assert res["hs242"]["name"] == "HS 0x242 (unidentified)"
+    assert res["hs24d"]["name"] == "HS 0x24D (unidentified)"
+    assert "result" in res["hs242"]
+    # never promoted into MODULES (the map names only identified modules)
+    assert not {"242", "24D"} & {m.req_id for m in vehnet.MODULES}
 
 
 # --------------------------------------------------------------------------- #
@@ -352,4 +362,4 @@ def test_scan_all_routes_gmlan_to_a9():
     g = G()
     vehnet.scan_all_module_dtcs(g)
     assert set(g.obd) == {"7E0", "7E2"}          # ECM/TCM via OBD
-    assert set(g.gm) == {"243", "241"}           # EBCM/BCM via GMLAN $A9
+    assert set(g.gm) == {"243", "241", "242", "24D"}   # all via GMLAN $A9

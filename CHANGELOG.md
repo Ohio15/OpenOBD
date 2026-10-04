@@ -3,6 +3,17 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.22.4 — 2026-10-04
+
+### Added
+- The DTC scan also reads the two HS-GMLAN ids that answer on this truck but
+  are not identified: 0x242 (answered `$A9` with an 18-entry table in August,
+  silent to every ident DID) and 0x24D (NAKs `$A9`). They print by address
+  only and are never added to the module map. The truck has an electric-shift
+  transfer case (RPO NQH) whose control module is not yet located; transfer
+  case codes (C03xx) in 0x242's table would identify it. Wanted for the
+  recurring Service 4WD message.
+
 ## 0.22.3 — 2026-10-04
 
 ### Fixed
