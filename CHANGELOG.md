@@ -3,6 +3,20 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.20.1 — 2026-10-04
+
+### Added — UAC-style approval popup (closed-loop step A, increment 2)
+- **`tools/approve-dialog.ps1`.** A topmost desktop popup (like UAC) that shows a
+  pending elevated-risk action and offers Allow / Reject, for Ron's "popup I can
+  click to allow or reject" flow. Gates on exit code (0 allow; 2/3/4/other deny);
+  fail-safe — traps every error and exits deny, never allow. `-SelfTest`
+  validates args + the decision-record write with no UI.
+- **`docs/APPROVAL-POPUP.md`.** The guard-integration contract: the popup is
+  raised by the trusted hazard-guard (like UAC is raised by the OS), run
+  synchronously, allow only on exit 0. Writes are never routed through it. The
+  DR-011 edit that wires the guard to call it is the operator's; this is the
+  contract it implements.
+
 ## 0.20.0 — 2026-10-04
 
 ### Added — phone approve/deny gate (closed-loop step A, increment 1)
