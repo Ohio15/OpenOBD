@@ -871,7 +871,9 @@ class ObdxGt:
         finally:
             self._restore_default()
 
-    def read_gmlan_dtcs(self, req_id: str, sw: bool = False) -> dict:
+    def read_gmlan_dtcs(self, req_id: str, sw: bool = False,
+                        uudt_id: Optional[str] = None,
+                        usdt_id: Optional[str] = None) -> dict:
         """DTCs from a GMLAN chassis/body module (EBCM 0x243, BCM 0x241) via GM
         service $A9 81, which they answer instead of UDS $19. Raw-CAN mode:
         select the raw HS (or SW) protocol, turn CAF off, set narrow receive
@@ -886,8 +888,11 @@ class ObdxGt:
         supported-DTC table is in "table" and is NOT a fault list. Needs the STN/OBDX ST commands (STP/STFAP); if the GT rejects
         STP the error says so."""
         req = int(req_id, 16)
-        uudt = f"{req + 0x300:03X}"           # report frames (EBCM 543, BCM 541)
-        usdt = f"{req + 0x400:03X}"           # negative responses (643 / 641)
+        # 24x chassis ids report on req+0x300 and NAK on req+0x400; the 7Ex
+        # powertrain-block ids do NOT follow that rule (TCCM 7E4 reports on
+        # 0x5EC, NAKs on 7EC), so the caller passes them explicitly.
+        uudt = (uudt_id or f"{req + 0x300:03X}").upper()
+        usdt = (usdt_id or f"{req + 0x400:03X}").upper()
         out: dict = {"examined": False, "error": None,
                      "codes": {"dtcs": [], "table": []}, "records": [],
                      "raw": ""}

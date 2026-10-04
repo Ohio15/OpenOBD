@@ -25,7 +25,8 @@ from openobd.vehnet import (MODULES, HS, SW, ScanResult, SegStatus, Status,
 BINARY_REPLY = b"\x7f\x02A\x01<"
 
 # Physical request -> response id on THIS truck (the thing under test).
-TRUCK_ROUTES = {"7E0": "7E8", "7E2": "7EA", "243": "643", "241": "641"}
+TRUCK_ROUTES = {"7E0": "7E8", "7E2": "7EA", "243": "643", "241": "641",
+                "7E4": "7EC"}          # 7E4/7EC = TCCM, identified 2026-10-04
 
 
 def isotp_frames(can_id, payload_hex):
@@ -201,8 +202,11 @@ def test_module_addresses_match_the_truck():
     assert table["bcm"] == (HS, "241", "641")
     ebcm = next(m for m in MODULES if m.key == "ebcm")
     assert ebcm.obd_responder is False
-    # no invented modules for the unidentified 7EB / 7EC / 64D responders
-    assert not {"7EB", "7EC", "64D"} & {m.resp_id for m in MODULES}
+    # no invented modules for the unidentified 7EB / 64D responders
+    assert not {"7EB", "64D"} & {m.resp_id for m in MODULES}
+    # 7EC is the TCCM, identified from its $A9 table (2026-10-04)
+    tccm = next(m for m in MODULES if m.key == "tccm")
+    assert (tccm.bus, tccm.req_id, tccm.resp_id) == (HS, "7E4", "7EC")
     for m in MODULES:
         if m.bus == SW:
             assert m.req_id is None and m.resp_id is None
@@ -338,12 +342,12 @@ def test_single_line_broadcast_with_physical_pings_all_ok(make_gt):
     # sent on the leftover 7E0 physical header)
     assert ("0100", "7DF") in g.ser.log
     v = localize(result)
-    for key in ("ecm", "tcm", "ebcm", "bcm"):
+    for key in ("ecm", "tcm", "ebcm", "bcm", "tccm"):
         assert v.modules[key] == Status.OK, key
     assert v.failure_point is None
     # pings went to the truck's real addresses
     pinged_on = {h for c, h in g.ser.log if c == "3E"}
-    assert pinged_on == {"7E2", "243", "241"}
+    assert pinged_on == {"7E2", "243", "241", "7E4"}
     assert g._header == "7E0"                    # left on the ECM for polling
 
 

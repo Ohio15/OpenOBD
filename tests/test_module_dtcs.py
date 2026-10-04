@@ -144,8 +144,10 @@ class RecordingGt:
         self.obd.append(req_id)
         return {"examined": True, "error": None, "codes": {}, "raw": {}}
 
-    def read_gmlan_dtcs(self, req_id, sw=False):
+    def read_gmlan_dtcs(self, req_id, sw=False, uudt_id=None, usdt_id=None):
         self.gmlan.append(req_id)
+        self.gmlan_args = getattr(self, "gmlan_args", {})
+        self.gmlan_args[req_id] = (uudt_id, usdt_id)
         return {"examined": True, "error": None, "codes": {"dtcs": []}, "raw": ""}
 
 
@@ -154,15 +156,16 @@ def test_scan_all_reads_hs_and_marks_sw_unreachable():
     # HS modules with ids are read; SW modules are unreachable
     assert "result" in res["ecm"] and "result" in res["tcm"]
     assert "result" in res["ebcm"] and "result" in res["bcm"]
-    assert "unreachable" in res["ipc"] and "unreachable" in res["tccm"]
+    assert "unreachable" in res["ipc"] and "result" in res["tccm"]
 
 
 def test_scan_all_routes_powertrain_to_obd_gmlan_to_a9():
     gt = RecordingGt()
     vehnet.scan_all_module_dtcs(gt)
     assert set(gt.obd) == {"7E0", "7E2"}          # ECM/TCM via OBD modes
+    assert gt.gmlan_args["7E4"] == ("5EC", "7EC")  # TCCM via $A9, real ids
     # EBCM/BCM, then the unidentified HS-GMLAN ids, via GMLAN $A9
-    assert set(gt.gmlan) == {"243", "241", "242", "24D"}
+    assert set(gt.gmlan) == {"243", "241", "7E4", "242", "24D"}
 
 
 def test_scan_all_reads_unidentified_ids_by_address_only():
@@ -357,12 +360,12 @@ def test_scan_all_routes_gmlan_to_a9():
         def __init__(self): self.obd = []; self.gm = []
         def read_module_dtcs(self, req, resp, uds=False):
             self.obd.append(req); return {"examined": True, "codes": {}, "error": None}
-        def read_gmlan_dtcs(self, req, sw=False):
+        def read_gmlan_dtcs(self, req, sw=False, uudt_id=None, usdt_id=None):
             self.gm.append(req); return {"examined": True, "codes": {"dtcs": []}, "error": None}
     g = G()
     vehnet.scan_all_module_dtcs(g)
     assert set(g.obd) == {"7E0", "7E2"}          # ECM/TCM via OBD
-    assert set(g.gm) == {"243", "241", "242", "24D"}   # all via GMLAN $A9
+    assert set(g.gm) == {"243", "241", "7E4", "242", "24D"}   # all via $A9
 
 
 # --------------------------------------------------------------------------- #
@@ -429,3 +432,10 @@ def test_fmt_sweep_flags_unaccounted():
                               "responders": {"548": rep}, "negatives": {"64D": "11"}})
     assert "0x548 UNACCOUNTED" in txt and "C0327 [11]" in txt
     assert "0x64D refused $A9 (NRC 11)" in txt
+
+
+def test_read_gmlan_dtcs_uses_explicit_ids_for_tccm():
+    gt = GmlanFakeGt(a9("43", "98", "00", "DB"))
+    out = gt.read_gmlan_dtcs("7E4", uudt_id="5EC", usdt_id="7EC")
+    assert "ATCRA5EC" in gt.cmds
+    assert out["codes"]["dtcs"] == ["C0398"]

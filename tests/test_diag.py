@@ -109,7 +109,7 @@ def test_localize_single_module_down():
 def test_module_table_shape():
     hs_mods = [m for m in MODULES if m.bus == HS]
     sw_mods = [m for m in MODULES if m.bus == SW]
-    assert {m.key for m in hs_mods} == {"ecm", "tcm", "ebcm", "bcm"}
-    assert len(sw_mods) >= 5
+    assert {m.key for m in hs_mods} == {"ecm", "tcm", "ebcm", "bcm", "tccm"}
+    assert len(sw_mods) >= 4          # TCCM moved to HS (identified 2026-10-04)
     for m in hs_mods:
         assert m.req_id and m.resp_id

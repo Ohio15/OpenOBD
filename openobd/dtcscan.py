@@ -84,7 +84,9 @@ def _fmt(info: dict) -> str:
 
 
 # HS-GMLAN UUDT ids identified on this truck (vehnet.MODULES evidence).
-_KNOWN_UUDT = {"541": "BCM", "543": "EBCM (ABS)"}
+_KNOWN_UUDT = {"541": "BCM", "543": "EBCM (ABS)", "5E8": "ECM (E38)",
+               "5EA": "TCM (T43)", "5EB": "FPCM (fuel pump)",
+               "5EC": "TCCM (transfer case)"}
 
 
 _HS_HEAD = "Functional $A9 sweep (all HS-GMLAN nodes, 0x101):"
