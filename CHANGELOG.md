@@ -3,6 +3,20 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.25.0 — 2026-10-04
+
+### Added
+- `openobd/didscan.py`: READ-ONLY data-identifier discovery for one module
+  over pass-thru ISO 15765 (default the TCCM, 7E4/7EC). `--discover` asks
+  every `$1A` ident and every `$22` DID in a range and saves each answer as it
+  arrives (resumable with `--start`); `--read LABEL` re-reads the supported set
+  for one vehicle state; `--diff` lists identifiers that change between
+  states. The sender refuses every service but `$22`/`$1A`, so it cannot
+  clear, write or actuate. One device session per run.
+- `_run_tccm_discover.bat` and `_run_tccm_read.bat LABEL` for the truck:
+  locate the transfer case shift-position readings (what Tech2Win's data
+  display would show) by reading in 2HI / AUTO / 4HI and diffing.
+
 ## 0.24.1 — 2026-10-04
 
 ### Fixed
