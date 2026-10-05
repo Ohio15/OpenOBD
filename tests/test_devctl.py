@@ -99,6 +99,17 @@ def test_import_reassembles_multiframe_requests_and_ignores_reads():
     assert ex[0]["outcome"] == "positive"
 
 
+def test_import_treats_response_pending_as_not_an_answer():
+    recs = [{"t": 1.0, "id": "241", "data": "02AE000000000000"},
+            {"t": 1.1, "id": "641", "data": "037FAE7800000000"},   # pending
+            {"t": 1.5, "id": "641", "data": "02EE000000000000"},   # final: EE 00
+            {"t": 3.0, "id": "241", "data": "02AE000000000000"},
+            {"t": 3.1, "id": "641", "data": "037FAE7800000000"}]   # pending only
+    ex = dc.import_capture(recs)
+    assert [e["outcome"] for e in ex] == ["positive", "pending-only"]
+    assert "busy" in dc.describe_outcome("pending-only")
+
+
 def test_merge_is_idempotent():
     cat = {"controls": []}
     ex = [{"module": "7E4", "request": "AE0302020000", "response": None,
@@ -106,6 +117,7 @@ def test_merge_is_idempotent():
     assert dc.merge_into_catalog(cat, ex, "a.jsonl") == ["7E4-AE03-1"]
     assert dc.merge_into_catalog(cat, ex, "b.jsonl") == []
     assert cat["controls"][0]["status"] == "captured"
+    assert cat["controls"][0]["observed_counts"] == {"no-answer": 2}
 
 
 # -- refusals before anything actuates -------------------------------------- #

@@ -124,6 +124,12 @@ def import_capture(records: list, window_s: float = 3.0) -> list:
                     outcome, resp = "positive", rp
                     # keep looking: a later negative (abort) overrides
                 elif rp[0] == 0x7F and len(rp) >= 3 and rp[1] == SID_DEVCTL:
+                    if rp[2] == 0x78:
+                        # responsePending: the module is still working on it.
+                        # Not an answer -- keep looking for the final one.
+                        if outcome == "no-answer":
+                            outcome, resp = "pending-only", rp
+                        continue
                     outcome, resp = f"negative:{rp[2]:02X}", rp
                     break
             found.append({"bus": bus, "module": f"{req:03X}",
@@ -145,6 +151,8 @@ def describe_outcome(outcome: Optional[str]) -> str:
         return "module accepted it"
     if outcome == "no-answer" or not outcome:
         return "module did not answer"
+    if outcome == "pending-only":
+        return "module said 'busy, wait' and gave no final answer in the capture"
     if outcome.startswith("negative:"):
         code = outcome.split(":", 1)[1]
         return f"module refused it ({NRC_TEXT.get(code, 'code ' + code)})"
@@ -168,6 +176,10 @@ def merge_into_catalog(catalog: dict, exchanges: list, source: str) -> list:
         bus = ex.get("bus", "hs")
         key = (bus, ex["module"], ex["request"])
         if key in have:
+            for c in catalog["controls"]:
+                if (c.get("bus", "hs"), c["module"], c["request"]) == key:
+                    tally = c.setdefault("observed_counts", {})
+                    tally[ex["outcome"]] = tally.get(ex["outcome"], 0) + 1
             continue
         cpid = ex["request"][2:4]
         prefix = "" if bus == "hs" else "SW-"
@@ -178,6 +190,7 @@ def merge_into_catalog(catalog: dict, exchanges: list, source: str) -> list:
             "cpid": cpid, "name": "(unnamed -- name it from the tool's menu)",
             "status": "captured", "source": source,
             "observed_outcome": ex["outcome"], "observed_response": ex["response"],
+            "observed_counts": {ex["outcome"]: 1},
             "max_seconds": 20})
         have.add(key)
         new.append(cid)
@@ -478,7 +491,10 @@ def main(argv=None) -> int:
             mod = mi[2] if mi else c["module"]
             print(f"  [{n}]  {c['name']}")
             print(f"       module: {mod} ({'body bus' if c.get('bus') == 'sw' else 'main bus'})   ID: {c['id']}")
-            print(f"       last seen: {describe_outcome(c['observed_outcome'])}")
+            counts = c.get("observed_counts") or {c["observed_outcome"]: 1}
+            seen = "; ".join(f"{describe_outcome(k)} x{v}"
+                             for k, v in counts.items())
+            print(f"       seen: {seen}")
             print()
         print("Enter the NUMBER in brackets (e.g. 1) to run that control, "
               "or leave blank to cancel.")

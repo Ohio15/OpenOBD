@@ -11,7 +11,453 @@
    "observed_outcome": "negative:E3",
    "observed_response": "7FAEE3000A",
    "max_seconds": 20,
-   "bus": "hs"
+   "bus": "hs",
+   "observed_counts": {
+    "negative:E3": 2
+   }
+  },
+  {
+   "id": "7E4-AE01-2",
+   "bus": "hs",
+   "module": "7E4",
+   "request": "AE014040000000",
+   "cpid": "01",
+   "name": "transfer case module control 01: output bit 40 commanded ON -- Autel test at 15:50:52",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "negative:E3",
+   "observed_response": "7FAEE30002",
+   "observed_counts": {
+    "negative:E3": 1,
+    "positive": 2
+   },
+   "max_seconds": 20,
+   "autel_time": "15:50:52"
+  },
+  {
+   "id": "7E4-AE01-3",
+   "bus": "hs",
+   "module": "7E4",
+   "request": "AE010000000000",
+   "cpid": "01",
+   "name": "transfer case module control 01: release (hand back to module) -- Autel test at 15:50:57",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE01",
+   "observed_counts": {
+    "positive": 6
+   },
+   "max_seconds": 20,
+   "autel_time": "15:50:57"
+  },
+  {
+   "id": "7E4-AE01-4",
+   "bus": "hs",
+   "module": "7E4",
+   "request": "AE018080000000",
+   "cpid": "01",
+   "name": "transfer case module control 01: output bit 80 commanded ON -- Autel test at 15:51:21",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE01",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:51:21"
+  },
+  {
+   "id": "7E4-AE01-5",
+   "bus": "hs",
+   "module": "7E4",
+   "request": "AE018000000000",
+   "cpid": "01",
+   "name": "transfer case module control 01: output bit 80 commanded OFF -- Autel test at 15:51:25",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE01",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:51:25"
+  },
+  {
+   "id": "7E4-AE01-6",
+   "bus": "hs",
+   "module": "7E4",
+   "request": "AE014000000000",
+   "cpid": "01",
+   "name": "transfer case module control 01: output bit 40 commanded OFF -- Autel test at 15:51:46",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE01",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:51:46"
+  },
+  {
+   "id": "7E4-AE01-7",
+   "bus": "hs",
+   "module": "7E4",
+   "request": "AE010202000000",
+   "cpid": "01",
+   "name": "transfer case module control 01: output bit 02 commanded ON -- Autel test at 15:52:07",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE01",
+   "observed_counts": {
+    "positive": 3
+   },
+   "max_seconds": 20,
+   "autel_time": "15:52:07"
+  },
+  {
+   "id": "7E4-AE01-8",
+   "bus": "hs",
+   "module": "7E4",
+   "request": "AE010200000000",
+   "cpid": "01",
+   "name": "transfer case module control 01: output bit 02 commanded OFF -- Autel test at 15:52:09",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE01",
+   "observed_counts": {
+    "positive": 2
+   },
+   "max_seconds": 20,
+   "autel_time": "15:52:09"
+  },
+  {
+   "id": "7E4-AE01-9",
+   "bus": "hs",
+   "module": "7E4",
+   "request": "AE01000001B200",
+   "cpid": "01",
+   "name": "TCCM motor drive DOWN (actuator went ~371 -> ~120) -- Autel test at 15:52:44",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE01",
+   "observed_counts": {
+    "positive": 2
+   },
+   "max_seconds": 20,
+   "autel_time": "15:52:44"
+  },
+  {
+   "id": "7E4-AE01-10",
+   "bus": "hs",
+   "module": "7E4",
+   "request": "AE010000013200",
+   "cpid": "01",
+   "name": "TCCM motor drive UP (actuator went ~120 -> ~610, stalled short of AUTO) -- Autel test at 15:52:50",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE01",
+   "observed_counts": {
+    "positive": 2
+   },
+   "max_seconds": 20,
+   "autel_time": "15:52:50"
+  },
+  {
+   "id": "7E2-AE30-11",
+   "bus": "hs",
+   "module": "7E2",
+   "request": "AE300600000000",
+   "cpid": "30",
+   "name": "transmission module control 30: data [0600000000] (meaning not decoded yet -- name it from the Autel test) -- Autel test at 15:53:50",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE30",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:53:50"
+  },
+  {
+   "id": "7E2-AE30-12",
+   "bus": "hs",
+   "module": "7E2",
+   "request": "AE300400000000",
+   "cpid": "30",
+   "name": "transmission module control 30: data [0400000000] (meaning not decoded yet -- name it from the Autel test) -- Autel test at 15:53:53",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE30",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:53:53"
+  },
+  {
+   "id": "7E2-AE30-13",
+   "bus": "hs",
+   "module": "7E2",
+   "request": "AE300000000000",
+   "cpid": "30",
+   "name": "transmission module control 30: release (hand back to module) -- Autel test at 15:53:56",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE30",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:53:56"
+  },
+  {
+   "id": "7E2-AE38-14",
+   "bus": "hs",
+   "module": "7E2",
+   "request": "AE384000001900",
+   "cpid": "38",
+   "name": "transmission module control 38: data [4000001900] (meaning not decoded yet -- name it from the Autel test) -- Autel test at 15:54:15",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE38",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:54:15"
+  },
+  {
+   "id": "7E2-AE38-15",
+   "bus": "hs",
+   "module": "7E2",
+   "request": "AE384000000C80",
+   "cpid": "38",
+   "name": "transmission module control 38: data [4000000C80] (meaning not decoded yet -- name it from the Autel test) -- Autel test at 15:54:18",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE38",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:54:18"
+  },
+  {
+   "id": "7E2-AE38-16",
+   "bus": "hs",
+   "module": "7E2",
+   "request": "AE380000000000",
+   "cpid": "38",
+   "name": "transmission module control 38: release (hand back to module) -- Autel test at 15:54:19",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE38",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:54:19"
+  },
+  {
+   "id": "241-AE13-17",
+   "bus": "hs",
+   "module": "241",
+   "request": "AE130101000000",
+   "cpid": "13",
+   "name": "body control module control 13: output bit 01 commanded ON -- Autel test at 15:54:42",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE13",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:54:42"
+  },
+  {
+   "id": "241-AE13-18",
+   "bus": "hs",
+   "module": "241",
+   "request": "AE130100000000",
+   "cpid": "13",
+   "name": "body control module control 13: output bit 01 commanded OFF -- Autel test at 15:54:46",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE13",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:54:46"
+  },
+  {
+   "id": "241-AE00-19",
+   "bus": "hs",
+   "module": "241",
+   "request": "AE00",
+   "cpid": "00",
+   "name": "BCM: return all controls to normal (sent after each BCM test) -- Autel test at 15:54:50",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE00",
+   "observed_counts": {
+    "positive": 9
+   },
+   "max_seconds": 20,
+   "autel_time": "15:54:50"
+  },
+  {
+   "id": "241-AE12-20",
+   "bus": "hs",
+   "module": "241",
+   "request": "AE122020000000",
+   "cpid": "12",
+   "name": "body control module control 12: output bit 20 commanded ON -- Autel test at 15:55:01",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE12",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:55:01"
+  },
+  {
+   "id": "241-AE12-21",
+   "bus": "hs",
+   "module": "241",
+   "request": "AE122000000000",
+   "cpid": "12",
+   "name": "body control module control 12: output bit 20 commanded OFF -- Autel test at 15:55:04",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE12",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:55:04"
+  },
+  {
+   "id": "241-AE12-22",
+   "bus": "hs",
+   "module": "241",
+   "request": "AE121010000000",
+   "cpid": "12",
+   "name": "body control module control 12: output bit 10 commanded ON -- Autel test at 15:55:21",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE12",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:55:21"
+  },
+  {
+   "id": "241-AE12-23",
+   "bus": "hs",
+   "module": "241",
+   "request": "AE121000000000",
+   "cpid": "12",
+   "name": "body control module control 12: output bit 10 commanded OFF -- Autel test at 15:55:25",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE12",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:55:25"
+  },
+  {
+   "id": "241-AE13-24",
+   "bus": "hs",
+   "module": "241",
+   "request": "AE131010000000",
+   "cpid": "13",
+   "name": "body control module control 13: output bit 10 commanded ON -- Autel test at 15:55:44",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE13",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:55:44"
+  },
+  {
+   "id": "241-AE13-25",
+   "bus": "hs",
+   "module": "241",
+   "request": "AE131000000000",
+   "cpid": "13",
+   "name": "body control module control 13: output bit 10 commanded OFF -- Autel test at 15:55:53",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE13",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:55:53"
+  },
+  {
+   "id": "241-AE10-26",
+   "bus": "hs",
+   "module": "241",
+   "request": "AE100404000000",
+   "cpid": "10",
+   "name": "body control module control 10: output bit 04 commanded ON -- Autel test at 15:56:25",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE10",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:56:25"
+  },
+  {
+   "id": "241-AE10-27",
+   "bus": "hs",
+   "module": "241",
+   "request": "AE100400000000",
+   "cpid": "10",
+   "name": "body control module control 10: output bit 04 commanded OFF -- Autel test at 15:56:28",
+   "status": "captured",
+   "source": "canrec-main-20261005-154648.jsonl",
+   "observed_outcome": "positive",
+   "observed_response": "EE10",
+   "observed_counts": {
+    "positive": 1
+   },
+   "max_seconds": 20,
+   "autel_time": "15:56:28"
   }
  ]
 }
