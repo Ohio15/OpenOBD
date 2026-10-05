@@ -119,6 +119,24 @@ def import_capture(records: list, window_s: float = 3.0) -> list:
     return sorted(found, key=lambda x: x["t"])
 
 
+#: negative response codes a device control can return (ISO 14229 / GMW3110)
+NRC_TEXT = {"11": "service not supported", "12": "sub-function not supported",
+            "22": "conditions not correct", "31": "request out of range",
+            "33": "security access denied", "78": "busy (response pending)",
+            "E3": "device control limits exceeded"}
+
+
+def describe_outcome(outcome: Optional[str]) -> str:
+    if outcome == "positive":
+        return "module accepted it"
+    if outcome == "no-answer" or not outcome:
+        return "module did not answer"
+    if outcome.startswith("negative:"):
+        code = outcome.split(":", 1)[1]
+        return f"module refused it ({NRC_TEXT.get(code, 'code ' + code)})"
+    return outcome
+
+
 def load_catalog(path: str = CATALOG_PATH) -> dict:
     try:
         with open(path, encoding="utf-8") as fh:
@@ -394,10 +412,19 @@ def main(argv=None) -> int:
     cat = load_catalog()
     if a.list:
         if not cat["controls"]:
-            print("catalog empty -- import a canrec capture first")
-        for c in cat["controls"]:
-            print(f"  {c['id']:<22} {c['module']} {c['request']:<16} "
-                  f"{c['status']:<9} observed={c['observed_outcome']}  {c['name']}")
+            print("No device controls captured yet -- record a tool's session "
+                  "with _run_canrec.bat, then import it.")
+            return 0
+        print("DEVICE CONTROLS captured on this truck (each one MOVES hardware):")
+        print()
+        for n, c in enumerate(cat["controls"], 1):
+            mod = MODULES.get(int(c["module"], 16), (0, 0, c["module"]))[2]
+            print(f"  [{n}]  {c['name']}")
+            print(f"       module: {mod}   ID: {c['id']}")
+            print(f"       last seen: {describe_outcome(c['observed_outcome'])}")
+            print()
+        print("Enter the NUMBER in brackets (e.g. 1) to run that control, "
+              "or leave blank to cancel.")
         return 0
     if a.imp:
         with open(a.imp, encoding="utf-8") as fh:
@@ -412,7 +439,11 @@ def main(argv=None) -> int:
             json.dump(cat, fh, indent=1)
         print(f"added {len(new)} new control(s): {new}")
         return 0
-    entry = next((c for c in cat["controls"] if c["id"] == a.run), None)
+    sel = a.run.strip()
+    if sel.isdigit() and 1 <= int(sel) <= len(cat["controls"]):
+        entry = cat["controls"][int(sel) - 1]
+    else:
+        entry = next((c for c in cat["controls"] if c["id"] == sel), None)
     if entry is None:
         print(f"no control {a.run!r} in the catalog (--list)")
         return 2
