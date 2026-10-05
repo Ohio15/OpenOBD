@@ -3,6 +3,28 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.30.0 — 2026-10-05
+
+### Added
+- **Body-bus capture and control.** `canrec --bus sw` (and `_run_canrec.bat`,
+  which now asks M = main / B = body) records the single-wire GMLAN body bus
+  (33.3 kbps, pin 1) with filters on the body modules' request / UUDT / USDT
+  ids and 0x101. One bus per recording: the GT has refused a second
+  simultaneous channel.
+- Every recorded frame and catalog entry carries its `bus`. 0x243 is the
+  EBCM on the main bus and a body module on the body bus; the importer pairs
+  requests and answers within a bus only, and a replay goes back onto the bus
+  it was recorded from. Body-bus entries are id'd `SW-...`.
+- `devctl --run` for a body-bus control reads the engine/speed interlocks on
+  the main bus (the ECM is not on the body bus), then moves the SAME device
+  session to the body bus to actuate, keep alive and return control ($20).
+  Vehicle speed cannot be re-read during a body-bus run; the plan says so
+  and the result records `motion_monitoring: false`.
+
+### Tests
+- 427 pass; the wrong-bus mutant (skip the switch to the body bus) is killed.
+  Not yet run on the truck.
+
 ## 0.29.1 — 2026-10-05
 
 ### Fixed

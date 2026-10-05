@@ -34,22 +34,50 @@ DIAG_FILTERS = [(0x7E0, 0x7F0), (0x7DF, 0x7FF), (0x101, 0x7FF),
                 (0x240, 0x7F0), (0x540, 0x7F0), (0x5E0, 0x7F0),
                 (0x640, 0x7F0)]
 
+#: SW-GMLAN body bus (33.3 kbps, pin 1): the body modules answer on 0x24x/
+#: 0x25x physical requests, report UUDT on +0x300 and NAK USDT on +0x400
+#: (OpenOBD's SW $A9 sweep, 2026-10-04: responders 0x542-0x55D, 0x641).
+SW_FILTERS = [(0x240, 0x7E0), (0x540, 0x7E0), (0x640, 0x7E0), (0x101, 0x7FF)]
 
-def frame_record(t: float, data: bytes) -> Optional[dict]:
-    """One raw pass-thru frame (4-byte id + up to 8 data bytes) -> record."""
+BUSES = ("hs", "sw")
+
+
+def frame_record(t: float, data: bytes, bus: str = "hs") -> Optional[dict]:
+    """One raw pass-thru frame (4-byte id + up to 8 data bytes) -> record.
+    Every record carries its bus: 0x243 is the EBCM on HS and a body module
+    on SW, so a frame without its bus is ambiguous."""
     if len(data) < 4:
         return None
-    return {"t": round(t, 4),
+    return {"t": round(t, 4), "bus": bus,
             "id": f"{int.from_bytes(data[:4], 'big') & 0x1FFFFFFF:03X}",
             "data": data[4:].hex().upper()}
 
 
+def connect_bus(j, jt, bus: str):
+    """Open a raw listening channel on one bus with its diagnostic filters."""
+    if bus == "sw":
+        ch = j.connect(jt.SW_CAN_PS, jt.SW_CAN_BAUD)
+        j.set_config(ch, [(jt.J1962_PINS, jt.SW_CAN_PINS)])
+        proto, filters = jt.SW_CAN_PS, SW_FILTERS
+    elif bus == "hs":
+        ch = j.connect(jt.CAN, 500000)
+        proto, filters = jt.CAN, DIAG_FILTERS
+    else:
+        raise ValueError(f"unknown bus {bus!r}")
+    for patt, mask in filters:
+        j.pass_filter(ch, proto, patt, mask)
+    return ch
+
+
 def record(j, seconds: float, on_frame: Callable[[dict], None],
            clock: Callable[[], float] = time.monotonic,
-           should_stop: Callable[[], bool] = lambda: False) -> dict:
-    """Listen for `seconds` (or until should_stop()). Never writes to the bus.
-    Returns {"frames": n, "error": str|None}."""
+           should_stop: Callable[[], bool] = lambda: False,
+           bus: str = "hs") -> dict:
+    """Listen on ONE bus for `seconds` (or until should_stop()). Never writes
+    to the bus. Returns {"frames": n, "error": str|None}."""
     from . import j2534 as jt
+    if bus not in BUSES:
+        raise ValueError(f"unknown bus {bus!r}")
     out = {"frames": 0, "error": None}
     try:
         j.open()
@@ -58,13 +86,11 @@ def record(j, seconds: float, on_frame: Callable[[dict], None],
         return out
     ch = None
     try:
-        ch = j.connect(jt.CAN, 500000)
-        for patt, mask in DIAG_FILTERS:
-            j.pass_filter(ch, jt.CAN, patt, mask)
+        ch = connect_bus(j, jt, bus)
         t0 = clock()
         while True:
             for data in j.read(ch, timeout=50, max_msgs=64):
-                rec = frame_record(clock() - t0, data)
+                rec = frame_record(clock() - t0, data, bus)
                 if rec:
                     out["frames"] += 1
                     on_frame(rec)
@@ -95,6 +121,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m openobd.canrec")
     ap.add_argument("label")
     ap.add_argument("--seconds", type=float, default=600.0)
+    ap.add_argument("--bus", choices=BUSES, default="hs",
+                    help="hs = engine/trans/transfer case/ABS/BCM (default); "
+                         "sw = body bus (doors, HVAC, cluster, radio)")
     a = ap.parse_args(argv)
     outp = f"canrec-{a.label}.jsonl"
     from . import j2534 as jt
@@ -103,7 +132,9 @@ def main(argv=None) -> int:
     except Exception as e:                                    # noqa: BLE001
         print(f"pass-thru driver not available: {e}")
         return 3
-    print(f"LISTENING (never transmits) for up to {a.seconds:.0f} s -> {outp}")
+    busname = "BODY bus (single-wire)" if a.bus == "sw" else "MAIN bus (high-speed)"
+    print(f"LISTENING on the {busname} (never transmits) for up to "
+          f"{a.seconds:.0f} s -> {outp}")
     print("Run the function on the other scan tool now. Ctrl+C here when done.")
     counts: dict = {}
     with open(outp, "w", encoding="utf-8") as fh:
@@ -114,7 +145,7 @@ def main(argv=None) -> int:
             n = sum(counts.values())
             if n % 200 == 0:
                 print(f"  {n} frames so far")
-        res = record(j, a.seconds, on_frame)
+        res = record(j, a.seconds, on_frame, bus=a.bus)
     print(f"stopped: {res['frames']} frames -> {outp}"
           + (f"  [{res['error']}]" if res["error"] else ""))
     for cid, n in sorted(counts.items()):

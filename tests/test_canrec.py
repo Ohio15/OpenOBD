@@ -87,6 +87,44 @@ def test_ctrl_c_is_a_clean_stop_and_closes():
     assert res["error"] is None and bus.calls[-1] == "close"
 
 
+class FakeSwBus(FakeBus):
+    def __init__(self, batches):
+        super().__init__(batches)
+
+    def set_config(self, ch, params):
+        self.calls.append(("config", tuple(params)))
+
+
+def test_sw_bus_uses_single_wire_pin1_and_tags_records():
+    bus = FakeSwBus([[fr(0x24D, "02AE05"), fr(0x64D, "02EE05")], []])
+    got = []
+    res = canrec.record(bus, 1.0, got.append, bus="sw",
+                        clock=clock_ticks(0.0, 0.1, 0.2, 0.3, 2.0))
+    assert res["frames"] == 2
+    assert ("connect", jt.SW_CAN_PS, jt.SW_CAN_BAUD) in bus.calls
+    assert ("config", ((jt.J1962_PINS, jt.SW_CAN_PINS),)) in bus.calls
+    assert {g["bus"] for g in got} == {"sw"}
+    filt = [(c[1], c[2]) for c in bus.calls if isinstance(c, tuple)
+            and c[0] == "filter"]
+    for cid in (0x24D, 0x25D, 0x54D, 0x64D, 0x101):
+        assert any(cid & m == p & m for p, m in filt), hex(cid)
+
+
+def test_hs_records_are_tagged_hs():
+    bus = FakeBus([[fr(0x7E4, "02AE03")], []])
+    got = []
+    canrec.record(bus, 1.0, got.append, clock=clock_ticks(0.0, 0.1, 0.2, 2.0))
+    assert got[0]["bus"] == "hs"
+
+
+def test_unknown_bus_refused_before_opening():
+    import pytest
+    bus = FakeBus([])
+    with pytest.raises(ValueError):
+        canrec.record(bus, 1.0, lambda r: None, bus="ms")
+    assert "open" not in bus.calls
+
+
 def test_module_has_no_transmit_path():
     src = pathlib.Path(canrec.__file__).read_text(encoding="utf-8")
     code = "\n".join(l for l in src.splitlines()

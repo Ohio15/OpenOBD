@@ -10,7 +10,8 @@
    "source": "canrec-tccm-learn.jsonl",
    "observed_outcome": "negative:E3",
    "observed_response": "7FAEE3000A",
-   "max_seconds": 20
+   "max_seconds": 20,
+   "bus": "hs"
   }
  ]
 }
