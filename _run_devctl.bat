@@ -12,7 +12,7 @@ set "PYTHONHOME="
 set "PYTHONUNBUFFERED=1"
 "D:\Projects\OpenOBD\.venv\Scripts\python.exe" -m openobd.devctl --list
 set "CID=%~1"
-if "%CID%"=="" set /p "CID=Control ID to run (blank = cancel): "
+if "%CID%"=="" set /p "CID=Number of the control to run (blank = cancel): "
 if "%CID%"=="" (echo Cancelled - nothing sent. & pause & exit /b 0)
 "D:\Projects\OpenOBD\.venv\Scripts\python.exe" -m openobd.devctl --run %CID%
 pause

@@ -3,6 +3,16 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.29.1 — 2026-10-05
+
+### Fixed
+- `_run_devctl.bat`'s control list was one unlabelled line, so it did not read
+  as a list and the prompt did not say what to type. The list now has a
+  heading, numbered entries with the module named in words, the module's last
+  answer in plain English ("module refused it (device control limits
+  exceeded)"), and the prompt asks for the NUMBER; `--run` accepts the number
+  or the ID.
+
 ## 0.29.0 — 2026-10-05
 
 ### Added

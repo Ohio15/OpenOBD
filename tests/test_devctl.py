@@ -196,6 +196,33 @@ def test_allowlist_blocks_everything_else_on_the_wire():
             (cid == 0x7E0 and p in (b"\x01\x0c", b"\x01\x0d"))
 
 
+def test_list_is_numbered_and_named(capsys):
+    assert dc.main(["--list"]) == 0
+    out = capsys.readouterr().out
+    assert "[1]" in out and "Autel TCCM learn" in out
+    assert "TCCM (transfer case)" in out and "Enter the NUMBER" in out
+
+
+def test_run_accepts_the_list_number(monkeypatch):
+    seen = {}
+
+    def fake_run(j, entry, confirm, seconds=None):
+        seen["id"] = entry["id"]
+        return {"sent": False, "outcome": None, "aborted": "not confirmed",
+                "returned_to_normal": True, "samples": []}
+
+    class J:
+        pass
+    monkeypatch.setattr(dc, "run_control", fake_run)
+    import openobd.j2534 as jt
+    monkeypatch.setattr(jt, "J2534", lambda *a, **k: J())
+    monkeypatch.chdir(pathlib.Path(__file__).resolve().parent)
+    dc.main(["--run", "1"])
+    assert seen["id"] == "7E4-AE03-1"
+    for f in pathlib.Path(__file__).resolve().parent.glob("devctl-7E4-AE03-1-*.json"):
+        f.unlink()
+
+
 def test_shipped_catalog_has_the_captured_tccm_control():
     cat = dc.load_catalog()
     ids = {c["id"]: c for c in cat["controls"]}
