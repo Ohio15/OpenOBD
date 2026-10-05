@@ -20,3 +20,5 @@ tools/*.tsv
 /didscan-*.out
 /didscan-*.csv
 /canrec-*.jsonl
+/tccm-failure-records.json
+/tccm-stream-*.csv

@@ -3,6 +3,25 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.28.0 — 2026-10-05
+
+### Added
+- `openobd/tccmprobe.py`: precise, NON-ACTUATING interrogation of the TCCM
+  (7E4/7EC, UUDT 0x5EC) over one raw-CAN pass-thru channel.
+  - `--failure-records` (`_run_tccm_failrec.bat`): GMLAN `$12 01` lists the
+    failure records the module froze when it set a code; `$12 02` reads each
+    back with its parameter bytes -- the module's own record of why C0398 set.
+  - `--stream LABEL` (`_run_tccm_stream.bat`): `$2C` packs identifiers into
+    DPIDs and `$AA` streams them on 0x5EC, the way the Autel streamed this
+    module. Position A and B (22:3114/3115) share ONE DPID, so they are
+    sampled at the same instant (didscan --watch read them ~33 ms apart).
+    Fast rate, falling back to medium on a NAK; `$AA 00` stop on every exit.
+- Allowlist enforced before the wire: `$12` (sub 01/02 only), `$1A`, `$22`,
+  `$2C`, `$AA`, `$3E`. Device control, clears, security access, sessions and
+  programming are refused in code. Own ISO-TP: single-frame requests, flow
+  control for a multi-frame reply. 29 tests; two hand mutants (flow control
+  dropped, `$AE` allowed) both killed. Not yet run on the truck.
+
 ## 0.27.0 — 2026-10-04
 
 ### Added
