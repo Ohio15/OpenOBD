@@ -3,6 +3,31 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.29.0 — 2026-10-05
+
+### Added
+- **Gated device control** (`openobd/devctl.py`, `_run_devctl.bat`), Ron-run.
+  GM modules cannot list their device controls and probing one actuates it,
+  so controls come only from captures: `--import CANREC_JSONL` extracts every
+  `$AE` exchange another tool (the Autel) made, with the module's answer, into
+  `openobd/data/controls.json` (status "captured"). Seeded with the Autel's
+  TCCM learn, `7E4 AE0302020000` (observed answer `7F AE E3 00 0A`).
+- `--run ID` replays the entry BYTE FOR BYTE after: engine running (ECM PID
+  0C) and vehicle stopped (PID 0D) read live; Neutral attested by the operator;
+  an exact typed phrase at an interactive terminal (refused without a TTY).
+  During the run: `$3E` every 1 s, speed re-read every 1 s (motion aborts),
+  TCCM position pair streamed (`$2C/$AA`). On EVERY exit it sends `$20`
+  ReturnToNormalMode and stops the stream. Per-run wire allowlist; every frame
+  logged to devctl-<id>-<time>.json.
+- 13 tests; checked mutants (no `$20` on exit, no confirmation, no interlocks)
+  all killed. Not yet run on the truck.
+
+### Limits (stated, not hidden)
+- Single-frame requests only (the captured TCCM control is 6 bytes).
+- Transmission range is operator-attested, not measured.
+- "Everything available" grows by capture: run each Autel active test /
+  special function with `_run_canrec.bat` recording, then `--import` it.
+
 ## 0.28.0 — 2026-10-05
 
 ### Added

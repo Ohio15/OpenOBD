@@ -22,3 +22,4 @@ tools/*.tsv
 /canrec-*.jsonl
 /tccm-failure-records.json
 /tccm-stream-*.csv
+/devctl-*.json
