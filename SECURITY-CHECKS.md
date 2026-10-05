@@ -385,6 +385,36 @@ local; only then apply the transport exemption.
 **Since.** 2026-09-16.
 **Origin.** audit-cortex-hooks-2026-09-15 (HIGH; approved by Ron 2026-09-16).
 
+### SC-25 · A third-party CI Action referenced by a floating tag or branch
+rather than a commit SHA
+**Shape.** `uses: someone/action@v1` (or `@main`) in a workflow. A tag is a
+mutable pointer the action's owner — or whoever takes over the account or the
+repo — can move to any code, which then runs with the workflow's token,
+secrets and the runner's network on the next scheduled or push-triggered run.
+The tj-actions/changed-files compromise (2025-03) moved every version tag to
+a credential-dumping payload; every consumer pinned to a tag ran it, no
+consumer pinned to a SHA did. The register has no rule for this: the OpenOS
+gate pass 1 reviewer (2026-09-16) noticed `jlumbroso/free-disk-space@54081f13…
+# v1.3.1` as good practice that nothing required, in a workflow that also
+carries `actions/checkout@v4` and `actions/upload-artifact@v4` unpinned.
+**Check.** `grep -rnE "uses:\s*[^ ]+@[^ ]+" .github/workflows/` and any
+reusable-workflow `uses:`. For every reference NOT under `actions/`,
+`github/` or the repository's own org: the ref after `@` is a 40-hex commit
+SHA followed by a `# vX.Y.Z` comment naming the version it pins. For
+first-party (`actions/*`, `github/*`) a SHA is preferred and a major tag is
+LOW; the failure is the third-party floating ref. Dependabot or Renovate
+configured for `github-actions` is the evidence that pinned SHAs will not
+rot; its absence is a MEDIUM sibling finding, not a reason to float.
+**Fix form.** Pin to the SHA with the version comment; enable the
+`github-actions` ecosystem in `dependabot.yml` so the pin is bumped by PR,
+never by hand. Severity: HIGH for a third-party action that receives a
+token or secret or runs on a self-hosted runner; MEDIUM otherwise.
+**Since.** 2026-10-05.
+**Origin.** gate-openos-2026-09-16 (session git-20260916-112947-da1f1cc6bb25;
+approved by Ron 2026-10-05).
+**Standard.** OpenSSF Scorecard `Pinned-Dependencies`; GitHub docs
+"Security hardening for GitHub Actions — Using third-party actions".
+
 ### SC-29 · A CI step that uses a privileged secret is gated on event type, not
 on ref and environment
 **Shape.** A signing key, deploy key, or registry-write credential is consumed
@@ -447,37 +477,10 @@ anything else; a monotonic version floor in the updater.
 
 ## Proposed additions (from the routine audit; operator approval required)
 
-Audits append proposals here in the format above with a
+_None pending._ Audits append proposals here in the format above with a
 `**Proposed by.** audit-<repo>-<date>` line; the operator moves an approved
-proposal into the register and bumps its `Since` date. SC-22..SC-24 were
-graduated from audit-cortex-hooks-2026-09-15 on 2026-09-16; the next free
-number is used below.
-
-### SC-25 · A third-party CI Action referenced by a floating tag or branch
-rather than a commit SHA
-**Shape.** `uses: someone/action@v1` (or `@main`) in a workflow. A tag is a
-mutable pointer the action's owner — or whoever takes over the account or the
-repo — can move to any code, which then runs with the workflow's token,
-secrets and the runner's network on the next scheduled or push-triggered run.
-The tj-actions/changed-files compromise (2025-03) moved every version tag to
-a credential-dumping payload; every consumer pinned to a tag ran it, no
-consumer pinned to a SHA did. The register has no rule for this: the OpenOS
-gate pass 1 reviewer (2026-09-16) noticed `jlumbroso/free-disk-space@54081f13…
-# v1.3.1` as good practice that nothing required, in a workflow that also
-carries `actions/checkout@v4` and `actions/upload-artifact@v4` unpinned.
-**Check.** `grep -rnE "uses:\s*[^ ]+@[^ ]+" .github/workflows/` and any
-reusable-workflow `uses:`. For every reference NOT under `actions/`,
-`github/` or the repository's own org: the ref after `@` is a 40-hex commit
-SHA followed by a `# vX.Y.Z` comment naming the version it pins. For
-first-party (`actions/*`, `github/*`) a SHA is preferred and a major tag is
-LOW; the failure is the third-party floating ref. Dependabot or Renovate
-configured for `github-actions` is the evidence that pinned SHAs will not
-rot; its absence is a MEDIUM sibling finding, not a reason to float.
-**Fix form.** Pin to the SHA with the version comment; enable the
-`github-actions` ecosystem in `dependabot.yml` so the pin is bumped by PR,
-never by hand. Severity: HIGH for a third-party action that receives a
-token or secret or runs on a self-hosted runner; MEDIUM otherwise.
-**Proposed by.** gate-openos-2026-09-16 (session
-git-20260916-112947-da1f1cc6bb25), for operator approval.
-**Standard.** OpenSSF Scorecard `Pinned-Dependencies`; GitHub docs
-"Security hardening for GitHub Actions — Using third-party actions".
+proposal into the register and bumps its `Since` date. Graduated so far:
+SC-22..SC-24 (audit-cortex-hooks-2026-09-15, approved 2026-09-16), SC-29..SC-31
+(audit-openos-2026-10-05) and SC-25 (gate-openos-2026-09-16), approved
+2026-10-05. SC-26..SC-28 were numbered by audit-openos-2026-09-16 but never
+written as proposals; the numbers stay reserved.
