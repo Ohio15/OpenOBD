@@ -83,7 +83,7 @@ def test_import_extracts_the_autel_exchange_with_its_outcome():
             {"t": 14.924, "id": "7EC", "data": "057FAEE3000A0000"},
             {"t": 9.0, "id": "7E4", "data": "013E"}]
     ex = dc.import_capture(recs)
-    assert ex == [{"module": "7E4", "request": "AE0302020000",
+    assert ex == [{"bus": "hs", "module": "7E4", "request": "AE0302020000",
                    "response": "7FAEE3000A", "outcome": "negative:E3",
                    "t": 13.521}]
 
@@ -194,6 +194,88 @@ def test_allowlist_blocks_everything_else_on_the_wire():
                                         b"\x20", b"\xaa\x00")
                                   or p[:1] in (b"\x2c", b"\xaa"))) or \
             (cid == 0x7E0 and p in (b"\x01\x0c", b"\x01\x0d"))
+
+
+# -- body bus (SW-GMLAN) ------------------------------------------------------ #
+def test_import_keeps_buses_apart_for_the_same_address():
+    # 0x243 is the EBCM on HS and a body module on SW: same id, different module
+    recs = [{"t": 1.0, "bus": "hs", "id": "243", "data": "03AE1001000000"},
+            {"t": 1.01, "bus": "hs", "id": "643", "data": "02EE100000000000"},
+            {"t": 2.0, "bus": "sw", "id": "243", "data": "03AE2002000000"},
+            {"t": 2.01, "bus": "sw", "id": "643", "data": "037FAE2200000000"},
+            {"t": 2.02, "bus": "hs", "id": "643", "data": "02EE200000000000"}]
+    ex = dc.import_capture(recs)
+    by = {(e["bus"], e["request"]): e["outcome"] for e in ex}
+    # the SW request is answered by the SW reply, never by the HS frame
+    assert by == {("hs", "AE1001"): "positive", ("sw", "AE2002"): "negative:22"}
+    cat = {"controls": []}
+    ids = dc.merge_into_catalog(cat, ex, "x.jsonl")
+    assert ids == ["243-AE10-1", "SW-243-AE20-2"]
+    assert [c["bus"] for c in cat["controls"]] == ["hs", "sw"]
+
+
+class FakeBothBuses(FakeTruck):
+    """ECM on HS; a body module 0x24D on SW answers its control on 0x64D."""
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.proto, self.events = None, []
+
+    def connect(self, proto, baud, flags=0):
+        self.proto = proto
+        self.events.append(("connect", proto, baud))
+        return 7
+
+    def set_config(self, ch, params):
+        self.events.append(("config", tuple(params)))
+
+    def disconnect(self, ch):
+        self.events.append(("disconnect",))
+
+    def write(self, ch, tx_id, data, proto=None, txflags=None, timeout=200):
+        p = data[1:1 + (data[0] & 0x0F)].hex().upper()
+        self.events.append(("tx", proto, f"{tx_id:03X}", p))
+        if tx_id == 0x24D and p.startswith("AE"):
+            self.q.append(fr(0x64D, "02EE050000000000"))
+            return
+        super().write(ch, tx_id, data, proto, txflags, timeout)
+
+
+SW_ENTRY = {"id": "SW-24D-AE05-2", "bus": "sw", "module": "24D",
+            "request": "AE0501", "cpid": "05", "name": "door test",
+            "status": "captured", "max_seconds": 2}
+
+
+def test_sw_run_checks_interlocks_on_hs_then_actuates_on_the_body_bus():
+    from openobd import j2534 as jt
+    fake = FakeBothBuses()
+    res = dc.run_control(fake, SW_ENTRY, yes, seconds=0.5, clock=clock_ticks())
+    assert res["sent"] is True and res["outcome"] == "positive"
+    assert res["motion_monitoring"] is False
+    ev = fake.events
+    hs_ecm = [e for e in ev if e[0] == "tx" and e[2] == "7E0"]
+    assert hs_ecm and all(e[1] == jt.CAN for e in hs_ecm)       # ECM read on HS
+    i_sw = ev.index(("connect", jt.SW_CAN_PS, jt.SW_CAN_BAUD))
+    assert ("config", ((jt.J1962_PINS, jt.SW_CAN_PINS),)) in ev[i_sw:]
+    sw_tx = [e for e in ev[i_sw:] if e[0] == "tx"]
+    assert ("tx", jt.SW_CAN_PS, "24D", "AE0501") in sw_tx
+    assert sw_tx[-2:] == [("tx", jt.SW_CAN_PS, "24D", "20"),
+                          ("tx", jt.SW_CAN_PS, "24D", "AA00")]
+    # no ECM traffic once on the body bus (it is not reachable there)
+    assert not [e for e in sw_tx if e[2] == "7E0"]
+    assert fake.calls.count("open") == 1 and fake.calls[-1] == "close"
+
+
+def test_sw_run_refuses_when_hs_interlocks_fail_and_never_touches_sw():
+    from openobd import j2534 as jt
+    fake = FakeBothBuses(rpm=0)
+    res = dc.run_control(fake, SW_ENTRY, yes, clock=clock_ticks())
+    assert res["sent"] is False and "engine not running" in res["aborted"]
+    assert ("connect", jt.SW_CAN_PS, jt.SW_CAN_BAUD) not in fake.events
+
+
+def test_sw_unknown_address_refused():
+    with pytest.raises(dc.Refused):
+        dc.run_control(FakeBothBuses(), {**SW_ENTRY, "module": "7E4"}, yes)
 
 
 def test_list_is_numbered_and_named(capsys):

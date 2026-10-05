@@ -40,12 +40,23 @@ CATALOG_PATH = os.path.join(os.path.dirname(__file__), "data", "controls.json")
 ECM_REQ, ECM_RESP = 0x7E0, 0x7E8
 SID_DEVCTL = 0xAE
 
-#: request id -> (response id, UUDT id, name) for modules known on this truck
+#: HS request id -> (response id, UUDT id, name) for modules known on this truck
 MODULES = {0x7E4: (0x7EC, 0x5EC, "TCCM (transfer case)"),
            0x7E2: (0x7EA, 0x5EA, "TCM (transmission)"),
            0x7E0: (0x7E8, 0x5E8, "ECM (engine)"),
            0x243: (0x643, 0x543, "EBCM (ABS)"),
            0x241: (0x641, 0x541, "BCM (body)")}
+
+
+def module_info(bus: str, req: int) -> Optional[tuple]:
+    """(response id, UUDT id, name) for a module on a bus, or None. The SW
+    body modules are not identified yet, so they are named by address only --
+    and 0x243 on SW is NOT the EBCM (that is 0x243 on HS)."""
+    if bus == "hs":
+        return MODULES.get(req)
+    if bus == "sw" and 0x240 <= req <= 0x25F:
+        return (req + 0x400, req + 0x300, f"body-bus module 0x{req:03X}")
+    return None
 
 
 class Refused(Exception):
@@ -92,11 +103,13 @@ def import_capture(records: list, window_s: float = 3.0) -> list:
     'negative:<NRC>' or 'no-answer'."""
     by_id: dict = {}
     for r in records:
+        bus = r.get("bus", "hs")             # pre-0.30 recordings were HS only
         cid = int(r["id"], 16)
-        by_id.setdefault(cid, []).append((r["t"], cid, bytes.fromhex(r["data"])))
-    msgs = {cid: _reassemble(f) for cid, f in by_id.items()}
+        by_id.setdefault((bus, cid), []).append(
+            (r["t"], cid, bytes.fromhex(r["data"])))
+    msgs = {k: _reassemble(f) for k, f in by_id.items()}
     found = []
-    for req, reqs in msgs.items():
+    for (bus, req), reqs in msgs.items():
         rid = _resp_id(req)
         if rid is None:
             continue
@@ -104,7 +117,7 @@ def import_capture(records: list, window_s: float = 3.0) -> list:
             if not p or p[0] != SID_DEVCTL:
                 continue
             outcome, resp = "no-answer", None
-            for rt, rp in msgs.get(rid, []):
+            for rt, rp in msgs.get((bus, rid), []):
                 if rt < t or rt > t + window_s or not rp:
                     continue
                 if rp[0] == 0xEE and rp[1:2] == p[1:2]:
@@ -113,7 +126,8 @@ def import_capture(records: list, window_s: float = 3.0) -> list:
                 elif rp[0] == 0x7F and len(rp) >= 3 and rp[1] == SID_DEVCTL:
                     outcome, resp = f"negative:{rp[2]:02X}", rp
                     break
-            found.append({"module": f"{req:03X}", "request": p.hex().upper(),
+            found.append({"bus": bus, "module": f"{req:03X}",
+                          "request": p.hex().upper(),
                           "response": resp.hex().upper() if resp else None,
                           "outcome": outcome, "t": t})
     return sorted(found, key=lambda x: x["t"])
@@ -147,16 +161,20 @@ def load_catalog(path: str = CATALOG_PATH) -> dict:
 
 def merge_into_catalog(catalog: dict, exchanges: list, source: str) -> list:
     """Add each new (module, request) as status 'captured'. Returns new ids."""
-    have = {(c["module"], c["request"]) for c in catalog["controls"]}
+    have = {(c.get("bus", "hs"), c["module"], c["request"])
+            for c in catalog["controls"]}
     new = []
     for ex in exchanges:
-        key = (ex["module"], ex["request"])
+        bus = ex.get("bus", "hs")
+        key = (bus, ex["module"], ex["request"])
         if key in have:
             continue
         cpid = ex["request"][2:4]
-        cid = f"{ex['module']}-AE{cpid}-{len(catalog['controls']) + 1}"
+        prefix = "" if bus == "hs" else "SW-"
+        cid = f"{prefix}{ex['module']}-AE{cpid}-{len(catalog['controls']) + 1}"
         catalog["controls"].append({
-            "id": cid, "module": ex["module"], "request": ex["request"],
+            "id": cid, "bus": bus, "module": ex["module"],
+            "request": ex["request"],
             "cpid": cpid, "name": "(unnamed -- name it from the tool's menu)",
             "status": "captured", "source": source,
             "observed_outcome": ex["outcome"], "observed_response": ex["response"],
@@ -181,18 +199,40 @@ class Wire:
     prefixes. Every frame in and out is appended to `log`."""
 
     def __init__(self, j, allow: Callable[[int, bytes], bool], ids: list,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic, bus: str = "hs"):
         self.j, self.allow, self.ids, self.clock = j, allow, ids, clock
+        self.bus = bus
         self.ch, self.log, self.t0 = None, [], clock()
+
+    def _connect(self, bus: str, ids: list) -> None:
+        jt = self.jt
+        if bus == "sw":
+            self.ch = self.j.connect(jt.SW_CAN_PS, jt.SW_CAN_BAUD)
+            self.j.set_config(self.ch, [(jt.J1962_PINS, jt.SW_CAN_PINS)])
+            self.proto = jt.SW_CAN_PS
+        else:
+            self.ch = self.j.connect(jt.CAN, 500000)
+            self.proto = jt.CAN
+        for cid in ids:
+            self.j.pass_filter(self.ch, self.proto, cid, 0x7FF)
+        self.bus, self.ids = bus, ids
+
+    def use_bus(self, bus: str, ids: list) -> None:
+        """Move to another bus inside the SAME device session (one open per
+        process -- the OBDX driver can kill the process at close)."""
+        if self.ch is not None:
+            try:
+                self.j.disconnect(self.ch)
+            finally:
+                self.ch = None
+        self._connect(bus, ids)
 
     def __enter__(self):
         from . import j2534 as jt
         self.jt = jt
         self.j.open()
         try:
-            self.ch = self.j.connect(jt.CAN, 500000)
-            for cid in self.ids:
-                self.j.pass_filter(self.ch, jt.CAN, cid, 0x7FF)
+            self._connect(self.bus, self.ids)
         except Exception:
             self.close()
             raise
@@ -219,9 +259,10 @@ class Wire:
             raise Refused(f"refusing {cid:03X} {payload.hex().upper()}: not in "
                           "this run's allowlist")
         self.j.write(self.ch, cid, single_frame(payload),
-                     proto=self.jt.CAN, txflags=0)
+                     proto=self.proto, txflags=0)
         self.log.append({"t": round(self.clock() - self.t0, 4), "dir": "tx",
-                         "id": f"{cid:03X}", "data": payload.hex().upper()})
+                         "bus": self.bus, "id": f"{cid:03X}",
+                         "data": payload.hex().upper()})
 
     def frames(self):
         for d in self.j.read(self.ch, timeout=30, max_msgs=64):
@@ -229,7 +270,8 @@ class Wire:
                 continue
             cid = int.from_bytes(d[:4], "big") & 0x7FF
             self.log.append({"t": round(self.clock() - self.t0, 4), "dir": "rx",
-                             "id": f"{cid:03X}", "data": d[4:].hex().upper()})
+                             "bus": self.bus, "id": f"{cid:03X}",
+                             "data": d[4:].hex().upper()})
             yield cid, d[4:]
 
     def ask(self, cid: int, payload: bytes, resp: int,
@@ -293,17 +335,20 @@ def run_control(j, entry: dict, confirm: Callable[[str, str], bool],
                 clock: Callable[[], float] = time.monotonic) -> dict:
     """Execute one catalog entry under interlocks + confirmation, ALWAYS
     returning control ($20) on exit. Returns a result record."""
+    bus = entry.get("bus", "hs")
     req = int(entry["module"], 16)
-    if req not in MODULES:
-        raise Refused(f"module {entry['module']} is not a known module here")
-    resp, uudt, name = MODULES[req]
+    info = module_info(bus, req)
+    if info is None:
+        raise Refused(f"module {entry['module']} on bus {bus} is not a known "
+                      "module here")
+    resp, uudt, name = info
     request = bytes.fromhex(entry["request"])
     if not request or request[0] != SID_DEVCTL:
         raise Refused("catalog entry is not a device-control ($AE) request")
     single_frame(request)                       # refuses multi-frame up front
     seconds = min(float(seconds or entry.get("max_seconds", 20)), 60.0)
     stream = None
-    if req == 0x7E4:
+    if bus == "hs" and req == 0x7E4:
         from . import tccmprobe
         stream = tccmprobe
 
@@ -323,10 +368,16 @@ def run_control(j, entry: dict, confirm: Callable[[str, str], bool],
             return True
         return False
 
-    result = {"id": entry["id"], "module": name, "request": entry["request"],
-              "sent": False, "outcome": None, "aborted": None, "samples": [],
-              "interlocks": None, "returned_to_normal": False, "frames": []}
-    w = Wire(j, allow, [resp, uudt, ECM_RESP], clock=clock)
+    result = {"id": entry["id"], "bus": bus, "module": name,
+              "request": entry["request"], "sent": False, "outcome": None,
+              "aborted": None, "samples": [], "interlocks": None,
+              "returned_to_normal": False, "frames": [],
+              "motion_monitoring": bus == "hs"}
+    # Interlocks come from the ECM, which is on HS. A body-bus control reads
+    # them on HS first, then moves the SAME device session to the body bus;
+    # on SW the vehicle speed cannot be re-read during the run.
+    first_ids = [resp, uudt, ECM_RESP] if bus == "hs" else [ECM_RESP]
+    w = Wire(j, allow, first_ids, clock=clock, bus="hs")
     with w:
         try:
             il = read_interlocks(w)
@@ -343,9 +394,14 @@ def run_control(j, entry: dict, confirm: Callable[[str, str], bool],
                     f"  limit    {seconds:.0f} s, then control is returned ($20)\n"
                     f"  YOU confirm the transmission is in NEUTRAL, foot on the "
                     f"brake, nobody near the driveline.")
+            if bus == "sw":
+                plan += ("\n  NOTE: body-bus control -- vehicle speed is checked "
+                         "before the run but CANNOT be re-read during it.")
             if not confirm(plan, confirm_phrase(entry)):
                 result["aborted"] = "not confirmed"
                 return result
+            if bus == "sw":
+                w.use_bus("sw", [resp, uudt])
             w.send(req, b"\x3e")
             if stream:
                 for dpid, dids in stream.DPIDS.items():
@@ -375,7 +431,7 @@ def run_control(j, entry: dict, confirm: Callable[[str, str], bool],
                 if now - last_tp >= 1.0:
                     w.send(req, b"\x3e")
                     last_tp = now
-                if now - last_il >= 1.0:
+                if bus == "hs" and now - last_il >= 1.0:
                     il = read_interlocks(w)
                     if il["kph"] is None or il["kph"] != 0:
                         result["aborted"] = f"interlock during run: speed {il['kph']}"
@@ -418,9 +474,10 @@ def main(argv=None) -> int:
         print("DEVICE CONTROLS captured on this truck (each one MOVES hardware):")
         print()
         for n, c in enumerate(cat["controls"], 1):
-            mod = MODULES.get(int(c["module"], 16), (0, 0, c["module"]))[2]
+            mi = module_info(c.get("bus", "hs"), int(c["module"], 16))
+            mod = mi[2] if mi else c["module"]
             print(f"  [{n}]  {c['name']}")
-            print(f"       module: {mod}   ID: {c['id']}")
+            print(f"       module: {mod} ({'body bus' if c.get('bus') == 'sw' else 'main bus'})   ID: {c['id']}")
             print(f"       last seen: {describe_outcome(c['observed_outcome'])}")
             print()
         print("Enter the NUMBER in brackets (e.g. 1) to run that control, "
