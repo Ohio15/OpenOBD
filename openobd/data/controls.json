@@ -1,0 +1,16 @@
+{
+ "controls": [
+  {
+   "id": "7E4-AE03-1",
+   "module": "7E4",
+   "request": "AE0302020000",
+   "cpid": "03",
+   "name": "Autel TCCM learn (transfer case motor/actuator learn), captured 2026-10-04",
+   "status": "captured",
+   "source": "canrec-tccm-learn.jsonl",
+   "observed_outcome": "negative:E3",
+   "observed_response": "7FAEE3000A",
+   "max_seconds": 20
+  }
+ ]
+}
