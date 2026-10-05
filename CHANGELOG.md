@@ -3,6 +3,15 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.30.1 — 2026-10-05
+
+### Changed
+- `_run_canrec.bat` asks only for the bus (M / B). The recording is named
+  automatically, `canrec-main-YYYYMMDD-HHMMSS.jsonl` or
+  `canrec-body-YYYYMMDD-HHMMSS.jsonl` (local time), so it matches the
+  function run on the other tool by when it was made. `canrec` still accepts
+  an explicit label.
+
 ## 0.30.0 — 2026-10-05
 
 ### Added

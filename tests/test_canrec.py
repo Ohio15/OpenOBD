@@ -125,6 +125,24 @@ def test_unknown_bus_refused_before_opening():
     assert "open" not in bus.calls
 
 
+def test_default_label_names_the_bus_and_time():
+    import time as _t
+    t = _t.mktime((2026, 10, 5, 18, 22, 33, 0, 0, -1))
+    assert canrec.default_label("sw", t) == "body-20261005-182233"
+    assert canrec.default_label("hs", t) == "main-20261005-182233"
+
+
+def test_cli_without_label_uses_the_default(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    import openobd.j2534 as jtm
+    monkeypatch.setattr(jtm, "J2534", lambda *a, **k: FakeSwBus([]))
+    monkeypatch.setattr(canrec, "default_label", lambda bus, now=None: f"{bus}-X")
+    monkeypatch.setattr(canrec, "record",
+                        lambda j, s, cb, bus="hs", **k: {"frames": 0, "error": None})
+    assert canrec.main(["--bus", "sw"]) == 0
+    assert (tmp_path / "canrec-sw-X.jsonl").exists()
+
+
 def test_module_has_no_transmit_path():
     src = pathlib.Path(canrec.__file__).read_text(encoding="utf-8")
     code = "\n".join(l for l in src.splitlines()
