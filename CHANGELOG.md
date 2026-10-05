@@ -3,6 +3,23 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.31.0 — 2026-10-05
+
+### Fixed
+- The importer took a `7F AE 78` "response pending" as the module's answer.
+  It is "busy, wait", not a refusal: the importer now keeps looking for the
+  final answer (the BCM's nine `AE00` hand-backs were all accepted after a
+  pending), and reports "pending-only" if none arrives in the capture.
+- A control seen several times kept only its first answer. Catalog entries
+  now tally every observed answer (`observed_counts`); the list shows them.
+
+### Added
+- Catalog: 26 controls imported from the Autel session of 2026-10-05
+  15:46-15:56 (canrec-main-20261005-154648.jsonl): transfer case control 01
+  (bits 40/80/02 on/off, motor drive down/up), transmission controls 30/38
+  (data not yet decoded), BCM controls 10/12/13 (bit on/off) and the BCM
+  hand-back `AE00`. Named by Autel time; TCCM/BCM entries read as mask+value.
+
 ## 0.30.1 — 2026-10-05
 
 ### Changed
