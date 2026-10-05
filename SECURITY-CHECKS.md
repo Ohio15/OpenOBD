@@ -385,10 +385,99 @@ local; only then apply the transport exemption.
 **Since.** 2026-09-16.
 **Origin.** audit-cortex-hooks-2026-09-15 (HIGH; approved by Ron 2026-09-16).
 
+### SC-29 · A CI step that uses a privileged secret is gated on event type, not
+on ref and environment
+**Shape.** A signing key, deploy key, or registry-write credential is consumed
+by steps whose only gate is `github.event_name != 'pull_request'`, so
+`workflow_dispatch` (or a same-repo branch push or PR) on an unreviewed ref
+uses the production secret; or the secret is repository-level rather than an
+environment secret restricted to the protected branch; or the job that
+materialises it also runs third-party actions. A dispatch runs the dispatched
+ref's OWN copy of the workflow, so a condition written in the workflow is no
+control against a write-scoped token; where the plan offers no environments
+(GitHub Free, private repo) the secret does not belong in CI at all.
+**Check.** `grep -nE "secrets\.[A-Z_]*(KEY|TOKEN|PASS|SECRET)" .github/workflows/*.yml`;
+for every hit the job must declare `environment:` bound to the protected
+branch with a required reviewer, and must contain no `uses:` outside
+`actions/*`; a hit whose job has neither is a finding. On a plan without
+environments, any signing or registry-write secret in CI is a finding.
+**Fix form.** Environment-scoped secret on the protected branch with a
+required reviewer; signing in a separate job with no third-party actions; or
+move signing off CI to a human-gated signer that builds from the commit.
+**Since.** 2026-10-05.
+**Origin.** audit-openos-2026-10-05 (HIGH; approved by Ron 2026-10-05).
+
+### SC-30 · An artifact verified by one reference and consumed by another
+**Shape.** A signature or checksum is verified against a mutable reference (a
+tag), and the artifact is then consumed, copied, printed, or baked by that
+same mutable reference — or by a reference never verified at all — so a
+registry writer can swap the digest between check and use. Includes signing
+or trusting an artifact whose only provenance is metadata (labels) the
+artifact's writer controls.
+**Check.** For every verify step (`--signature-policy`, `cosign verify`,
+`sha256sum -c`), the next consumer must reference the verified DIGEST
+(`@sha256:`); `grep -nE "(skopeo copy|podman (pull|run|push)|bootc|image-builder).*:[^@]*\$\{?[A-Z_]*(TAG|VERSION|STAGE)"`
+over build and deploy scripts — every hit is a finding unless the line uses a
+digest captured from the verify step. A privileged consumer of a signed
+artifact with no verify step at all is a finding.
+**Fix form.** Capture the digest at verification; every later use pins
+`@digest`; provenance comes from building the artifact, not from its labels.
+**Since.** 2026-10-05.
+**Origin.** audit-openos-2026-10-05 (HIGH; approved by Ron 2026-10-05).
+
+### SC-31 · A signature policy that binds the repository, with signed
+non-release artifacts in it
+**Shape.** The verifying policy accepts any signed digest of the repository
+under any tag (`matchRepository`, or a cosign identity with no tag or version
+constraint) while the publisher signs non-release artifacts (staging, branch,
+CI previews) into the same repository, so every such artifact is a valid
+downgrade target for whoever can move a tag; and the consumer has no version
+floor.
+**Check.** `grep -rn "matchRepository" system_files/` (or the policy source);
+if present, the publish path must sign only release versions of protected
+builds (`grep -n "sign-by\|cosign sign"`), no staging or preview push may
+target the trusted repository, and the update path must refuse a version not
+strictly newer than the running one (a test asserts the refusal).
+**Fix form.** Sign only releases; separate repository or identity for
+anything else; a monotonic version floor in the updater.
+**Since.** 2026-10-05.
+**Origin.** audit-openos-2026-10-05 (MEDIUM; approved by Ron 2026-10-05).
+
 ---
 
 ## Proposed additions (from the routine audit; operator approval required)
 
-_None pending._ Audits append proposals here in the format above with a
+Audits append proposals here in the format above with a
 `**Proposed by.** audit-<repo>-<date>` line; the operator moves an approved
-proposal into the register and bumps its `Since` date.
+proposal into the register and bumps its `Since` date. SC-22..SC-24 were
+graduated from audit-cortex-hooks-2026-09-15 on 2026-09-16; the next free
+number is used below.
+
+### SC-25 · A third-party CI Action referenced by a floating tag or branch
+rather than a commit SHA
+**Shape.** `uses: someone/action@v1` (or `@main`) in a workflow. A tag is a
+mutable pointer the action's owner — or whoever takes over the account or the
+repo — can move to any code, which then runs with the workflow's token,
+secrets and the runner's network on the next scheduled or push-triggered run.
+The tj-actions/changed-files compromise (2025-03) moved every version tag to
+a credential-dumping payload; every consumer pinned to a tag ran it, no
+consumer pinned to a SHA did. The register has no rule for this: the OpenOS
+gate pass 1 reviewer (2026-09-16) noticed `jlumbroso/free-disk-space@54081f13…
+# v1.3.1` as good practice that nothing required, in a workflow that also
+carries `actions/checkout@v4` and `actions/upload-artifact@v4` unpinned.
+**Check.** `grep -rnE "uses:\s*[^ ]+@[^ ]+" .github/workflows/` and any
+reusable-workflow `uses:`. For every reference NOT under `actions/`,
+`github/` or the repository's own org: the ref after `@` is a 40-hex commit
+SHA followed by a `# vX.Y.Z` comment naming the version it pins. For
+first-party (`actions/*`, `github/*`) a SHA is preferred and a major tag is
+LOW; the failure is the third-party floating ref. Dependabot or Renovate
+configured for `github-actions` is the evidence that pinned SHAs will not
+rot; its absence is a MEDIUM sibling finding, not a reason to float.
+**Fix form.** Pin to the SHA with the version comment; enable the
+`github-actions` ecosystem in `dependabot.yml` so the pin is bumped by PR,
+never by hand. Severity: HIGH for a third-party action that receives a
+token or secret or runs on a self-hosted runner; MEDIUM otherwise.
+**Proposed by.** gate-openos-2026-09-16 (session
+git-20260916-112947-da1f1cc6bb25), for operator approval.
+**Standard.** OpenSSF Scorecard `Pinned-Dependencies`; GitHub docs
+"Security hardening for GitHub Actions — Using third-party actions".
