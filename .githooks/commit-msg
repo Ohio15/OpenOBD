@@ -43,17 +43,28 @@ fi
 # BINMODE=3 stops Git-for-Windows gawk from dropping CRs on read and write.
 # LC_ALL=C matches bytes, so a leading emoji is not an invalid multibyte char
 # under a UTF-8 locale.
+# The count goes to its own file, never to a stream awk also writes warnings
+# to: a warning mixed into the count made it non-numeric, the -gt test then
+# errored as false, and the commit went through unscrubbed in silence
+# (audit-openos-2026-10-05). A count that is not a number now fails the hook.
 SCRUB_TMP=$(mktemp "${COMMIT_MSG_FILE}.scrub.XXXXXX") || exit 1
-trap 'rm -f "$SCRUB_TMP"' EXIT
-SCRUBBED=$(LC_ALL=C awk -v BINMODE=3 '
+SCRUB_CNT=$(mktemp "${COMMIT_MSG_FILE}.count.XXXXXX") || { rm -f "$SCRUB_TMP"; exit 1; }
+trap 'rm -f "$SCRUB_TMP" "$SCRUB_CNT"' EXIT
+LC_ALL=C awk -v BINMODE=3 -v cnt="$SCRUB_CNT" '
     { line = $0; sub(/\r$/, "", line); l = tolower(line) }
     l ~ /^[ \t]*co[- ]?authored[- ]by[ \t]*:.*<[^<>]*@[^<>]*>[ \t]*$/ { n++; next }
     l ~ /^[ \t]*claude-session[ \t]*:[ \t]*https?:\/\/[^ \t]+[ \t]*$/ { n++; next }
     l ~ /^[^a-z0-9#]*generated with \[?claude/ { n++; next }
     line ~ /^[ \t]*$/ { blank = blank $0 ORS; next }
     { printf "%s", blank; blank = ""; print }
-    END { print n + 0 > "/dev/stderr" }
-' "$COMMIT_MSG_FILE" 2>&1 >"$SCRUB_TMP") || exit 1
+    END { print n + 0 > cnt }
+' "$COMMIT_MSG_FILE" >"$SCRUB_TMP" || exit 1
+SCRUBBED=$(cat "$SCRUB_CNT")
+case "$SCRUBBED" in
+    ''|*[!0-9]*)
+        echo "commit-msg: attribution scrub produced no count ('$SCRUBBED'); refusing rather than committing unscrubbed" >&2
+        exit 1 ;;
+esac
 if [ "$SCRUBBED" -gt 0 ]; then
     cat "$SCRUB_TMP" > "$COMMIT_MSG_FILE" || exit 1
     echo "commit-msg: removed $SCRUBBED attribution line(s)"
