@@ -53,6 +53,14 @@ def frame_record(t: float, data: bytes, bus: str = "hs") -> Optional[dict]:
             "data": data[4:].hex().upper()}
 
 
+def default_label(bus: str, now: Optional[float] = None) -> str:
+    """'main-YYYYMMDD-HHMMSS' / 'body-YYYYMMDD-HHMMSS' (local time): unique per
+    second and sortable, so a recording is matched to the function run on the
+    other tool by when it was made."""
+    name = "body" if bus == "sw" else "main"
+    return f"{name}-{time.strftime('%Y%m%d-%H%M%S', time.localtime(now))}"
+
+
 def connect_bus(j, jt, bus: str):
     """Open a raw listening channel on one bus with its diagnostic filters."""
     if bus == "sw":
@@ -119,13 +127,15 @@ def main(argv=None) -> int:
     except (AttributeError, ValueError):
         pass
     ap = argparse.ArgumentParser(prog="python -m openobd.canrec")
-    ap.add_argument("label")
+    ap.add_argument("label", nargs="?", default=None,
+                    help="optional; default is <bus>-<YYYYMMDD-HHMMSS>")
     ap.add_argument("--seconds", type=float, default=600.0)
     ap.add_argument("--bus", choices=BUSES, default="hs",
                     help="hs = engine/trans/transfer case/ABS/BCM (default); "
                          "sw = body bus (doors, HVAC, cluster, radio)")
     a = ap.parse_args(argv)
-    outp = f"canrec-{a.label}.jsonl"
+    label = a.label or default_label(a.bus)
+    outp = f"canrec-{label}.jsonl"
     from . import j2534 as jt
     try:
         j = jt.J2534()
