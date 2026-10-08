@@ -9,11 +9,13 @@ permissions:
 
 jobs:
   size-guard:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
-      # actions/checkout v4.1.7 — SHA-pinned, same ref as security-audit.yml
-      # and dep-auto-apply.yml (mutable tags are a supply-chain vector).
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      # SHA-pinned, same ref as security-audit.yml and dep-auto-apply.yml
+      # (mutable tags are a supply-chain vector).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Reject tracked files larger than 10 MB
         shell: bash
