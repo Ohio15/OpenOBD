@@ -30,6 +30,7 @@ for f in "${staged[@]}"; do
     while IFS= read -r pat; do
       [[ "$pat" =~ ^[[:space:]]*# ]] && continue
       [[ -z "$pat" ]] && continue
+      # shellcheck disable=SC2053  # glob match is intended: allowlist entries are globs
       if [[ "$f" == $pat || "$f" == ${pat%/}/* ]]; then allow=1; break; fi
     done <"$ALLOWLIST"
   fi

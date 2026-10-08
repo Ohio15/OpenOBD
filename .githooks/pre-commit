@@ -22,14 +22,19 @@ if [ ${#sub_hooks[@]} -eq 0 ]; then
   exit 0
 fi
 
-# Stable ordering so behavior is deterministic across machines.
-IFS=$'\n' sub_hooks=($(printf '%s\n' "${sub_hooks[@]}" | LC_ALL=C sort))
-unset IFS
+# Stable ordering so behavior is deterministic across machines. mapfile splits
+# on newlines only, without mutating the global IFS or exposing the paths to
+# word splitting and glob expansion (shellcheck SC2207).
+mapfile -t sorted_hooks < <(printf '%s\n' "${sub_hooks[@]}" | LC_ALL=C sort)
 
-for hook in "${sub_hooks[@]}"; do
+for hook in "${sorted_hooks[@]}"; do
   if [ ! -x "$hook" ]; then
-    echo "WARN: $hook is not executable, skipping" >&2
-    continue
+    # Fail closed. A guard the dispatcher cannot run is a guard that is not
+    # running; skipping it would report a pass for a check that never happened
+    # (audit-openos-2026-09-16, proposed SC-27). The bit belongs in the index:
+    #   git update-index --chmod=+x .githooks/<name>
+    echo "pre-commit: $hook is not executable; refusing to skip a guard" >&2
+    exit 1
   fi
   # Capture the sub-hook's real exit code. `if ! cmd; then rc=$?` would
   # incorrectly record 0 because $? after the inverted test is the test's

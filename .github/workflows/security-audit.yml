@@ -6,8 +6,19 @@ name: Security Audit (Layer A)
 # dependency graph. Moderate / low findings are logged for visibility but
 # don't fail the build.
 #
-# Detect-and-dispatch: each ecosystem job is conditional on the presence of
-# its lockfile / manifest, so this template is safe to drop into any repo.
+# Detect-and-dispatch: every tracked manifest ANYWHERE in the tree (from
+# `git ls-files`, never node_modules) selects an ecosystem, and each ecosystem
+# job runs once per manifest directory. A root-only check missed every repo
+# whose manifests live in a subdirectory and then reported green having
+# examined nothing (audit-ai-console-2026-09-28, MEDIUM; proposed SC-26).
+#
+# Unknown is never clean:
+# - a detected ecosystem whose job did not SUCCEED fails the summary, and
+#   `skipped` counts as not succeeding.
+# - a repo with no manifest at all fails, unless it declares that in
+#   `.github/security-audit-no-manifests`. The file's content is the reason,
+#   and it must not be empty.
+# - a failed detect job fails the summary.
 #
 # Design ref: shared-brain decision 81b962de-3e94-4d67-9093-7dbb5644094d
 # Critique:   shared-brain knowledge 7b258d5c-dcf4-49e9-973a-5e92b951a019
@@ -29,69 +40,193 @@ concurrency:
 jobs:
   detect:
     name: Detect ecosystems
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     outputs:
       has_npm: ${{ steps.detect.outputs.has_npm }}
       has_go: ${{ steps.detect.outputs.has_go }}
       has_python: ${{ steps.detect.outputs.has_python }}
+      npm_dirs: ${{ steps.detect.outputs.npm_dirs }}
+      go_dirs: ${{ steps.detect.outputs.go_dirs }}
+      python_dirs: ${{ steps.detect.outputs.python_dirs }}
     steps:
-      # actions/checkout v4.1.7
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The audit installs PR-controlled code; it never pushes, so the token
+          # is not persisted where that code could read it.
+          persist-credentials: false
 
       - id: detect
         shell: bash
         run: |
           set -euo pipefail
-          has_npm=false
-          has_go=false
-          has_python=false
-          [ -f package.json ] && has_npm=true
-          [ -f go.mod ] && has_go=true
-          if compgen -G "requirements*.txt" > /dev/null || [ -f pyproject.toml ]; then
-            has_python=true
+          # Directories (repo-relative, "." for the root) that hold a tracked
+          # manifest matching the pathspecs, as a JSON array.
+          # The filtering is done in python, not grep: under pipefail an empty
+          # grep exits 1 and would kill this step for every repo that lacks
+          # one of the ecosystems.
+          dirs_of() {
+            git ls-files -z -- "$@" | python3 -c '
+          import json, posixpath, sys
+          paths = [p for p in sys.stdin.buffer.read().decode().split("\0") if p]
+          # A directory name is repo content a PR controls. A control character
+          # (a newline above all) could forge a `::command::` line when a later
+          # step echoes it, so refuse, never pass it on.
+          hostile = [p for p in paths if any(ord(c) < 0x20 or ord(c) == 0x7f for c in p)]
+          if hostile:
+              sys.exit("control character in manifest path(s): " + ", ".join(repr(p) for p in hostile))
+          keep = sorted({posixpath.dirname(p) or "." for p in paths
+                         if "node_modules" not in p.split("/")})
+          print(json.dumps(keep))'
+          }
+          npm_dirs=$(dirs_of 'package.json' '**/package.json')
+          go_dirs=$(dirs_of 'go.mod' '**/go.mod')
+          python_dirs=$(dirs_of 'pyproject.toml' '**/pyproject.toml' 'requirements*.txt' '**/requirements*.txt')
+          count() { python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$1"; }
+          n_npm=$(count "$npm_dirs"); n_go=$(count "$go_dirs"); n_py=$(count "$python_dirs")
+          has_npm=false; [ "$n_npm" -gt 0 ] && has_npm=true
+          has_go=false; [ "$n_go" -gt 0 ] && has_go=true
+          has_python=false; [ "$n_py" -gt 0 ] && has_python=true
+          {
+            echo "has_npm=$has_npm"; echo "has_go=$has_go"; echo "has_python=$has_python"
+            echo "npm_dirs=$npm_dirs"; echo "go_dirs=$go_dirs"; echo "python_dirs=$python_dirs"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::ecosystems: npm=$npm_dirs go=$go_dirs python=$python_dirs"
+          if [ $((n_npm + n_go + n_py)) -eq 0 ]; then
+            declared=.github/security-audit-no-manifests
+            if [ -s "$declared" ] && grep -q '[^[:space:]]' "$declared"; then
+              echo "::notice::no dependency manifests; declared in $declared: $(head -c 200 "$declared" | tr '\n' ' ')"
+            else
+              echo "::error::no dependency manifest found anywhere in the tree, so nothing was audited. If this repo truly has no dependencies, say why in $declared."
+              exit 1
+            fi
           fi
-          echo "has_npm=$has_npm" >> "$GITHUB_OUTPUT"
-          echo "has_go=$has_go" >> "$GITHUB_OUTPUT"
-          echo "has_python=$has_python" >> "$GITHUB_OUTPUT"
-          echo "::notice::ecosystems: npm=$has_npm go=$has_go python=$has_python"
 
   npm-audit:
-    name: npm audit
+    name: npm audit (${{ matrix.dir }})
     needs: detect
     if: needs.detect.outputs.has_npm == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.detect.outputs.npm_dirs) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
     steps:
-      # actions/checkout v4.1.7
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
-
-      # actions/setup-node v4.0.4
-      - uses: actions/setup-node@0a44ba7841725637a19e28fa30b79a866c81b0a6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The audit installs PR-controlled code; it never pushes, so the token
+          # is not persisted where that code could read it.
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          package-manager-cache: false
           node-version: '20'
 
       - name: Install (npm ci or pnpm install or yarn install)
         shell: bash
         run: |
           set -euo pipefail
+          # Lifecycle scripts are never run: on a pull_request they are code
+          # the PR controls, and the audit reads the resolved dependency graph
+          # (lockfile + installed tree), which scripts do not change.
+          # Package-manager versions are pinned, never @latest/@stable: a
+          # `packageManager` field in package.json still wins under corepack;
+          # these are only the fallback. pnpm 10 is the newest line that runs
+          # on the Node 20 set up above (pnpm 11 needs Node >= 22.13).
           if [ -f pnpm-lock.yaml ]; then
             corepack enable
-            corepack prepare pnpm@latest --activate
-            pnpm install --frozen-lockfile
+            corepack prepare pnpm@10.34.6 --activate
+            pnpm install --frozen-lockfile --ignore-scripts
           elif [ -f yarn.lock ]; then
             corepack enable
-            corepack prepare yarn@stable --activate
-            yarn install --immutable
+            # The lockfile says which yarn wrote it: berry (>= 2) carries a
+            # `__metadata:` block, classic v1 a "yarn lockfile v1" header.
+            if grep -q '^__metadata:' yarn.lock; then
+              corepack prepare yarn@4.18.1 --activate
+              yarn install --immutable --mode=skip-build
+            elif grep -q '^# yarn lockfile v1' yarn.lock; then
+              corepack prepare yarn@1.22.22 --activate
+              yarn install --frozen-lockfile --ignore-scripts
+            else
+              echo "::error::yarn.lock is neither a yarn berry nor a yarn v1 lockfile; nothing can be audited"
+              exit 1
+            fi
           elif [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
-            npm ci
+            npm ci --ignore-scripts
           else
             echo "::warning::No npm lockfile found; running 'npm install' (audit results may be less reliable)"
-            npm install --no-audit --no-fund
+            npm install --no-audit --no-fund --ignore-scripts
           fi
 
       - name: Audit (low/moderate logged, high/critical fails)
         shell: bash
         run: |
           set -euo pipefail
+          # yarn: `npm audit` needs a package-lock.json, so a yarn repo used to
+          # fail here on every run. Each yarn flavour reports through its own
+          # audit, and its exit code alone cannot tell "found something" from
+          # "could not audit", so the JSON it writes decides:
+          #   berry:   `yarn npm audit --all --recursive --json` prints one
+          #            advisory object per line and exits 1 if there is any,
+          #            0 (and prints nothing) if there is none.
+          #   classic: `yarn audit --json` ends with an auditSummary line; its
+          #            exit code is a severity bitmask (1 info, 2 low,
+          #            4 moderate, 8 high, 16 critical).
+          # No report means not examined, which fails like a finding does.
+          if [ ! -f pnpm-lock.yaml ] && [ -f yarn.lock ]; then
+            rc=0
+            if grep -q '^__metadata:' yarn.lock; then
+              flavour=berry
+              yarn npm audit --all --recursive --json > audit-yarn.json || rc=$?
+            else
+              flavour=classic
+              yarn audit --json > audit-yarn.json || rc=$?
+            fi
+            python3 - audit-yarn.json "$rc" "$flavour" <<'PY'
+          import json, sys
+          path, rc, flavour = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+          def not_examined(why):
+              print(f"::error::yarn {flavour} audit could not run (exit {rc}): {why}; nothing was audited")
+              sys.exit(1)
+          frames = []
+          for line in open(path, encoding="utf-8", errors="replace"):
+              if line.strip():
+                  try:
+                      frames.append(json.loads(line))
+                  except ValueError:
+                      not_examined("output is not the JSON audit report")
+          counts = dict.fromkeys(("info", "low", "moderate", "high", "critical"), 0)
+          if flavour == "berry":
+              advisories = [f for f in frames if isinstance(f, dict) and isinstance(f.get("children"), dict) and "value" in f]
+              if len(advisories) != len(frames):
+                  not_examined("output holds something other than advisories")
+              if (rc == 0) != (not advisories) or rc not in (0, 1):
+                  not_examined("exit code and report disagree")
+              for a in advisories:
+                  sev = str(a["children"].get("Severity", "")).lower()
+                  if sev not in counts:
+                      not_examined(f"advisory without a known severity: {a.get('value')}")
+                  counts[sev] += 1
+          else:
+              summary = [f for f in frames if isinstance(f, dict) and f.get("type") == "auditSummary"]
+              if len(summary) != 1 or rc > 31:
+                  not_examined("no audit summary")
+              vulns = summary[0].get("data", {}).get("vulnerabilities", {})
+              for sev in counts:
+                  counts[sev] = int(vulns.get(sev, 0))
+              bits = sum(bit for sev, bit in (("info", 1), ("low", 2), ("moderate", 4), ("high", 8), ("critical", 16)) if counts[sev])
+              if bits != rc:
+                  not_examined(f"exit code {rc} does not match the summary's severities ({bits})")
+          print("yarn audit: " + " ".join(f"{k}={v}" for k, v in counts.items()))
+          if counts["high"] or counts["critical"]:
+              print(f"::error::yarn audit found {counts['high']} high and {counts['critical']} critical vulnerabilities")
+              sys.exit(1)
+          PY
+            exit 0
+          fi
           # Run informational audit (everything) — never fails the build.
           if [ -f pnpm-lock.yaml ]; then
             pnpm audit --json > audit-info.json || true
@@ -119,26 +254,37 @@ jobs:
           fi
 
   go-vulncheck:
-    name: govulncheck
+    name: govulncheck (${{ matrix.dir }})
     needs: detect
     if: needs.detect.outputs.has_go == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.detect.outputs.go_dirs) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
     steps:
-      # actions/checkout v4.1.7
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
-
-      # actions/setup-go v5.0.2
-      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version-file: go.mod
+          # The audit installs PR-controlled code; it never pushes, so the token
+          # is not persisted where that code could read it.
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ matrix.dir }}/go.mod
           cache: true
+          cache-dependency-path: ${{ matrix.dir }}/go.sum
 
       - name: Install govulncheck if absent
         shell: bash
         run: |
           set -euo pipefail
           if ! command -v govulncheck > /dev/null; then
-            go install golang.org/x/vuln/cmd/govulncheck@latest
+            # Pinned, never @latest: this job holds security-events: write.
+            go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
           fi
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
@@ -152,16 +298,25 @@ jobs:
           govulncheck ./...
 
   pip-audit:
-    name: pip-audit
+    name: pip-audit (${{ matrix.dir }})
     needs: detect
     if: needs.detect.outputs.has_python == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.detect.outputs.python_dirs) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
     steps:
-      # actions/checkout v4.1.7
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The audit installs PR-controlled code; it never pushes, so the token
+          # is not persisted where that code could read it.
+          persist-credentials: false
 
-      # actions/setup-python v5.2.0
-      - uses: actions/setup-python@f677139bbe7f9c59b41e40162b753c062f5d49a3
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.x'
 
@@ -169,23 +324,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install pip-audit
+          python -m pip install pip==26.2.1
+          python -m pip install pip-audit==2.10.1
 
       - name: Run pip-audit (--strict gates the workflow)
         shell: bash
+        # Values reach the script through env, never `${{ }}` inside run:
+        # a directory name is PR-controlled text, and an expression is
+        # pasted into the script before bash parses it (script injection).
+        env:
+          DIR: ${{ matrix.dir }}
         run: |
           set -euo pipefail
-          # Prefer pyproject if both exist; pip-audit will resolve from it.
+          # Prefer pyproject if both exist. The project PATH is required: a bare
+          # `pip-audit` audits the runner's own environment, not this project,
+          # and passes having examined none of its dependencies.
           if [ -f pyproject.toml ]; then
-            pip-audit --strict
+            pip-audit --strict .
           else
-            # Audit every requirements*.txt found at repo root.
+            # Audit every requirements*.txt in this manifest directory.
             shopt -s nullglob
             files=(requirements*.txt)
             if [ ${#files[@]} -eq 0 ]; then
-              echo "::notice::python detected but no requirements*.txt or pyproject.toml at repo root — skipping"
-              exit 0
+              # detect chose this directory for a python manifest; finding none
+              # here means detect and audit disagree, which is never a pass.
+              echo "::error::python detected in '$DIR' but no requirements*.txt or pyproject.toml there; nothing was audited"
+              exit 1
             fi
             for f in "${files[@]}"; do
               echo "----- pip-audit -r $f -----"
@@ -197,26 +361,56 @@ jobs:
     name: Audit summary (always runs)
     if: always()
     needs: [detect, npm-audit, go-vulncheck, pip-audit]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - shell: bash
+        # Every value through env, never `${{ }}` inside run: the *_DIRS lists
+        # are PR-controlled directory names (script injection otherwise).
+        env:
+          DETECT_RESULT: ${{ needs.detect.result }}
+          HAS_NPM: ${{ needs.detect.outputs.has_npm }}
+          HAS_GO: ${{ needs.detect.outputs.has_go }}
+          HAS_PYTHON: ${{ needs.detect.outputs.has_python }}
+          NPM_DIRS: ${{ needs.detect.outputs.npm_dirs }}
+          GO_DIRS: ${{ needs.detect.outputs.go_dirs }}
+          PYTHON_DIRS: ${{ needs.detect.outputs.python_dirs }}
+          NPM_RESULT: ${{ needs.npm-audit.result }}
+          GO_RESULT: ${{ needs.go-vulncheck.result }}
+          PYTHON_RESULT: ${{ needs.pip-audit.result }}
         run: |
           set -euo pipefail
-          echo "## Security audit summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Ecosystem | Detected | Result |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| npm    | ${{ needs.detect.outputs.has_npm }}    | ${{ needs.npm-audit.result }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| go     | ${{ needs.detect.outputs.has_go }}     | ${{ needs.go-vulncheck.result }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| python | ${{ needs.detect.outputs.has_python }} | ${{ needs.pip-audit.result }} |" >> "$GITHUB_STEP_SUMMARY"
-          # Exit non-zero if any audit job failed, regardless of detect outcome.
+          {
+            echo "## Security audit summary"
+            echo ""
+            echo "| Ecosystem | Detected | Result |"
+            echo "|---|---|---|"
+            echo "| npm    | $NPM_DIRS    | $NPM_RESULT |"
+            echo "| go     | $GO_DIRS     | $GO_RESULT |"
+            echo "| python | $PYTHON_DIRS | $PYTHON_RESULT |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Three-valued: a detected ecosystem must SUCCEED (skipped, cancelled
+          # or timed out is not examined, never clean); an undetected one must
+          # have been skipped; and detection itself must have succeeded.
           fail=0
-          for r in "${{ needs.npm-audit.result }}" "${{ needs.go-vulncheck.result }}" "${{ needs.pip-audit.result }}"; do
-            case "$r" in
-              failure|cancelled|timed_out) fail=1 ;;
-            esac
-          done
+          if [ "$DETECT_RESULT" != "success" ]; then
+            echo "::error::ecosystem detection did not succeed ($DETECT_RESULT); nothing can be called clean"
+            fail=1
+          fi
+          check() { # <ecosystem> <detected> <result>
+            if [ "$2" = "true" ]; then
+              if [ "$3" != "success" ]; then
+                echo "::error::$1 was detected but its audit result is '$3'"
+                fail=1
+              fi
+            elif [ "$3" != "skipped" ]; then
+              echo "::error::$1 was not detected but its audit ran ('$3')"
+              fail=1
+            fi
+          }
+          check npm    "$HAS_NPM"    "$NPM_RESULT"
+          check go     "$HAS_GO"     "$GO_RESULT"
+          check python "$HAS_PYTHON" "$PYTHON_RESULT"
           if [ "$fail" -eq 1 ]; then
-            echo "::error::One or more audits failed — see job logs"
+            echo "::error::the dependency audit is not clean. See the job logs."
             exit 1
           fi

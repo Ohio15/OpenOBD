@@ -1,0 +1,18 @@
+# Seeded by dev-standards install.sh (only when the repo had no Dependabot
+# config). The workflows install.sh drops pin every action to a full commit
+# SHA, and a SHA pin never moves by itself: without this file the pins go
+# stale and miss upstream security fixes (SC-25). Dependabot bumps SHA pins
+# and same-line version comments.
+#
+# This file is yours after seeding: install.sh never overwrites it. Add other
+# ecosystems below as the repo needs them.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"

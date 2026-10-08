@@ -17,14 +17,14 @@
 
 set -euo pipefail
 
-# Locate gitleaks. Tolerate either PATH binary or default Go bin path on Windows.
+# Locate gitleaks on PATH only. An executable is never resolved from a
+# location an environment variable names (GOPATH, HOME): a hostile or
+# inherited env block could point it at a substitute binary that exits 0, so
+# the scan is bypassed and attacker code runs inside every commit. Absent from
+# PATH, the hook fails closed.
 gitleaks_bin=""
 if command -v gitleaks >/dev/null 2>&1; then
   gitleaks_bin="$(command -v gitleaks)"
-elif [ -x "${GOPATH:-$HOME/go}/bin/gitleaks" ]; then
-  gitleaks_bin="${GOPATH:-$HOME/go}/bin/gitleaks"
-elif [ -x "${GOPATH:-$HOME/go}/bin/gitleaks.exe" ]; then
-  gitleaks_bin="${GOPATH:-$HOME/go}/bin/gitleaks.exe"
 else
   {
     echo "ERROR: gitleaks not found on PATH."
@@ -33,6 +33,8 @@ else
     echo "  macOS:    brew install gitleaks"
     echo "  Windows:  choco install gitleaks"
     echo "  Any:      go install github.com/zricethezav/gitleaks/v8@latest"
+    echo "            (then put \"\$(go env GOPATH)/bin\" on PATH; the hook does not"
+    echo "            look in GOPATH for you)"
     echo
     echo "Then retry the commit. Bypass (emergency only): git commit --no-verify"
   } >&2
