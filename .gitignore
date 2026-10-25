@@ -10,7 +10,6 @@ venv/
 /gt_run.log
 _run_gt.bat
 build.log
-_build.bat
 tools/*.log
 tools/*.tsv
 /dtcscan.out

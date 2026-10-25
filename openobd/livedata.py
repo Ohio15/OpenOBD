@@ -324,7 +324,7 @@ class LiveDataPage(QWidget):
         self._picker.blockSignals(True)
         self._picker.clear()
         for s in sessions:
-            tag = "● LIVE  " if s.get("live") else ""
+            tag = tmstore.session_tag(s)
             label = s.get("label") or s.get("name")
             started = (s.get("started_utc") or "")[:19].replace("T", " ")
             err = "  [unreadable]" if s.get("error") else ""
@@ -386,6 +386,9 @@ class LiveDataPage(QWidget):
         veh = meta.get("vin") or meta.get("label") or "session"
         src = meta.get("source") or "live"
         self._status_base = f"{veh}  ·  source={src}"
+        if tmstore.session_simulated(meta):
+            self._status_base = ("SIMULATED demo data, not the truck  ·  "
+                                 + self._status_base)
         self._status.setText(self._status_base)
         self._tick()
 
