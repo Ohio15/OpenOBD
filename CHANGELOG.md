@@ -3,7 +3,7 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
-## Unreleased
+## 0.32.3 — 2026-10-25
 
 ### Fixed (truck-mcp session provenance)
 - **A drive run against the truck-mcp simulator is no longer shown as a real
