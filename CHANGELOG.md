@@ -5,6 +5,114 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
 
 ## Unreleased
 
+### Added (recording metadata sidecar)
+- **Every Dashboard recording now has a `<stem>.meta.json`** beside
+  `<stem>.csv` and `<stem>.long.csv` (`recorder.META_SUFFIX`, schema 1). It
+  is created exclusively with the other two (flushed, fsynced; a stray
+  `.meta.json` moves the recording to the next free stem) and rewritten
+  atomically (temp file, fsync, `os.replace`) when a marker or a vehicle fact
+  is added and at close. An empty recording removes all three files.
+  Contents: schema, `openobd_version`, `utc_start` / `local_start` and the
+  end times, file names, columns, the source (GT device, port, poll plan
+  summary, poll cost model), vehicle identity, the four Mode 01
+  supported-PID masks as hex plus the decoded PID list, DTCs at start (the
+  full `read_dtcs()` dict), markers, the pedal calibration in force and its
+  changes, channel notes, derived channels, rows, duration, error.
+- **Vehicle identity from Mode 09** (`ObdxGt.read_vehicle_identity`): VIN
+  (09 02), CALIDs (09 04) and CVNs (09 06) from the ECM, physical 7E0. Each
+  entry holds the raw message hex plus decoded text where applicable, or
+  `{"examined": false, "why": ...}` (NO DATA, negative response with NRC,
+  count byte not matching the data, a VIN that is not 17 VIN characters).
+  Never an empty string standing in for a value. `gt.service_message`
+  generalises the wave-1 multi-frame parser to any service; a `7F <svc> 78`
+  (response pending) is skipped and the final reply in the same read is
+  used, and a read holding only the 78 is "not examined (response pending,
+  no final reply)". Verified
+  against the real 7E8 replies truck-mcp captured on this truck (VIN
+  3GCRKTE35AG150432, 8 CALIDs); the headers-off GT text form is proven
+  only against the fake until the truck is plugged in.
+- **The VIN is read on every open** (connect and link re-open; one 0902
+  request, `ObdxGt.read_vin`, before polling resumes) and published as
+  `GtDataSource.link` = (connection epoch, VIN entry). **CALIDs, CVNs and
+  DTCs are read at recording start**, with the poll thread held
+  (`GtDataSource.read_recording_context` via `run_exclusive`) on a worker
+  thread, so the GUI never blocks; the connect-time VIN is reused. The
+  identity is cached per connection and dropped on every open and on stop;
+  DTCs are read per recording. After `read_dtcs` the poll state is back to 7E0 / ATH0 and
+  the next poll goes straight out (tested with the fake).
+- **Markers**: `M` (or the new Mark button) while recording drops "mark N"
+  at the current recording time into the metadata and the status line. The
+  CSVs are untouched. Log Analysis draws a recording's markers as amber
+  event markers (the existing "Event markers" checkbox) and lists them in
+  the report.
+
+### Added (pedal normalization)
+- **A derived "Pedal, normalized (%)" channel** (`openobd/pedal.py`): clamp
+  ((APP D - rest) / (full - rest) * 100, 0, 100). On the 2026-10-25 drive
+  APP D read 19 % at rest and 61 % flat out, so `pedal >= 70` found no WOT.
+  rest = the MEDIAN APP D over a stretch with rpm < 1200 and vss == 0 held
+  for 2 s of OBSERVED samples (broken by a missing value, a failed poll, or
+  a gap over twice the longest normal cycle; a log uses twice its own median
+  spacing), only lowered; full = the maximum APP D over a run of at least 3
+  consecutive samples with load >= 98 % or MAP >= 95 kPa and the engine
+  running (rpm >= 400, because a key-on engine-off MAP reads barometric),
+  only raised. A single glitch or spike moves neither. Until both are
+  learned the channel is blank. The raw `app` / `app_e` / `app_f` channels
+  are recorded exactly as decoded.
+- Computed in `GtDataSource` on the poll thread (`Sample.derived`), so the
+  display and the recording both get it. In the long sidecar its lines carry
+  the APP D reading's time and `derived:app` in the Request column, never a
+  request number.
+- **A calibration is stored and applied only for an examined VIN**
+  (`pedal_cal/<VIN>`; there is no fallback key). Every open (connect,
+  re-open after a link loss) and stop resets the learner and the VIN, so a
+  calibration learned on one truck is never applied to or saved under
+  another; the connection's own VIN then seeds its stored calibration, so
+  the live gauge is normalized before any recording. Without a VIN the
+  calibration is session-only (live learning still works) and the metadata
+  says so. If the stored calibration cannot be READ, that is not "none
+  stored": nothing is seeded and nothing is saved over it that session, and
+  the status line and metadata say so. Calibration changes, markers and
+  link re-opens (`link_events`) are written into an active recording's
+  metadata within 250 ms (rewrites are coalesced so a held M key cannot
+  stall the GUI on fsync); close always writes the final document.
+- **Log Analysis → "Learn pedal calibration from this log"** derives it
+  from a loaded log with the same rules (`logbin.calibrate_pedal_from_log`;
+  the 2026-10-25 log gives rest 19.2 / full 61.2). For a log with a VIN it
+  is stored only when the log's VIN equals the VIN examined on the current
+  live GT connection, merged into the stored one (rest = min, full = max:
+  never loosened), and the status line shows old and new. Otherwise (no
+  VIN, no connection, another vehicle, unreadable store) it applies to that
+  log's analysis only. A loaded log uses only the calibration its own
+  recording measured (latest change, then after-identity, then at-start).
+  A VIN in a .meta.json is shown as "from file, unverified" and never
+  loads stored settings: the file is editable on disk (security gate
+  SC-05).
+- `.meta.json` shapes are validated before use (vehicle, VIN, pedal
+  calibration, markers); a hostile or damaged file is reported as
+  "metadata unreadable: <why>" and the log loads without it.
+- The **Pedal gauge** shows the normalized value when available, else raw
+  APP D labelled "Pedal raw" with "pedal cal pending" in its tooltip.
+
+### Changed (WOT / PE detection)
+- `analyze_log` and `detect_shift_points` use the normalized pedal when the
+  log has it; raw APP D only when a pedal calibration is known for the log
+  (from its metadata, the VIN's stored calibration, or Learn); otherwise
+  load >= 98 % or MAP >= 95 kPa, and the report says so ("pedal
+  uncalibrated; WOT inferred from load/MAP"). In that case running non-WOT
+  samples are one "off-idle (pedal uncalibrated)" regime: cruise and
+  part-throttle cannot be split without a pedal. Raw TPS no longer stands
+  in for the pedal. The report prints the WOT criterion and the WOT/PE
+  sample count (2026-10-25 log: 0 before, 50 under the fallback, 14 with
+  the learned calibration; 13 of the 14 are also fallback samples, the
+  14th is the pull's tip-in, row 193, where the pedal led load and MAP).
+
+### Changed (ethanol)
+- PID 52 is labelled as the ECM's estimate everywhere: column "Ethanol, ECM
+  estimate (%)", gauges "EtOH est" / "ETOH EST", and a channel note in the
+  metadata. It is still recorded. The old "Ethanol (%)" header still loads
+  as ethanol.
+
 ### Changed (GT polling: batched and tiered)
 - **The GT now asks for up to six Mode 01 PIDs per request and polls in
   tiers** (`openobd/pollplan.py`, ported from truck-mcp `sweep.py` /

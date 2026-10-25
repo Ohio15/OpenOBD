@@ -690,9 +690,45 @@ d.btn_record.setToolTip("Last recording: C:/x.csv")
 assert d.shortcut_tooltip(d.btn_record) == "Last recording: C:/x.csv (Ctrl+R)"
 d.btn_record.setToolTip("")
 assert d.shortcut_tooltip(d.btn_record).endswith("datalog (Ctrl+R)")
-assert len(d._shortcuts) == 6
+assert len(d._shortcuts) == 7
+assert "(M)" in d.shortcut_tooltip(d.btn_mark)
 print("gauge fluency OK: eased needle landed, held/stale/failed states, "
       "collapse + reflow, shortcuts")
+
+# recording metadata in Log Analysis: markers from the .meta.json beside a
+# recording; Learn pedal calibration on the real 2026-10-25 drive
+import tempfile as _tf  # noqa: E402
+from openobd.recorder import DriveRecorder as _Rec  # noqa: E402
+from openobd.app import RECORD_LABELS as _RL  # noqa: E402
+_mdir = _tf.mkdtemp(prefix="smoke_meta_")
+_rec = _Rec(["rpm", "app", "load", "map"], _RL, [_mdir])
+for _i in range(30):
+    _rec.write([Sample(t=_i * 0.25, values={"rpm": 800.0 + 50 * _i,
+                                           "app": 19.2, "load": 30.0,
+                                           "map": 40.0})])
+assert _rec.add_marker(_i * 0.25, "smoke mark") == {"t": 7.25,
+                                                    "label": "smoke mark"}
+_rec.close()
+win.load_log_path(_rec.path)
+assert win._marker_times == [(7.25, "smoke mark")], win._marker_times
+assert "smoke mark" in win.log_report.toPlainText()
+assert "WOT criterion: pedal uncalibrated" in win.log_report.toPlainText()
+assert win.events_chk.isChecked() and win._plots
+_drive = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
+                      "gt_log_20261025_141431.csv")
+win.load_log_path(_drive)
+assert "WOT/PE samples: 50" in win.log_report.toPlainText()
+win.btn_learn_pedal.click()
+_txt = win.log_report.toPlainText()
+assert "rest 19.2 % / full 61.2 %" in _txt and "WOT/PE samples: 14" in _txt, _txt
+assert "No VIN in this log; calibration applies to this log's analysis "     "only" in _txt                            # VIN-less log: nothing stored
+from openobd.appsettings import app_settings as _as  # noqa: E402
+_st = _as()
+_st.beginGroup("pedal_cal")
+assert _st.childGroups() == [], _st.childGroups()
+_st.endGroup()
+print("recording metadata OK: marker on the chart, pedal calibration learned "
+      "from the 2026-10-25 drive (WOT 50 -> 14 samples), analysis-only")
 
 # save round trip
 out = "/tmp/smoke_out.cal.json"

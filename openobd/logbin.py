@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
 from .calspec import Table
+from . import pedal as _pedal
+from .pedal import PedalCal
 
 
 # --------------------------------------------------------------------------- #
@@ -51,6 +53,9 @@ CANONICAL = {
     # ("throttle position", "accelerator pedal") that would swallow them.
     "rel_tps":     ["relative throttle", "rel tps", "reltps"],
     "tps":         ["throttle position", "tps"],
+    # The DERIVED normalized pedal (openobd.pedal) before every raw pedal
+    # needle: "Pedal, normalized (%)" must never reload as raw APP D.
+    "pedal":       ["pedal normalized", "normalized pedal"],
     "app_e":       ["accelerator pedal e", "pedal position e"],
     "app_f":       ["accelerator pedal f", "pedal position f"],
     "app":         ["accelerator pedal", "pedal position", "app"],
@@ -84,6 +89,8 @@ CANONICAL = {
     "tcc_slip":    ["tcc slip", "converter slip", "slip"],
     "fuel_press":  ["fuel rail", "fuel pressure"],
     "fuel_level":  ["fuel level"],
+    # PID 52 is the ECM's ESTIMATE (no flex-fuel sensor on this truck). Both
+    # the old "Ethanol (%)" header and "Ethanol, ECM estimate (%)" map here.
     "ethanol":     ["ethanol", "flex fuel"],
     "voltage":     ["module voltage", "battery voltage", "system voltage", "voltage"],
     "baro":        ["barometric", "baro"],
@@ -124,6 +131,12 @@ class Log:
     #: Per-channel (t, value) readings from the long-format sidecar, when
     #: one was loaded next to the CSV (attach_long); None otherwise.
     timed: Optional[dict] = None
+    #: The recording's .meta.json (recorder.read_meta), when one was found.
+    meta: Optional[dict] = None
+    #: A pedal calibration KNOWN for this log (from its metadata, from
+    #: settings for its VIN, or learned from it by the user). Only with one
+    #: is raw APP D used for WOT; see wot_basis.
+    pedal_cal: Optional[PedalCal] = None
 
     def by_canonical(self, key: str) -> Optional[LogChannel]:
         for ch in self.channels:
@@ -372,6 +385,11 @@ class LogReport:
     fuel_pressure_min: Optional[float]
     fuel_pressure_sag: bool
     notes: list[str] = field(default_factory=list)
+    #: How WOT / PE was decided (wot_basis): criterion id and the sentence
+    #: the regime report prints; and how many samples it classified as PE.
+    wot_criterion: str = ""
+    wot_criterion_text: str = ""
+    wot_samples: int = 0
 
 
 # --------------------------------------------------------------------------- #
@@ -457,14 +475,75 @@ def _mean(vals: Iterable[Optional[float]]) -> Optional[float]:
     return sum(xs) / len(xs) if xs else None
 
 
-def _regime(r: Optional[float], a: Optional[float]) -> Optional[str]:
+PE_REGIME = "PE (WOT/high load)"
+#: Regime for running, non-WOT samples when there is no normalized pedal:
+#: without one, cruise and part-throttle cannot be told apart honestly.
+OFF_IDLE_REGIME = "off-idle (pedal uncalibrated)"
+#: Normalized-pedal thresholds (unchanged from the raw-pedal era).
+PE_PEDAL_MIN = 75.0
+CRUISE_PEDAL_MAX = 25.0
+
+#: wot_basis criteria.
+BASIS_PEDAL = "pedal"
+BASIS_APP_CAL = "app+cal"
+BASIS_LOAD_MAP = "load/map"
+BASIS_NONE = "none"
+
+
+def wot_basis(log: "Log") -> tuple[str, str]:
+    """(criterion, sentence) for how WOT / PE is decided in this log.
+
+    1. the derived normalized "pedal" channel when the log has it;
+    2. raw APP D ONLY when a pedal calibration is known for the log
+       (log.pedal_cal ready), normalized with it;
+    3. otherwise true WOT evidence independent of the pedal sensor: load
+       >= 98 % or MAP >= 95 kPa with the engine running (pedal.is_wot_
+       evidence). Raw APP D (19 % at rest, 61 % flat out on this truck) and
+       raw TPS are never compared with a percentage threshold."""
+    td = log.timed or {}
+    if log.has("pedal") or td.get("pedal"):
+        return BASIS_PEDAL, ("WOT from the normalized pedal channel (PE at "
+                             f"pedal >= {PE_PEDAL_MIN:g} %)")
+    cal = log.pedal_cal
+    if cal is not None and cal.ready and (log.has("app") or td.get("app")):
+        return BASIS_APP_CAL, (f"WOT from raw APP D normalized with the pedal "
+                               f"calibration {cal.status()}"
+                               + (f" [{cal.source}]" if cal.source else "")
+                               + f" (PE at pedal >= {PE_PEDAL_MIN:g} %)")
+    if (log.has("load") or log.has("map") or td.get("load")
+            or td.get("map")):
+        return BASIS_LOAD_MAP, (
+            "pedal uncalibrated; WOT inferred from load/MAP (load >= "
+            f"{_pedal.WOT_LOAD_MIN:g} % or MAP >= {_pedal.WOT_MAP_MIN:g} kPa, "
+            "engine running); cruise and part-throttle are not split")
+    return BASIS_NONE, ("pedal uncalibrated and no load/MAP logged; WOT "
+                        "cannot be determined")
+
+
+def _normalizer(log: "Log", basis: str):
+    """Raw-to-pedal function for the basis (identity for the pedal channel)."""
+    if basis == BASIS_PEDAL:
+        return lambda v: v
+    if basis == BASIS_APP_CAL:
+        return log.pedal_cal.normalize
+    return None
+
+
+def _regime(r: Optional[float], a: Optional[float],
+            wot: Optional[bool] = None) -> Optional[str]:
+    """a: normalized pedal % (pedal bases); wot: pedal-free WOT evidence
+    (load/MAP basis, where a is None and wot is not None)."""
     if r is None:
         return None
+    if wot is not None:                 # no normalized pedal in this log
+        if r < 900:
+            return "idle"
+        return PE_REGIME if wot else OFF_IDLE_REGIME
     if r < 900 and (a is None or a < 5):
         return "idle"
-    if a is not None and a >= 75:
-        return "PE (WOT/high load)"
-    if a is not None and a < 25:
+    if a is not None and a >= PE_PEDAL_MIN:
+        return PE_REGIME
+    if a is not None and a < CRUISE_PEDAL_MAX:
         return "cruise"
     return "part-throttle"
 
@@ -479,15 +558,16 @@ def _timed_regimes(log: Log) -> Optional[list]:
     rpm = _Timed(td.get("rpm", []))
     if not rpm:
         return None
-    app = _Timed(td.get("app", []) or td.get("tps", []))
     tol = _pair_tolerance(rpm)
+    pedal_at, wot_at = _timed_basis(log, tol)
 
     def regime_at(t: float) -> Optional[str]:
-        return _regime(rpm.at(t, tol), app.at(t, tol) if app else None)
+        r = rpm.at(t, tol)
+        return _regime(r, pedal_at(t), wot_at(t, r))
 
     counts: dict[str, int] = {}
     for t, r in zip(rpm.t, rpm.v):
-        rg = _regime(r, app.at(t, tol) if app else None)
+        rg = _regime(r, pedal_at(t), wot_at(t, r))
         if rg:
             counts[rg] = counts.get(rg, 0) + 1
     trims: dict[str, dict[str, list[float]]] = {}
@@ -506,10 +586,83 @@ def _timed_regimes(log: Log) -> Optional[list]:
     return out
 
 
+def _timed_basis(log: Log, tol: float):
+    """(pedal_at(t), wot_at(t, rpm)) over the sidecar's own times, per
+    wot_basis. pedal_at gives a normalized pedal or None; wot_at gives
+    pedal-free WOT evidence (load/MAP basis) or None (pedal bases)."""
+    td = log.timed or {}
+    basis, _why = wot_basis(log)
+    norm = _normalizer(log, basis)
+    if norm is not None:
+        src = _Timed(td.get("pedal" if basis == BASIS_PEDAL else "app", []))
+
+        def pedal_at(t):
+            return norm(src.at(t, tol)) if src else None
+        return pedal_at, (lambda t, r: None)
+    load = _Timed(td.get("load", []))
+    mp = _Timed(td.get("map", []))
+    if basis == BASIS_LOAD_MAP:
+        def wot_at(t, r):
+            return _pedal.is_wot_evidence(
+                r, load.at(t, tol) if load else None,
+                mp.at(t, tol) if mp else None)
+    else:
+        def wot_at(t, r):
+            return False
+    return (lambda t: None), wot_at
+
+
+def _wide_basis(log: Log):
+    """(pedal series, wot series) per sample for the wide rows: one of them
+    is a list, the other None, per wot_basis."""
+    basis, _why = wot_basis(log)
+    norm = _normalizer(log, basis)
+    if norm is not None:
+        raw = log.series("pedal" if basis == BASIS_PEDAL else "app")
+        return [norm(v) for v in raw], None
+    rpm, load, mp = log.series("rpm"), log.series("load"), log.series("map")
+    n = log.n_samples
+
+    def at(ser, i):
+        return ser[i] if ser and i < len(ser) else None
+    if basis == BASIS_LOAD_MAP:
+        return None, [_pedal.is_wot_evidence(at(rpm, i), at(load, i),
+                                             at(mp, i)) for i in range(n)]
+    return None, [False] * n
+
+
+def calibrate_pedal_from_log(log: Log) -> PedalCal:
+    """Pedal calibration from a log with exactly the live rules (pedal.py):
+    rest from stopped low-rpm stretches held >= 2 s, full from APP D under
+    true WOT evidence. Uses the sidecar's own times when present (APP D
+    readings paired with the rpm / vss / load / MAP nearest them), else the
+    wide rows. rest / full stay None when the log has no such evidence."""
+    source = f"learned from log {log.source}" if log.source else "learned from log"
+    td = log.timed or {}
+    if td.get("app") and td.get("rpm"):
+        rpm = _Timed(td["rpm"])
+        tol = _pair_tolerance(rpm)
+        vss, load, mp = (_Timed(td.get(k, [])) for k in ("vss", "load", "map"))
+        pts = ((t, rpm.at(t, tol), vss.at(t, tol) if vss else None, a,
+                load.at(t, tol) if load else None,
+                mp.at(t, tol) if mp else None)
+               for t, a in td["app"])
+        return _pedal.calibrate(pts, source)
+    times = time_axis(log) if log.has("time") else [None] * log.n_samples
+    cols = [log.series(k) for k in ("rpm", "vss", "app", "load", "map")]
+
+    def at(ser, i):
+        return ser[i] if ser and i < len(ser) else None
+    pts = ((times[i],) + tuple(at(c, i) for c in cols)
+           for i in range(log.n_samples))
+    return _pedal.calibrate(pts, source)
+
+
 def analyze_log(log: Log) -> LogReport:
     notes: list[str] = []
     rpm = log.series("rpm")
-    app = log.series("app") or log.series("tps")
+    basis, basis_text = wot_basis(log)
+    pedal_ser, wot_ser = _wide_basis(log)
     load = log.series("load")
     stft = log.series("stft")
     ltft = log.series("ltft")
@@ -525,19 +678,12 @@ def analyze_log(log: Log) -> LogReport:
         if len(tv) >= 2:
             duration = max(tv) - min(tv)
 
-    # Regime classification per sample.
+    # Regime classification per sample, on the wot_basis criterion.
     def regime_of(i: int) -> Optional[str]:
         r = rpm[i] if i < len(rpm) else None
-        a = app[i] if app and i < len(app) else None
-        if r is None:
-            return None
-        if r < 900 and (a is None or a < 5):
-            return "idle"
-        if a is not None and a >= 75:
-            return "PE (WOT/high load)"
-        if a is not None and a < 25:
-            return "cruise"
-        return "part-throttle"
+        a = pedal_ser[i] if pedal_ser and i < len(pedal_ser) else None
+        w = wot_ser[i] if wot_ser is not None and i < len(wot_ser) else None
+        return _regime(r, a, w)
 
     regimes: list[RegimeStats] = []
     timed = _timed_regimes(log)
@@ -610,10 +756,13 @@ def analyze_log(log: Log) -> LogReport:
                 notes.append(f"Cruise trims average {cruise.combined_trim_mean:+.1f}%"
                              " (lean) — MAF under-read / small leak.")
 
-    has_pe = (any(r.name == "PE (WOT/high load)" for r in regimes)
-              if timed is not None else
-              any(regime_of(i) == "PE (WOT/high load)" for i in range(n)))
-    if not has_pe:
+    wot_samples = sum(r.n for r in regimes if r.name == PE_REGIME)
+    if basis in (BASIS_LOAD_MAP, BASIS_NONE):
+        notes.append(basis_text[0].upper() + basis_text[1:] + "."
+                     + (" Learn a pedal calibration from a log with an idle "
+                        "and a WOT pull to classify by pedal."
+                        if log.has("app") else ""))
+    if not wot_samples:
         notes.append("No WOT/PE samples in this log — can't validate shift points "
                      "or PE fueling. Capture a full-throttle pull with KR logged.")
 
@@ -627,6 +776,9 @@ def analyze_log(log: Log) -> LogReport:
         fuel_pressure_min=fp_min,
         fuel_pressure_sag=fp_sag,
         notes=notes,
+        wot_criterion=basis,
+        wot_criterion_text=basis_text,
+        wot_samples=wot_samples,
     )
 
 
@@ -655,12 +807,15 @@ def _timed_shifts(log: Log, wot_threshold: float) -> Optional[list]:
     if not rpm:
         return None
     vss = _Timed(td.get("vss", []))
-    app = _Timed(td.get("app", []) or td.get("tps", []))
     gear = _Timed(td.get("gear", []))
     tol = _pair_tolerance(rpm)
+    pedal_at, wot_at = _timed_basis(log, tol)
 
     def wot(t: float) -> bool:
-        a = app.at(t, tol) if app else None
+        w = wot_at(t, rpm.at(t, tol))
+        if w is not None:
+            return w
+        a = pedal_at(t)
         return a is not None and a >= wot_threshold
 
     events: list[ShiftEvent] = []
@@ -692,7 +847,8 @@ def detect_shift_points(log: Log, wot_threshold: float = 70.0) -> list[ShiftEven
     """
     Return upshift events. If a 'gear' channel is present, detect increments
     directly (most reliable). Otherwise infer upshifts from a sharp RPM drop
-    while VSS keeps climbing (auto upshift signature).
+    while VSS keeps climbing (auto upshift signature). The wot flag follows
+    wot_basis: normalized pedal >= wot_threshold, else load/MAP evidence.
     """
     timed = _timed_shifts(log, wot_threshold)
     if timed is not None:
@@ -700,13 +856,15 @@ def detect_shift_points(log: Log, wot_threshold: float = 70.0) -> list[ShiftEven
     rpm = log.series("rpm")
     vss = log.series("vss")
     gear = log.series("gear")
-    app = log.series("app") or log.series("tps")
+    pedal_ser, wot_ser = _wide_basis(log)
     t = log.series("time")
     n = log.n_samples
     events: list[ShiftEvent] = []
 
     def is_wot(i: int) -> bool:
-        a = app[i] if app and i < len(app) else None
+        if wot_ser is not None:
+            return i < len(wot_ser) and wot_ser[i]
+        a = pedal_ser[i] if pedal_ser and i < len(pedal_ser) else None
         return a is not None and a >= wot_threshold
 
     if gear and any(v is not None for v in gear):

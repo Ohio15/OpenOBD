@@ -184,7 +184,7 @@ def test_plan_is_rebuilt_when_supported_changes():
 # --------------------------------------------------------------------------- #
 # Log Analysis: the long-format sidecar
 # --------------------------------------------------------------------------- #
-WIDE = ("Time (s),Engine Speed (RPM),Vehicle Speed (mph),Accelerator Pedal (%),"
+WIDE = ("Time (s),Engine Speed (RPM),Vehicle Speed (mph),\"Pedal, normalized (%)\","
         "Short Term Fuel Trim (%),Long Term Fuel Trim (%)\n")
 
 
@@ -218,9 +218,9 @@ def test_regimes_use_each_trim_readings_own_time():
     log = parse_csv(wide)
     plain = {r.name: r for r in analyze_log(log).regimes}
     assert plain["cruise"].ltft_mean == pytest.approx(5.0)
-    side = _long([(0.0, "rpm", 2000), (0.0, "app", 10), (0.0, "stft", 1.0),
-                  (0.3, "app", 90), (0.3, "rpm", 2600), (0.32, "ltft", 5.0),
-                  (1.0, "rpm", 2000), (1.0, "app", 10), (1.0, "stft", 1.0)])
+    side = _long([(0.0, "rpm", 2000), (0.0, "pedal", 10), (0.0, "stft", 1.0),
+                  (0.3, "pedal", 90), (0.3, "rpm", 2600), (0.32, "ltft", 5.0),
+                  (1.0, "rpm", 2000), (1.0, "pedal", 10), (1.0, "stft", 1.0)])
     attach_long(log, side)
     timed = {r.name: r for r in analyze_log(log).regimes}
     assert timed["cruise"].ltft_mean is None
@@ -234,9 +234,9 @@ def test_shift_detection_uses_rpm_readings_at_their_own_times():
     log = parse_csv(wide)
     assert [e.time_s for e in detect_shift_points(log)] == [0.5]
     attach_long(log, _long([
-        (0.01, "rpm", 5400), (0.02, "vss", 50), (0.03, "app", 90),
-        (0.26, "rpm", 5450), (0.27, "vss", 52), (0.28, "app", 90),
-        (0.51, "rpm", 3600), (0.52, "vss", 53), (0.53, "app", 90)]))
+        (0.01, "rpm", 5400), (0.02, "vss", 50), (0.03, "pedal", 90),
+        (0.26, "rpm", 5450), (0.27, "vss", 52), (0.28, "pedal", 90),
+        (0.51, "rpm", 3600), (0.52, "vss", 53), (0.53, "pedal", 90)]))
     ev = detect_shift_points(log)
     assert len(ev) == 1 and ev[0].time_s == pytest.approx(0.51)
     assert ev[0].rpm == 5450 and ev[0].wot and ev[0].inferred
@@ -246,12 +246,12 @@ def test_a_recorded_tiered_drive_reloads_with_its_sidecar(tmp_path):
     from openobd.app import RECORD_LABELS
     from openobd.recorder import DriveRecorder
     from openobd.transport import Reading, Sample
-    rec = DriveRecorder(["rpm", "app", "stft", "ltft"], RECORD_LABELS,
+    rec = DriveRecorder(["rpm", "pedal", "stft", "ltft"], RECORD_LABELS,
                         [str(tmp_path)])
     req = 0
     for i in range(8):
         t = i * 0.25
-        vals = {"rpm": 2000.0, "app": 10.0, "stft": 1.0}
+        vals = {"rpm": 2000.0, "pedal": 10.0, "stft": 1.0}
         if i % 4 == 0:
             vals["ltft"] = 3.0                      # MEDIUM tier
         req += 1

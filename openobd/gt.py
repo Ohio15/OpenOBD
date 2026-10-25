@@ -14,7 +14,9 @@ in F, fuel pressure in psi), each carrying the send and reply times of its own
 request; poll_once() is a full sweep (every tier) as a plain {key: value}
 dict.
 
-Read-only: only ELM AT config + OBD mode-01 requests are issued. No ECU writes.
+Read-only: only ELM AT config, OBD mode-01 data requests, the DTC reads and
+mode-09 vehicle information requests (VIN / CALID / CVN,
+read_vehicle_identity) are issued. No ECU writes.
 """
 from __future__ import annotations
 
@@ -579,8 +581,17 @@ def _hex_bytes(h: str) -> list[int]:
 
 
 def mode01_message(resp: str) -> Optional[list[int]]:
+    """The response MESSAGE bytes of a reply to one Mode 01 request (see
+    service_message, which reads every service the same way)."""
+    return service_message(resp, 0x01)
+
+
+def service_message(resp: str, service: int) -> Optional[list[int]]:
     """The response MESSAGE bytes (service byte first) of a reply to one
-    Mode 01 request, or None when there is none (NO DATA, '?', garbage).
+    request for OBD `service` (0x01 data, 0x09 vehicle information), or None
+    when there is none (NO DATA, '?', garbage). A single-frame or headers-on
+    message is only taken when it starts with the positive response byte
+    (service + 0x40) or a negative response (7F).
 
     ELM327 text formats this reads (ATS0 ATCAF1, from ObdxGt.open):
       single frame, headers off:  '410C1AF8'
@@ -606,6 +617,8 @@ def mode01_message(resp: str) -> Optional[list[int]]:
             continue
         if any(c not in _HEX for c in tok):
             continue                 # NO DATA, SEARCHING..., STOPPED, '?'
+        if _is_pending(tok, service):
+            continue                 # 7F <svc> 78: the final reply follows
         if frames:
             frames[-1][1] += tok     # spaces on: bytes after 'N:'
         elif declared is None and not loose and len(tok) == 3:
@@ -622,15 +635,37 @@ def mode01_message(resp: str) -> Optional[list[int]]:
         return msg[:declared] if declared is not None else msg
     if loose and all(len(t) == 2 for t in loose):
         loose = ["".join(loose)]     # spaces on, single frame
+    prefixes = ("%02X" % (service + 0x40), "7F")
     for tok in loose:
-        if tok.startswith(("41", "7F")):
+        if tok.startswith(prefixes):
             return _hex_bytes(tok)
     ecm = reassemble_isotp(resp).get("7E8")
     if ecm:
         for msg in ecm["messages"]:
-            if msg.startswith(("41", "7F")):
+            if msg.startswith(prefixes) and not _is_pending(msg, service):
                 return _hex_bytes(msg)
     return None
+
+
+#: Negative response code 0x78: requestCorrectlyReceived-ResponsePending.
+#: Not an answer: the module sends its real reply after it.
+NRC_RESPONSE_PENDING = 0x78
+
+
+def _is_pending(hex_msg: str, service: int) -> bool:
+    return hex_msg.upper().startswith("7F%02X%02X" % (service,
+                                                       NRC_RESPONSE_PENDING))
+
+
+def response_pending_only(resp: str, service: int) -> bool:
+    """True when the reply holds a 7F <service> 78 (response pending) and
+    nothing else usable: the module was still working when the read ended."""
+    if service_message(resp, service) is not None:
+        return False
+    toks = [t for t in resp.upper().split() if all(c in _HEX for c in t)]
+    msgs = toks + [m for mod in reassemble_isotp(resp).values()
+                   for m in mod["messages"]]
+    return any(_is_pending(t, service) for t in msgs)
 
 
 def parse_mode01_reply(resp: str, pids: list[str],
@@ -662,6 +697,95 @@ def parse_mode01_reply(resp: str, pids: list[str],
         out[pid] = data
         remaining.discard(pid)
         i += 1 + n
+    return out
+
+
+#: Mode 09 info types read at recording start, with the size of ONE item.
+#: J1979 / ISO 15765-4: on CAN every 49 reply carries a count byte (NODI)
+#: after the info type, then count items: VIN 1 x 17 ASCII bytes, CALID n x
+#: 16 ASCII bytes (NUL padded), CVN n x 4 bytes. Shape checked against the
+#: real 7E8 replies truck-mcp captured on this truck (captures/
+#: first-connect-2026-08-03.json: 49 02 01 + 17 VIN bytes; 49 04 08 + 8 x 16).
+MODE09_ITEMS = {"02": ("vin", 17), "04": ("calids", 16), "06": ("cvns", 4)}
+
+
+def parse_mode09_reply(resp: str, info_type: str) -> dict:
+    """Decode the reply to ONE physical Mode 09 request ('09' + info_type).
+
+    Returns {"examined": True, "raw": message hex, "count": n, "items":
+    [[bytes], ...]} when the ECM answered 49 <type> <count> with exactly
+    count whole items, else {"examined": False, "why": reason} (plus "raw"
+    when a message was there but did not decode). A short or over-long body
+    is an error, never padded or truncated into a value."""
+    info_type = info_type.upper()
+    _name, size = MODE09_ITEMS[info_type]
+    msg = service_message(resp, 0x09)
+    if msg is None and response_pending_only(resp, 0x09):
+        return {"examined": False,
+                "why": "not examined (response pending, no final reply)"}
+    if msg is None:
+        text = " ".join(resp.split()) or "(empty)"
+        return {"examined": False,
+                "why": f"no Mode 09 message in the reply: {text[:60]!r}"}
+    raw = "".join("%02X" % b for b in msg)
+    if msg[0] == 0x7F:
+        nrc = msg[2] if len(msg) > 2 else None
+        return {"examined": False, "raw": raw,
+                "why": "ECM refused 09" + info_type + (
+                    f" (negative response NRC 0x{nrc:02X})" if nrc is not None
+                    else " (negative response)")}
+    if len(msg) < 3 or msg[0] != 0x49 or "%02X" % msg[1] != info_type:
+        return {"examined": False, "raw": raw,
+                "why": f"reply is not 49 {info_type} <count> ..."}
+    count, body = msg[2], msg[3:]
+    if count == 0 or len(body) != count * size:
+        return {"examined": False, "raw": raw,
+                "why": f"count byte {count} x {size} bytes does not match "
+                       f"the {len(body)} data bytes received"}
+    items = [body[i:i + size] for i in range(0, len(body), size)]
+    return {"examined": True, "raw": raw, "count": count, "items": items}
+
+
+def _ascii_item(item: list[int]) -> Optional[str]:
+    """Printable ASCII with NUL padding stripped, or None when any byte is
+    not printable (a non-text item is reported as raw hex only)."""
+    text = bytes(item).rstrip(b"\x00")
+    if not text or any(b < 0x20 or b > 0x7E for b in text):
+        return None
+    return text.decode("ascii")
+
+
+def decode_vehicle_identity(parsed: dict) -> dict:
+    """{"vin"|"calids"|"cvns": parse_mode09_reply result} -> the identity
+    entries ObdxGt.read_vehicle_identity returns: every item's raw hex plus
+    decoded text where the item is text (VIN, CALID). A VIN that is not 17
+    VIN characters keeps its raw hex and says why it is not a VIN."""
+    out: dict = {}
+    for _info_type, (name, _size) in MODE09_ITEMS.items():
+        p = parsed.get(name) or {"examined": False, "why": "not requested"}
+        if not p.get("examined"):
+            out[name] = {k: v for k, v in p.items() if k != "items"}
+            continue
+        items_hex = ["".join("%02X" % b for b in it) for it in p["items"]]
+        if name == "vin":
+            text = _ascii_item(p["items"][0])
+            if text is None or len(text) != 17 or not text.isalnum():
+                out[name] = {"examined": False, "raw": p["raw"],
+                             "item_hex": items_hex[0],
+                             "why": "VIN bytes are not 17 printable VIN "
+                                    "characters"}
+            else:
+                out[name] = {"examined": True, "raw": p["raw"],
+                             "item_hex": items_hex[0], "value": text}
+        elif name == "calids":
+            out[name] = {"examined": True, "raw": p["raw"],
+                         "count": p["count"],
+                         "items": [{"hex": h, "text": _ascii_item(it)}
+                                   for h, it in zip(items_hex, p["items"])]}
+        else:
+            out[name] = {"examined": True, "raw": p["raw"],
+                         "count": p["count"],
+                         "items": [{"hex": h} for h in items_hex]}
     return out
 
 
@@ -734,6 +858,10 @@ class ObdxGt:
         self.timeout = timeout
         self.ser = None
         self.supported: set[str] = set()
+        # Raw 32-bit supported-PID masks from the last probe, by request
+        # ('0100'..'0160'); _probe_stop says where and why the probe ended.
+        self.supported_masks: dict[str, int] = {}
+        self._probe_stop: Optional[tuple[str, str]] = None
         self.device = "?"
         # The tx header the GT is KNOWN to be using, or None when a header
         # command was refused and the real header is unknown. Requests whose
@@ -915,18 +1043,41 @@ class ObdxGt:
 
     def _probe_supported(self) -> None:
         self.supported = set()
+        self.supported_masks = {}
+        self._probe_stop = None
         for base in ("0100", "0120", "0140", "0160"):
             resp = self.request_raw(base)
             data = self._extract(resp, base)
             if not data or len(data) < 4:
+                self._probe_stop = (base, "no supported-PID answer")
                 break
             start = int(base[2:], 16)
             mask = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]
+            self.supported_masks[base] = mask
             for bit in range(32):
                 if mask & (1 << (31 - bit)):
                     self.supported.add("%02X" % (start + 1 + bit))
             if not (mask & 1):  # bit for "next range supported"
+                self._probe_stop = (base, "its next-range bit is clear")
                 break
+
+    def supported_report(self) -> dict:
+        """The four Mode 01 supported-PID masks as 8-digit hex; a range with
+        no mask is {"examined": False, "why": ...}. Plus the decoded PIDs."""
+        masks: dict = {}
+        stop = self._probe_stop
+        for base in ("0100", "0120", "0140", "0160"):
+            if base in self.supported_masks:
+                masks[base] = "%08X" % self.supported_masks[base]
+            elif stop and stop[0] == base:
+                masks[base] = {"examined": False, "why": stop[1]}
+            elif stop:
+                masks[base] = {"examined": False,
+                               "why": f"not asked: {stop[0]} {stop[1]}"}
+            else:
+                masks[base] = {"examined": False,
+                               "why": "supported PIDs not probed on this link"}
+        return {"masks": masks, "pids": sorted(self.supported)}
 
     def possible_keys(self) -> list[str]:
         """Every canonical key poll_timed() can produce on this connection:
@@ -1127,6 +1278,64 @@ class ObdxGt:
         failed header restore before trusting addressing again)."""
         self._set_header("7E0")
         self._at_checked("ATH0")
+
+    #: Mode 09 goes PHYSICAL to the ECM: with headers off a functional
+    #: request would interleave the TCM's and 7EB's CALID replies (they all
+    #: answer 0904 on this truck), and the VIN that matters is the ECM's.
+    IDENTITY_HEADER = "7E0"
+
+    def _read_mode09(self, info_type: str) -> dict:
+        """One physical Mode 09 request, parsed (parse_mode09_reply)."""
+        resp = self.command("09" + info_type, wait=0.0)
+        if is_binary_reply(self.last_raw):
+            return {"examined": False,
+                    "why": "the GT answered in its binary mode"}
+        if b">" not in self.last_raw:
+            return {"examined": False, "why": "no reply from the GT (no prompt)"}
+        return parse_mode09_reply(resp, info_type)
+
+    def _identity_ready(self) -> Optional[str]:
+        """None when a Mode 09 request may go out, else why not."""
+        if not self.ser:
+            return "the GT link is not open"
+        if self._header != self.IDENTITY_HEADER and not self._set_header(
+                self.IDENTITY_HEADER):
+            return f"GT refused ATSH{self.IDENTITY_HEADER}; request not sent"
+        return None
+
+    def read_vin(self) -> dict:
+        """The VIN alone (one 0902 request): the identity entry
+        read_vehicle_identity returns under "vin"."""
+        why = self._identity_ready()
+        parsed = ({"examined": False, "why": why} if why
+                  else self._read_mode09("02"))
+        return decode_vehicle_identity({"vin": parsed})["vin"]
+
+    def read_vehicle_identity(self, vin: Optional[dict] = None) -> dict:
+        """VIN (09 02), CALIDs (09 04) and CVNs (09 06) from the ECM.
+
+        Returns {"examined": bool, "header": "7E0", "vin": {...}, "calids":
+        {...}, "cvns": {...}}. Each entry is either {"examined": True,
+        "raw": message hex, ...decoded...} or {"examined": False, "why":
+        ...} (with "raw" when an answer was there but did not decode): an
+        unanswered request is never an empty string pretending to be a
+        value. Uses the polling state (7E0, ATH0) and leaves it in force.
+        vin: an examined VIN entry already read on this connection (read_vin
+        at connect); 0902 is then not asked again."""
+        out: dict = {"examined": False, "header": self.IDENTITY_HEADER}
+        parsed: dict = {}
+        why = self._identity_ready()
+        for info_type, (name, _size) in MODE09_ITEMS.items():
+            if name == "vin" and vin is not None and vin.get("examined"):
+                continue                       # read at connect, kept
+            parsed[name] = ({"examined": False, "why": why} if why
+                            else self._read_mode09(info_type))
+        out.update(decode_vehicle_identity(parsed))
+        if vin is not None and vin.get("examined"):
+            out["vin"] = vin
+        out["examined"] = any(out[n].get("examined")
+                              for n, _s in MODE09_ITEMS.values())
+        return out
 
     def read_dtcs(self) -> dict:
         """Stored / pending / permanent DTCs (modes 03 / 07 / 0A), functional.

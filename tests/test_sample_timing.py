@@ -102,8 +102,15 @@ class TimedElm:
 
     def __init__(self, clock, values=None, silent=(), refuse_batches=False,
                  refuse_first=0,
-                 reverse=False):
+                 reverse=False, info=None):
+        """info: Mode 09 info type ('02', '04', '06') -> the full response
+        message bytes (49 <type> <count> ...), answered in ELM ATH0 text;
+        an info type not in it gets NO DATA, like an ECM without it."""
         self.clock = clock
+        self.info = info or {}
+        # Adapter state the AT commands set: what a request would go out as.
+        self.header = "7E0"
+        self.headers_on = False
         self.values = values or {}
         self.silent = set(silent)
         self.refuse_batches = refuse_batches
@@ -153,7 +160,15 @@ class TimedElm:
         elif cmd == "ATRV":
             self.clock.now += ATRV_S
             text = "12.6V\r"
+        elif cmd.startswith("09") and len(cmd) == 4:
+            self.clock.now += cost(1)
+            msg = self.info.get(cmd[2:])
+            text = elm_reply(msg) if msg is not None else "NO DATA\r"
         else:
+            if cmd.startswith("ATSH"):
+                self.header = cmd[4:]
+            elif cmd in ("ATH0", "ATH1"):
+                self.headers_on = cmd == "ATH1"
             self.clock.now += ATRV_S
             text = "OK\r" if cmd.startswith("AT") else "NO DATA\r"
         self.exchanges.append((cmd, written, self.clock.now))
@@ -579,12 +594,12 @@ def test_closing_the_app_mid_record_finalizes_csv_and_sidecar(qapp, tmp_path):
 # --------------------------------------------------------------------------- #
 def test_wide_csv_loads_with_blanks_missing_and_joint_features_intact(tmp_path):
     from openobd.app import RECORD_LABELS
-    keys = ["rpm", "app", "load", "stft", "ltft"]
+    keys = ["rpm", "pedal", "load", "stft", "ltft"]
     rec = DriveRecorder(keys, RECORD_LABELS, [str(tmp_path)])
     sweeps = []
     req = 1
     for i in range(40):
-        vals = {"rpm": 2000.0, "app": 20.0, "load": 45.0, "stft": 1.5, "ltft": 2.5}
+        vals = {"rpm": 2000.0, "pedal": 20.0, "load": 45.0, "stft": 1.5, "ltft": 2.5}
         if i == 7:
             del vals["ltft"]                             # PID silent this sweep
         sweeps.append(sweep(8.0 + 1.4 * i, vals, req))
