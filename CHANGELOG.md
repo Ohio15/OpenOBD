@@ -20,6 +20,21 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   already used), and the smoke drives it to either side of maf's window
   (fresh 1 ms inside, stale 1 ms past) instead of shifting `_t0` by 100 s.
 
+### Fixed (flaky test: truck-mcp live-follow freshness on wall time)
+- `tests/test_tmsource.py`'s live-source tests stamped `channel_latest` with
+  the real UTC time (truncated to whole seconds) and then asserted "fresh",
+  while `TmLiveSource` aged the session's newest stamp against
+  `datetime.now(UTC)` with `tmstore.STALE_SESSION_LIMIT_S` = 5 s, so a stall
+  of 4 to 5 s between the write and the assertion flipped `rpm` to "stale"
+  (brain 7379e172). `TmLiveSource` now takes `wall_clock`, the epoch-seconds
+  clock it ages that stamp against (passed to `tmstore.sample_age_s(now=)`;
+  default `time.time`, the clock truck-mcp stamps `ts_utc` on; the app passes
+  nothing, so behaviour is unchanged). Read cadence and `Sample.t` stay on
+  `time.monotonic`. The tests use a fixed store stamp and the virtual clock
+  from `tests/vclock.py`, and `test_live_source_converts_and_states` now
+  drives it 1 ms inside the limit (fresh) and 1 ms past it (stale, value
+  kept, carried unchanged), so the session-stale rule is still exercised.
+
 ## 0.33.0 — 2026-10-25
 
 ### Added (recording metadata sidecar)
