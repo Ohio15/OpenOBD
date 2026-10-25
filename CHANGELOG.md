@@ -66,6 +66,18 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   notes beginning "SIMULATED", as truck-mcp's seed_demo_data.py writes them).
   The Dashboard and Live Data session pickers tag those `[SIMULATED]`, and
   the status line after binding one says SIMULATED.
+- GT live path: freshness is now tracked per channel. A PID missing from one
+  poll round shows its last real reading marked "carried" (before, it blanked
+  to "—" and the needle dropped to zero for that round). A link that stops
+  producing new rounds shows "not advancing". The stale threshold adapts to
+  the poll rate (3x the interval, kept between 2 and 10 s). The GT's own
+  "read failed" still overrides everything. truck-mcp and replay sources are
+  unchanged.
+- A green "live" mark on every gauge whose value is fresh, in the same place
+  the other freshness badges appear.
+- Dashboard keyboard shortcuts, each listed in its button's tooltip: Ctrl+G
+  connect GT, Ctrl+T truck session, Ctrl+R record, F5 start, Shift+F5 stop,
+  P pause/resume replay.
 
 ### Release tooling
 - Release path is now in the repo: `_build.bat` is committed (runs from any
@@ -74,6 +86,23 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   version check, deploy with `_deploy.ps1`, post-deploy check and rollback.
 
 ### Changed
+- Dashboard gauges move fluently: needles, arcs and bar fills ease toward
+  each new reading at display rate (~60 fps, time-based, no overshoot),
+  independent of the 1-10 Hz sample rate. The readout still prints the true
+  latest sample; the easing only moves the geometry.
+- Gauge readouts use fixed decimals per scale (whole units for rpm, speed and
+  temperatures; tenths for MAF, kPa, percent, volts, trims, knock retard), so
+  the text no longer changes width between samples.
+- Gauges repaint only when their value, state or eased position changes. Each
+  dial's and bar's face, ticks, numerals and scale are drawn once into a
+  cached pixmap rather than redrawn every 100 ms tick.
+- The bar strip (classic) and the ring strip (modern) flow into a balanced
+  grid that reflows on resize. Gauges for channels the bound source can't feed
+  are hidden. The RPM/Speed anchor dials stay in place, dimmed.
+- The Dashboard status line wraps, so the Dashboard no longer forces a minimum
+  window width of about 1150 px.
+- Gauge widgets and cluster layouts moved from `app.py` to `openobd/gauges.py`.
+  The pure easing, freshness and grid logic is in `openobd/gaugemotion.py`.
 - Added `.pre-commit-tests` so the dev-standards pre-commit hook runs the pytest
   suite and refuses a commit on red; it previously printed "TESTS DID NOT RUN".
 
