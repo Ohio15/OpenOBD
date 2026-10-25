@@ -1,0 +1,2 @@
+TEST_CMD=.venv/Scripts/python.exe -m pytest -q
+TEST_TIMEOUT=300

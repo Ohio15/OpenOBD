@@ -3,6 +3,12 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## Unreleased
+
+### Changed
+- Added `.pre-commit-tests` so the dev-standards pre-commit hook runs the pytest
+  suite and refuses a commit on red; it previously printed "TESTS DID NOT RUN".
+
 ## 0.31.0 — 2026-10-05
 
 ### Fixed
