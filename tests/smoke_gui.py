@@ -334,7 +334,11 @@ win.dashboard.stop()
 # failed", serves no frozen value, and says why in the status line; when the
 # polls recover, the live caption comes back. A real GtDataSource, no thread.
 from openobd.transport import GtDataSource  # noqa: E402
-gsrc = GtDataSource()
+from vclock import Clock as _VClock  # noqa: E402
+# Freshness runs on a virtual clock (tests/vclock.py): reading ages move only
+# when this script says, never with how busy the machine is (brain e88f01bc).
+_hclock = _VClock(start=500.0)
+gsrc = GtDataSource(now=_hclock)
 gsrc._keys = ["rpm", "voltage"]
 win.dashboard._on_gt_ready(gsrc)
 win.dashboard.timer.stop()
@@ -350,11 +354,11 @@ win.dashboard._tick()
 assert win.dashboard.status.text() == live_caption, "live caption not restored"
 # no reading yet: no freshness claim (plain), not a live-styled "fresh"
 assert win.dashboard.gauges["rpm"].state is None
-import time as _t0  # noqa: E402
 from openobd.transport import Reading as _R0, Sample  # noqa: E402
-gsrc._t0 = _t0.monotonic()
+gsrc._t0 = _hclock()
 gsrc._publish(Sample(t=0.025, values={"rpm": 800.0},
                      readings=(_R0("rpm", 800.0, 0.0, 0.05, 1),)))
+_hclock.now = gsrc._t0 + 0.05          # the reply has just arrived
 win.dashboard._tick()
 assert win.dashboard.gauges["rpm"].state == "fresh"
 assert win.dashboard.gauges["rpm"].value == 800.0
@@ -613,9 +617,13 @@ win.main_tabs.setCurrentWidget(d)
 win.resize(1400, 900)
 app.processEvents()
 from openobd.transport import Reading as _Rd  # noqa: E402
-gsrc = GtDataSource()
+# The source keeps time on a virtual clock: the needle animation below runs
+# on wall time, and a held reading must not age while it does (brain
+# e88f01bc: maf read "stale" on a busy machine).
+_fclock = _VClock(start=700.0)
+gsrc = GtDataSource(now=_fclock)
 gsrc._keys = ["rpm", "vss", "maf", "voltage"]
-gsrc._t0 = _time.monotonic()
+gsrc._t0 = _fclock()
 
 
 def _cycle(t, vals):
@@ -626,6 +634,7 @@ def _cycle(t, vals):
 
 gsrc._publish(_cycle(0.0, {"rpm": 3000.0, "vss": 40.0, "maf": 12.34,
                            "voltage": 13.81}))
+_fclock.now = gsrc._t0 + 0.05          # cycle 1's last reply
 d._on_gt_ready(gsrc)
 d.timer.stop()                      # tick by hand; the frame animator runs
 d._tick()
@@ -642,15 +651,26 @@ assert fmt_reading(d.gauges["voltage"].value, d.gauges["voltage"].decimals) == "
 # a channel not in the newest cycle (not due / missed) keeps its last
 # reading on the gauge (the source's per-channel latest), never blanked
 gsrc._publish(_cycle(0.25, {"rpm": 3100.0, "vss": 41.0, "voltage": 13.8}))
+_fclock.now = gsrc._t0 + 0.30          # cycle 2's last reply
 assert "maf" not in gsrc.latest().values
 d._tick()
 assert d.gauges["maf"].state == "fresh" and d.gauges["maf"].value == 12.34
 assert d.gauges["rpm"].state == "fresh" and d.gauges["rpm"].value == 3100.0
-# once a reading outlives twice its tier period it reads stale, value held
-gsrc._t0 -= 100.0
+# once a reading outlives twice its tier period it reads stale, value held:
+# drive the clock to either side of maf's window (2 x the measured 0.25 s
+# cycle; no plan, so tier divisor 1)
+_maf_window = gsrc.fresh_window_s("maf")
+assert abs(_maf_window - 2 * 0.25) < 1e-9, _maf_window
+_maf_t = gsrc._t0 + 0.025               # maf's reading time (cycle 1)
+_fclock.now = _maf_t + _maf_window - 1e-3
+d._tick()
+assert d.gauges["maf"].state == "fresh", "maf stale inside its window"
+_fclock.now = _maf_t + _maf_window + 1e-3
 d._tick()
 assert d.gauges["maf"].state == "stale" and d.gauges["maf"].value == 12.34
-gsrc._t0 += 100.0
+_fclock.now = gsrc._t0 + 0.30
+d._tick()
+assert d.gauges["maf"].state == "fresh"
 # channels the GT can't feed collapse; the RPM/Speed anchors stay put
 assert d.gauges["ect"].isHidden() and d.gauges["tps"].isHidden()
 assert not d.gauges["rpm"].isHidden() and not d.gauges["maf"].isHidden()

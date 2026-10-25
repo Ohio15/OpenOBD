@@ -17,6 +17,7 @@ from openobd.gt import GtBinaryMode, ObdxGt
 from openobd.transport import GtDataSource, Reading
 
 from test_module_map_truck import FakeTruckGt
+from vclock import Clock
 
 
 @pytest.fixture
@@ -72,7 +73,9 @@ def test_poll_once_reads_atrv_strictly(opened, atrv, expect):
 
 def _source_with(polls):
     """A GtDataSource whose GT answers the scripted polls, then stops the loop."""
-    src = GtDataSource(poll_interval=0)
+    # Freshness is evaluated on a virtual clock parked at the scripted
+    # replies' time, never on how long this machine took to get here.
+    src = GtDataSource(poll_interval=0, now=Clock(start=0.05))
     script = list(polls)
 
     def poll_timed():

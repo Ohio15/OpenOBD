@@ -3,6 +3,23 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## Unreleased
+
+### Fixed (flaky GUI smoke: GT freshness on wall time)
+- `tests/smoke_gui.py`'s GT poll-health and gauge-fluency sections judged
+  reading freshness on the real `time.monotonic()`, while the fluency section
+  also waits up to 1 s of wall time for the needle animation. On a busy
+  machine the held MAF reading aged past its 0.5 s window (2 x the 0.25 s
+  cycle) and the smoke reported "stale" where "fresh" was expected (seen
+  once on 2026-10-25; a 0.6 s stall reproduces it every time on the old
+  smoke). `GtDataSource` now takes `now`, the monotonic clock it keeps
+  connect time, reading ages and freshness on (default `time.monotonic`, the
+  clock ObdxGt stamps readings on; the app passes nothing, so behaviour is
+  unchanged). The smoke and `tests/test_gt_dashboard.py` inject the virtual
+  clock now shared from `tests/vclock.py` (the one `test_sample_timing.py`
+  already used), and the smoke drives it to either side of maf's window
+  (fresh 1 ms inside, stale 1 ms past) instead of shifting `_t0` by 100 s.
+
 ## 0.33.0 — 2026-10-25
 
 ### Added (recording metadata sidecar)

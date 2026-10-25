@@ -28,6 +28,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from openobd import gt as gtmod  # noqa: E402
+from vclock import Clock  # noqa: E402
 from openobd.calspec import Axis, Table  # noqa: E402
 from openobd.gt import ObdxGt  # noqa: E402
 from openobd.logbin import analyze_log, bin_log_to_table, parse_csv  # noqa: E402
@@ -67,14 +68,6 @@ def _read(path):
 # ATCAF1: one single-frame line when the message fits 7 bytes, else the
 # 3-hex-digit length line and 'N:' frame lines, last frame padded with 00.
 # --------------------------------------------------------------------------- #
-class Clock:
-    def __init__(self, start=100.0):
-        self.now = start
-
-    def __call__(self):
-        return self.now
-
-
 def elm_reply(message: bytes) -> str:
     """ATH0/ATS0/ATCAF1 text for one ISO-TP message."""
     hexs = message.hex().upper()
@@ -240,7 +233,7 @@ def test_a_did_reply_is_dated_by_the_did_request_not_the_header_restore(timed_gt
 
 def test_source_sample_time_is_the_cycle_midpoint(timed_gt):
     g, clock = timed_gt(pids=("04", "0C", "49", "11"))
-    src = GtDataSource(poll_interval=0)
+    src = GtDataSource(poll_interval=0, now=clock)
     src._gt = g
     src._t0 = clock.now
     s = src._sample(g.poll_timed())
@@ -360,7 +353,7 @@ def test_atrv_fallback_is_numbered_and_on_the_slow_tier(timed_gt):
 def _drive(timed_gt, tmp_path, cycles):
     from openobd.app import RECORD_LABELS, RECORD_ORDER
     g, clock = timed_gt(pids=TRUCK_PIDS)
-    src = GtDataSource(poll_interval=0)
+    src = GtDataSource(poll_interval=0, now=clock)
     src._gt = g
     src._t0 = clock.now
     keys = [k for k in RECORD_ORDER if k in set(g.possible_keys())]
