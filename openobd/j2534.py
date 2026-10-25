@@ -93,8 +93,35 @@ class J2534Error(Exception):
         super().__init__(f"J2534 error 0x{code:X}: {msg}")
 
 
+#: PE COFF machine type this process can load (ctypes.WinDLL cannot cross
+#: bitness: a 64-bit Python / frozen exe gets WinError 193 on a 32-bit DLL).
+_PE_MACHINE_FOR_PROCESS = 0x8664 if ctypes.sizeof(c_void_p) == 8 else 0x014C
+
+
+def pe_machine(path: str) -> Optional[int]:
+    """The COFF machine field of a PE file (0x8664 x64, 0x014C x86), or None
+    when the file is missing or not a PE image."""
+    import struct
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(0x40)
+            if len(head) < 0x40 or head[:2] != b"MZ":
+                return None
+            (pe_off,) = struct.unpack_from("<I", head, 0x3C)
+            fh.seek(pe_off)
+            sig = fh.read(6)
+    except OSError:
+        return None
+    if len(sig) < 6 or sig[:4] != b"PE\0\0":
+        return None
+    return struct.unpack_from("<H", sig, 4)[0]
+
+
 def find_dll(name_contains: str = "OBDX") -> Optional[str]:
-    """Locate a registered J2534 DLL via PassThruSupport.04.04."""
+    """Locate a registered J2534 DLL via PassThruSupport.04.04 that THIS
+    process can load. The OBDX installer registers a 64-bit DLL in the native
+    view and a 32-bit one under WOW6432Node; returning whichever matched first
+    regardless of bitness would hand WinDLL a DLL it cannot load."""
     import winreg
     subs = [r"SOFTWARE\PassThruSupport.04.04",
             r"SOFTWARE\WOW6432Node\PassThruSupport.04.04"]
@@ -113,8 +140,9 @@ def find_dll(name_contains: str = "OBDX") -> Optional[str]:
             try:
                 dk = winreg.OpenKey(k, name)
                 lib, _ = winreg.QueryValueEx(dk, "FunctionLibrary")
-                if (name_contains.lower() in name.lower()
-                        or name_contains.lower() in (lib or "").lower()):
+                if ((name_contains.lower() in name.lower()
+                        or name_contains.lower() in (lib or "").lower())
+                        and pe_machine(lib) == _PE_MACHINE_FOR_PROCESS):
                     return lib
             except OSError:
                 continue

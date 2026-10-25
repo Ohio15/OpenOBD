@@ -351,38 +351,53 @@ assert win.dashboard.status.text() == live_caption, "live caption not restored"
 assert win.dashboard.gauges["rpm"].state == "fresh"
 print("GT poll health OK: failed state + reason shown, live caption restored")
 
-# recording path: drain-based, streamed to a temp CSV (bypass the save dialog)
-import tempfile, csv as _csv  # noqa: E402
-# speed chosen so the 19.9s log does NOT loop during ~0.16s of ticking
-# (a looped replay legitimately repeats timestamps)
-win.dashboard.bind_source(LogReplaySource(win.log, speed=50.0))
-win.dashboard.start()
+# recording path, through the REAL toggle_record (the old hand-built recorder
+# bypassed it, which is how GT recording being refused went unnoticed): rows
+# stream drain-based into the final CSV in the log folder, no save dialog.
+import csv as _csv  # noqa: E402
+import openobd.transport as _transport  # noqa: E402
+
+
+class _FakeClock:
+    """Replay time advances only when this section says so, so the 19.9 s log
+    cannot loop (a loop legitimately repeats timestamps) on a slow machine."""
+    now = 1000.0
+
+    @classmethod
+    def monotonic(cls):
+        return cls.now
+
+
+_real_transport_time = _transport.time
+_transport.time = _FakeClock
 d = win.dashboard
-avail = set(d.source.channels())
-from openobd.app import RECORD_ORDER  # noqa: E402
-d._rec_keys = [k for k in RECORD_ORDER if k in avail]
-d._rec_file = tempfile.NamedTemporaryFile(
-    "w", newline="", encoding="utf-8", suffix=".csv", delete=False)
-d._rec_writer = _csv.writer(d._rec_file)
-d._rec_count = 0
-d.source.drain()
-d.recording = True
-import time as _time  # noqa: E402
+_rec_dir = os.path.join(_tmp_root, "logs")
+d._record_dirs = lambda: [_rec_dir]
+d.bind_source(LogReplaySource(win.log, speed=50.0))
+d.start()
+d.timer.stop()
+d.toggle_record()
+assert d.recording, d.status.text()
+rec_path = d.last_record_path
+assert os.path.dirname(rec_path) == _rec_dir and os.path.exists(rec_path)
 for _ in range(8):
-    _time.sleep(0.02)
+    _FakeClock.now += 0.02
     app.processEvents()
     d._tick()
-d.recording = False
-rec_n = d._rec_count
-d._rec_file.close()
-with open(d._rec_file.name) as fh:
-    rec_rows = fh.read().strip().splitlines()
-os.unlink(d._rec_file.name)
-d._rec_file = d._rec_writer = None
-assert rec_n == len(rec_rows), f"row count mismatch: {rec_n} vs {len(rec_rows)}"
-times = [r.split(",")[0] for r in rec_rows]
+assert d.source.playing and d.source.position() < d.source.duration(),     "replay looped/finished during the recording section (precondition broken)"
+rec_n = d._recorder.count
+d._finalize_record()          # non-interactive: no dialog, file already final
+_transport.time = _real_transport_time
+assert not d.recording and d._recorder is None
+assert "Saved" in d.status.text() and rec_path in d.status.text()
+with open(rec_path, newline="", encoding="utf-8") as fh:
+    rec_rows = list(_csv.reader(fh))
+header, rec_rows = rec_rows[0], rec_rows[1:]
+assert header[0] == "Time (s)"
+assert rec_n == len(rec_rows) and rec_n > 0, f"row count mismatch: {rec_n} vs {len(rec_rows)}"
+times = [r[0] for r in rec_rows]
 assert len(times) == len(set(times)), "duplicate samples in recording"
-print("recording OK:", rec_n, "unique samples streamed")
+print("recording OK:", rec_n, "unique samples streamed to", rec_path)
 win.dashboard.stop()
 
 # teardown-on-rebind: old source must be stopped
@@ -536,6 +551,7 @@ print("charting + transport OK:",
 # shortcuts — real widgets, real GtDataSource (no thread, no port)
 from openobd.transport import Sample  # noqa: E402
 from openobd.gaugemotion import fmt_reading  # noqa: E402
+import time as _time  # noqa: E402
 d = win.dashboard
 win.main_tabs.setCurrentWidget(d)
 win.resize(1400, 900)
@@ -593,8 +609,15 @@ assert d.gauges["ethanol"].isHidden()
 # was 1150 px (unwrapped status line); the toolbar buttons are now the floor
 assert d.minimumSizeHint().width() < 1000, d.minimumSizeHint().width()
 # shortcuts exist and are advertised in the tooltips
-assert "Ctrl+G" in d.btn_connect.toolTip() and "Ctrl+R" in d.btn_record.toolTip()
-assert "F5" in d.btn_start.toolTip() and "Shift+F5" in d.btn_stop.toolTip()
+assert "Ctrl+G" in d.shortcut_tooltip(d.btn_connect)
+assert "F5" in d.shortcut_tooltip(d.btn_start)
+assert "Shift+F5" in d.shortcut_tooltip(d.btn_stop)
+# the recorder rewrites btn_record's tooltip with the log path; the key hint
+# is appended at display time and must survive that
+d.btn_record.setToolTip("Last recording: C:/x.csv")
+assert d.shortcut_tooltip(d.btn_record) == "Last recording: C:/x.csv (Ctrl+R)"
+d.btn_record.setToolTip("")
+assert d.shortcut_tooltip(d.btn_record).endswith("datalog (Ctrl+R)")
 assert len(d._shortcuts) == 6
 print("gauge fluency OK: eased needle landed, carried/failed states, "
       "collapse + reflow, shortcuts")

@@ -1,0 +1,2 @@
+# The hook parses this file with bash; a CRLF checkout leaves a trailing CR on TEST_CMD.
+.pre-commit-tests text eol=lf

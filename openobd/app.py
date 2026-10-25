@@ -31,9 +31,7 @@ from __future__ import annotations
 
 import csv
 import os
-import shutil
 import sys
-import tempfile
 import threading
 import time
 from typing import Optional
@@ -49,7 +47,7 @@ from PySide6.QtWidgets import (
     QComboBox, QCheckBox, QPushButton, QFileDialog, QTextEdit, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QGroupBox, QLineEdit,
     QSlider, QListWidget, QListWidgetItem, QMenu, QDialog, QDialogButtonBox,
-    QFormLayout, QSizePolicy,
+    QFormLayout, QSizePolicy, QToolTip,
 )
 
 import numpy as np
@@ -71,6 +69,8 @@ pg.setConfigOptions(antialias=True)
 from .model import CalTableModel, HeatmapDelegate
 from .transport import DataSource, LogReplaySource, GtDataSource, Sample
 from . import tmsource, tmstore
+from .recorder import DriveRecorder, default_log_dirs
+from PySide6.QtCore import QStandardPaths
 
 # Gauge widgets, cluster layouts and the dashboard style registry live in
 # gauges.py; the names are re-exported here for existing importers.
@@ -103,11 +103,16 @@ RECORD_LABELS = {
     "baro": "Barometric Pressure (kPa)",
     "ambient": "Ambient Air Temp (F)",
     "ethanol": "Ethanol (%)",
+    # Every key the GT can produce needs a column, or it is silently dropped
+    # from the log (tft and run_time were). run_time deliberately avoids the
+    # word "time": map_channel would read "Run Time" as the time axis.
+    "tft": "Trans Fluid Temp (F)",
+    "run_time": "Engine Run Duration (s)",
 }
 RECORD_ORDER = ["rpm", "vss", "map", "maf", "load", "tps", "app",
-                "cmd_throttle", "spark", "ect", "iat", "stft", "ltft",
+                "cmd_throttle", "spark", "ect", "iat", "tft", "stft", "ltft",
                 "eq_ratio", "fuel_press", "fuel_level", "voltage", "baro",
-                "ambient", "ethanol"]
+                "ambient", "ethanol", "run_time"]
 
 
 class Dashboard(QWidget):
@@ -122,10 +127,8 @@ class Dashboard(QWidget):
         self.source: Optional[DataSource] = None
         self.gauges: dict[str, GaugeBase] = {}
         self.recording = False
-        self._rec_file = None          # open csv file the recorder streams to
-        self._rec_writer = None
-        self._rec_count = 0
-        self._rec_keys = []
+        self._recorder: Optional[DriveRecorder] = None
+        self.last_record_path: Optional[str] = None
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.gt_ready.connect(self._on_gt_ready)
@@ -259,7 +262,12 @@ class Dashboard(QWidget):
         """Window-wide shortcuts owned by the Dashboard: Qt only fires them
         while the Dashboard is visible, so they don't leak into other tabs.
         Each goes through the button's click(), which is a no-op while the
-        button is disabled (e.g. Connect during a connect attempt)."""
+        button is disabled (e.g. Connect during a connect attempt).
+
+        The key hint is appended when the tooltip is SHOWN (eventFilter), not
+        baked into the tooltip text: the recorder rewrites btn_record's
+        tooltip with the current/last log path, and the hint must survive
+        that."""
         bindings = [
             (self.btn_connect, "Ctrl+G", "Connect the OBDX Pro GT"),
             (self.btn_tm, "Ctrl+T", "Bind a truck-mcp drive-log session"),
@@ -269,14 +277,30 @@ class Dashboard(QWidget):
             (self.btn_pause, "P", "Pause / resume the replay"),
         ]
         self._shortcuts = []
+        self._shortcut_hints = {}
         for btn, keys, what in bindings:
             seq = QKeySequence(keys)
             sc = QShortcut(seq, self)
             sc.setContext(Qt.WindowShortcut)
             sc.activated.connect(btn.click)
-            btn.setToolTip(
-                f"{what} ({seq.toString(QKeySequence.NativeText)})")
+            self._shortcut_hints[btn] = (
+                what, seq.toString(QKeySequence.NativeText))
+            btn.installEventFilter(self)
             self._shortcuts.append(sc)
+
+    def shortcut_tooltip(self, btn) -> str:
+        """The tooltip a button shows: its current tooltip text (or the
+        action description when none is set) plus the shortcut key."""
+        what, key = self._shortcut_hints[btn]
+        return f"{btn.toolTip() or what} ({key})"
+
+    def eventFilter(self, obj, event):
+        if (event.type() == QEvent.ToolTip
+                and obj in getattr(self, "_shortcut_hints", {})):
+            QToolTip.showText(event.globalPos(), self.shortcut_tooltip(obj),
+                              obj)
+            return True
+        return super().eventFilter(obj, event)
 
     def _teardown_source(self):
         """Stop and drop the current source. Always called before a new one is
@@ -388,6 +412,19 @@ class Dashboard(QWidget):
 
     def connect_gt(self):
         """Connect the OBDX Pro GT on a worker thread (serial IO blocks)."""
+        src = self.source
+        if isinstance(src, GtDataSource) and src._thread is not None:
+            # Already connected: a second open of the same COM port can only
+            # fail ("Access is denied") — and a successful rebind would end an
+            # active recording. A down link is re-opened by the poll thread;
+            # pressing Connect just skips its backoff wait.
+            if src.failing():
+                src.request_reconnect()
+                self.status.setText("Reconnecting to the OBDX Pro GT…")
+            else:
+                self.status.setText(
+                    f"Already connected to the GT @ {src.port_name or '?'}.")
+            return
         self.status.setText("Connecting to OBDX Pro GT…")
         self.btn_connect.setEnabled(False)
 
@@ -496,7 +533,7 @@ class Dashboard(QWidget):
         if not self.source:
             self.status.setText("Connect the GT (or load a log) before recording.")
             return
-        if not self.recording and hasattr(self.source, "channel_states"):
+        if not self.recording and getattr(self.source, "is_store_record", False):
             # A truck-mcp session IS already a record, with per-sample
             # freshness/quality this CSV cannot carry — re-recording it would
             # persist carried/archived values as if they were measurements,
@@ -507,68 +544,91 @@ class Dashboard(QWidget):
                 connect_label=self.btn_connect.text()))
             return
         if not self.recording:
-            avail = set(self.source.channels())
-            self._rec_keys = [k for k in RECORD_ORDER if k in avail]
+            # Columns = everything the source can EVER produce, not just what
+            # answered so far, so a channel that comes alive mid-drive is kept.
+            avail = set(self.source.recordable_channels())
+            keys = [k for k in RECORD_ORDER if k in avail]
             try:
-                self._rec_file = tempfile.NamedTemporaryFile(
-                    "w", newline="", encoding="utf-8",
-                    prefix="openobd_rec_", suffix=".csv", delete=False)
+                # The final file, in a durable folder, from the first sample:
+                # there is no temp file to move and no save dialog to cancel.
+                self._recorder = DriveRecorder(
+                    keys, RECORD_LABELS, self._record_dirs())
             except Exception as e:
                 self.status.setText(f"Can't start recording: {e}")
                 return
-            self._rec_writer = csv.writer(self._rec_file)
-            self._rec_writer.writerow(
-                ["Time (s)"] + [RECORD_LABELS[k] for k in self._rec_keys])
-            self._rec_count = 0
+            self.last_record_path = self._recorder.path
             self.source.drain()  # discard the pre-record backlog
             self.recording = True
-            self.btn_record.setText("⏺ Recording… (click to save)")
-            self.status.setText("Recording live data…")
+            self.btn_record.setText("⏺ REC 0 samples (click to stop)")
+            self.btn_record.setToolTip(f"Recording to {self._recorder.path}")
+            self.status.setText(f"Recording → {self._recorder.path}")
         else:
-            self._finalize_record()
+            self._finalize_record(interactive=True)
 
-    def _finalize_record(self):
+    def _record_dirs(self) -> list[str]:
+        """Where recordings go: Documents\\OpenOBD\\Logs, resolved through
+        Qt's known-folder lookup (follows a OneDrive-redirected Documents,
+        which ~/Documents does not), else %LOCALAPPDATA%\\OpenOBD\\Logs."""
+        docs = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+        data = QStandardPaths.writableLocation(QStandardPaths.GenericDataLocation)
+        return default_log_dirs(docs or None,
+                                os.path.join(data, "OpenOBD") if data else None)
+
+    def _finalize_record(self, interactive: bool = False):
+        """Close the recording. Every caller gets the same durable result; only
+        a user-initiated stop (interactive) offers to open it in Log Analysis —
+        teardown, rebind and app close must never block on a dialog."""
         self.recording = False
         self.btn_record.setText("⏺ Record")
+        rec, self._recorder = self._recorder, None
+        if rec is None:
+            return
         if self.source:  # flush anything produced since the last tick
-            self._record_samples(self.source.drain())
-        tmp_path = self._rec_file.name
-        self._rec_file.close()
-        self._rec_file = self._rec_writer = None
-        if not self._rec_count:
-            os.unlink(tmp_path)
+            try:
+                rec.write(self.source.drain())
+            except Exception as exc:   # a broken source must not lose the file
+                rec.error = rec.error or f"{type(exc).__name__}: {exc}"
+        path, n = rec.close()
+        if not n and rec.error is None:
+            self.btn_record.setToolTip("")
             self.status.setText("Nothing recorded.")
             return
-        from datetime import datetime as _dt
-        default = os.path.join(
-            os.path.expanduser("~"), "Documents",
-            "gt_log_" + _dt.now().strftime("%Y%m%d_%H%M%S") + ".csv")
-        path, _f = QFileDialog.getSaveFileName(
-            self, "Save datalog", default, "CSV (*.csv)")
-        if not path:
+        self.btn_record.setToolTip(f"Last recording: {path}")
+        if rec.error:
             self.status.setText(
-                f"Not saved — {self._rec_count} samples kept at {tmp_path}")
+                f"Recording stopped on an error ({rec.error}) — {n} samples "
+                f"saved → {path}")
             return
-        try:
-            shutil.move(tmp_path, path)
-        except Exception as e:
-            self.status.setText(f"Save failed: {e} (data at {tmp_path})")
-            return
-        n = self._rec_count
         self.status.setText(f"Saved {n} samples → {path}")
         win = self.window()
-        if hasattr(win, "load_log_path") and QMessageBox.question(
+        if interactive and hasattr(win, "load_log_path") and QMessageBox.question(
                 self, "Datalog saved",
                 f"Saved {n} samples to:\n{path}\n\nLoad it into Log Analysis now?"
                 ) == QMessageBox.Yes:
             win.load_log_path(path)
 
     def _record_samples(self, samples):
-        for s in samples:
-            self._rec_writer.writerow([f"{s.t:.2f}"] + [
-                ("" if s.values.get(k) is None else f"{s.values[k]:g}")
-                for k in self._rec_keys])
-            self._rec_count += 1
+        rec = self._recorder
+        if rec is None:
+            return
+        rec.write(samples)
+        if rec.error:
+            # Disk full / folder gone: stop visibly; rows so far are on disk.
+            self._finalize_record()
+            return
+        self.btn_record.setText(f"⏺ REC {rec.count} samples (click to stop)")
+
+    def shutdown(self):
+        """App close: finalize an active recording (no dialogs) and release
+        the source, so the GT port and the log file are closed cleanly."""
+        if self.recording:
+            self._finalize_record()
+        self.timer.stop()
+        if self.source:
+            try:
+                self.source.stop()
+            except Exception:
+                pass
 
     def _tick(self):
         if not self.source:
@@ -588,11 +648,20 @@ class Dashboard(QWidget):
         msg = (self.source.status_message()
                if hasattr(self.source, "status_message") else None)
         if msg:
+            if self.recording and self._recorder is not None:
+                msg += (f" — still recording; {self._recorder.count} samples "
+                        f"so far are on disk")
             self.status.setText(msg)
             self._source_alarm = True
         elif getattr(self, "_source_alarm", False):
             self._source_alarm = False
             self.status.setText(getattr(self, "_live_status", ""))
+        if self.recording:
+            # Drain on EVERY tick, before the no-sample early return: drain()
+            # is lossless and duplicate-free (unlike sampling latest() at the
+            # 10 Hz paint rate), and a source between good samples must not
+            # leave its queue to overflow.
+            self._record_samples(self.source.drain())
         if not s:
             if states is not None:
                 for key, g in self.gauges.items():
@@ -601,10 +670,6 @@ class Dashboard(QWidget):
             return
         for key, g in self.gauges.items():
             g.set_value(self._gauge_value(key, s))
-        if self.recording:
-            # drain() is lossless and duplicate-free — unlike sampling
-            # latest() at the 10 Hz paint rate.
-            self._record_samples(self.source.drain())
         if self.replay_ctl.isVisible() and not self.pos_slider.isSliderDown():
             pos = self.source.position()
             self.pos_slider.blockSignals(True)
@@ -730,6 +795,11 @@ class MainWindow(QMainWindow):
     def _shutdown_pages(self):
         # A child inside a QTabWidget never gets its own closeEvent, so stop the
         # Live Data / Active Tests timers and release their DB readers explicitly.
+        # The Dashboard goes first: closing mid-drive must finalize the
+        # recording and release the GT port, not abandon them.
+        dash = getattr(self, "dashboard", None)
+        if dash is not None:
+            dash.shutdown()
         for page in (getattr(self, "livedata", None),
                      getattr(self, "active_tests", None)):
             if page is not None:

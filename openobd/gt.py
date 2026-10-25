@@ -447,6 +447,12 @@ class GtBinaryMode(RuntimeError):
     """The GT is answering text (ELM) commands in its binary J2534 mode."""
 
 
+class GtNoResponse(TimeoutError):
+    """The GT sent nothing back (no '>' prompt) for a poll request. An ELM
+    always ends a reply with the prompt, even 'NO DATA', so silence means the
+    adapter or its link is gone, not that the vehicle is quiet."""
+
+
 def is_elm_identity(ati: str, at1: str) -> bool:
     """Positive identification of an ELM/OBDX text interface: ATI names an
     ELM327 or AT@1 names the OBDX. Any other bytes are not proof of life."""
@@ -580,7 +586,21 @@ class ObdxGt:
             self.port_name = self.autodetect()
         if not self.port_name:
             raise RuntimeError(describe_no_gt())
-        self.ser = serial.Serial(self.port_name, self.baud, timeout=self.timeout)
+        try:
+            # write_timeout: a Bluetooth SPP port whose far end is gone can
+            # block WriteFile indefinitely; that would wedge the poll thread
+            # (and anything waiting on its IO lock) instead of failing.
+            self.ser = serial.Serial(self.port_name, self.baud,
+                                     timeout=self.timeout, write_timeout=2.0)
+        except Exception as exc:
+            text = str(exc)
+            if isinstance(exc, PermissionError) or "Access is denied" in text \
+                    or "PermissionError" in text:
+                raise RuntimeError(
+                    f"{self.port_name} is in use by another program (truck-mcp, "
+                    f"the OBDX app, a J2534 tool or a second OpenOBD); close "
+                    f"it and connect again ({text})") from exc
+            raise
         try:
             time.sleep(0.2)
             # IDENTIFY BEFORE CONFIGURING. After a J2534 session (an e38flash
@@ -709,6 +729,18 @@ class ObdxGt:
             if not (mask & 1):  # bit for "next range supported"
                 break
 
+    def possible_keys(self) -> list[str]:
+        """Every canonical key poll_once() can produce on this connection:
+        the PIDs the ECM said it supports (all of PID_TABLE before the probe),
+        the ATRV voltage fallback, and the mode-22 DIDs. The recorder fixes its
+        columns from this, so a PID that only starts answering mid-drive (key
+        on after connect, engine start) still lands in the log."""
+        keys = {key for pid, (key, _fn) in PID_TABLE.items()
+                if not self.supported or pid in self.supported}
+        keys.add("voltage")
+        keys |= {key for key, _fn in DID_TABLE.values()}
+        return sorted(keys)
+
     def poll_once(self) -> dict:
         out: dict[str, float] = {}
         if not self.ser:
@@ -722,6 +754,11 @@ class ObdxGt:
             if self.supported and pid not in self.supported:
                 continue
             data = self._extract(self.request_raw("01" + pid), "01" + pid)
+            if b">" not in self.last_raw:
+                # Fail the poll now: walking the rest of the table at the read
+                # deadline each would take ~30 s to report a dead GT.
+                raise GtNoResponse(
+                    f"no reply from the GT on {self.port_name} for 01{pid}")
             if not data:
                 continue
             try:

@@ -5,26 +5,53 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
 
 ## Unreleased
 
-### Changed
-- Dashboard gauges move fluently: needles, arcs and bar fills ease toward
-  each new reading at display rate (~60 fps, time-based, no overshoot),
-  independent of the 1-10 Hz sample rate. The readout still prints the true
-  latest sample; the easing only moves the geometry.
-- Gauge readouts use fixed decimals per scale (whole units for rpm, speed and
-  temperatures; tenths for MAF, kPa, percent, volts, trims, knock retard), so
-  the text no longer changes width between samples.
-- Gauges repaint only when their value, state or eased position changes. Each
-  dial's and bar's face, ticks, numerals and scale are drawn once into a
-  cached pixmap rather than redrawn every 100 ms tick.
-- The bar strip (classic) and the ring strip (modern) flow into a balanced
-  grid that reflows on resize. Gauges for channels the bound source can't feed
-  are hidden. The RPM/Speed anchor dials stay in place, dimmed.
-- The Dashboard status line wraps, so the Dashboard no longer forces a minimum
-  window width of about 1150 px.
-- Gauge widgets and cluster layouts moved from `app.py` to `openobd/gauges.py`.
-  The pure easing, freshness and grid logic is in `openobd/gaugemotion.py`.
+### Fixed (drive logging from the OBDX GT)
+- **Record was refused for the GT itself.** The truck-mcp guard in
+  `toggle_record` was `hasattr(source, "channel_states")`, which
+  `GtDataSource` has matched since v0.18.4, so every GT recording got the
+  "use truck-mcp session_export" refusal. Sources now declare
+  `is_store_record` (True only for `TmReplaySource` / `TmLiveSource`).
+- **Recordings are durable from the first row.** New `openobd/recorder.py`
+  writes the final CSV straight into `Documents\OpenOBD\Logs` (Qt known-folder
+  lookup, so a OneDrive-redirected Documents works; falls back to
+  `%LOCALAPPDATA%\OpenOBD\Logs`). Header written at start, every batch
+  flushed, fsync at most every 2 s, exclusive file names. No `%TEMP%` file, no
+  end-of-drive save dialog to cancel; a crash keeps everything written, a
+  power cut loses at most ~2 s.
+- **Closing the app mid-drive finalizes the recording** and releases the GT
+  port (`Dashboard.shutdown()` from `MainWindow._shutdown_pages`). Stop,
+  rebind and teardown finalize without any dialog.
+- **Samples are drained on every tick,** including ticks where `latest()` is
+  None (link failing), so nothing queued before a dropout is lost.
+- **A write failure (disk full, folder removed) stops the recording visibly**
+  and keeps the rows already written, instead of raising out of the paint
+  timer while the button still says "Recording".
+- **The GT link recovers from unplug/replug.** After 3 failed polls the poll
+  thread re-opens the GT with backoff (immediately, then 1, 2, 4 ... 10 s),
+  re-running VID/PID autodetect so a GT that comes back on a different COM
+  number is found. The status line says "still recording; N samples so far
+  are on disk" during the outage. Pressing Connect while connected no longer
+  tries a second open of the same port (it skips the backoff instead).
+- **A silent GT fails a poll in about 1.2 s, not about 30 s.** No `>` prompt on
+  a PID request raises `GtNoResponse` straight away. An all-empty poll (not
+  even ATRV) now counts as a failure instead of resetting the failure count.
+- **A failed first poll releases the COM port** (it used to stay held, so
+  every later Connect failed with "Access is denied").
+- **Serial open sets `write_timeout`**, so a dead Bluetooth SPP link cannot
+  block a write forever. "Access is denied" now names the likely holder.
+  `stop()` closes the port under the IO lock and does not hang if a poll is
+  stuck.
+- **Columns cover every channel the link can produce** (`recordable_channels`,
+  which uses the ECM's supported-PID bitmap), not just the ones that answered
+  the first poll. `tft` (trans fluid temp) and `run_time` had no column and
+  were silently dropped.
+- `j2534.find_dll` only returns a DLL whose PE bitness matches the process.
+  The OBDX installer registers both 64-bit and 32-bit DLLs.
+- `tests/smoke_gui.py` records through the real `toggle_record` and uses a fake
+  replay clock, so the replay cannot loop on a slow machine. This is the same
+  approach as #33, which it supersedes.
 
-### Fixed
+### Fixed (truck-mcp sessions)
 - Record on a bound truck-mcp session said "use truck-mcp session_export"
   for every session, including archived ones, so a user trying to log a
   drive was sent to export data that was not the truck. The refusal now says
@@ -51,6 +78,33 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
 - Dashboard keyboard shortcuts, each listed in its button's tooltip: Ctrl+G
   connect GT, Ctrl+T truck session, Ctrl+R record, F5 start, Shift+F5 stop,
   P pause/resume replay.
+
+### Release tooling
+- Release path is now in the repo: `_build.bat` is committed (runs from any
+  checkout via its own `.venv`, and fails if the built exe's version resource
+  differs from `__version__`), and `docs/RELEASE.md` covers test, build,
+  version check, deploy with `_deploy.ps1`, post-deploy check and rollback.
+
+### Changed
+- Dashboard gauges move fluently: needles, arcs and bar fills ease toward
+  each new reading at display rate (~60 fps, time-based, no overshoot),
+  independent of the 1-10 Hz sample rate. The readout still prints the true
+  latest sample; the easing only moves the geometry.
+- Gauge readouts use fixed decimals per scale (whole units for rpm, speed and
+  temperatures; tenths for MAF, kPa, percent, volts, trims, knock retard), so
+  the text no longer changes width between samples.
+- Gauges repaint only when their value, state or eased position changes. Each
+  dial's and bar's face, ticks, numerals and scale are drawn once into a
+  cached pixmap rather than redrawn every 100 ms tick.
+- The bar strip (classic) and the ring strip (modern) flow into a balanced
+  grid that reflows on resize. Gauges for channels the bound source can't feed
+  are hidden. The RPM/Speed anchor dials stay in place, dimmed.
+- The Dashboard status line wraps, so the Dashboard no longer forces a minimum
+  window width of about 1150 px.
+- Gauge widgets and cluster layouts moved from `app.py` to `openobd/gauges.py`.
+  The pure easing, freshness and grid logic is in `openobd/gaugemotion.py`.
+- Added `.pre-commit-tests` so the dev-standards pre-commit hook runs the pytest
+  suite and refuses a commit on red; it previously printed "TESTS DID NOT RUN".
 
 ## 0.31.0 — 2026-10-05
 
