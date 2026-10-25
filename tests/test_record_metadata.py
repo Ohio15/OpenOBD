@@ -125,6 +125,39 @@ def test_bad_mode09_replies_say_why(timed_gt, msg, why):
     assert vin["examined"] is False and why in vin["why"]
 
 
+VIN_HEX = "490201" + VIN.encode().hex().upper()
+
+
+def test_response_pending_is_skipped_and_the_final_reply_used():
+    # headers off: '7F0978' then the multi-frame VIN in the same read
+    text = ("7F0978 014 0:" + VIN_HEX[:12] + " 1:" + VIN_HEX[12:26]
+            + " 2:" + VIN_HEX[26:])
+    p = gtmod.parse_mode09_reply(text, "02")
+    assert p["examined"] and bytes(p["items"][0]).decode() == VIN
+    # headers on: the ECM's pending single frame, then its real message
+    on = "7E8037F0978 " + REAL_VIN_ATH1
+    assert gtmod.parse_mode09_reply(on, "02")["examined"]
+
+
+def test_response_pending_alone_is_not_examined_and_other_nrcs_refuse():
+    p = gtmod.parse_mode09_reply("7F0978", "02")
+    assert p == {"examined": False,
+                 "why": "not examined (response pending, no final reply)"}
+    r = gtmod.parse_mode09_reply("7F0931", "02")
+    assert r["examined"] is False and "refused" in r["why"] \
+        and "NRC 0x31" in r["why"]
+
+
+def test_read_vin_is_one_request_and_identity_reuses_it(timed_gt):
+    g, _clock = timed_gt(pids=TRUCK_PIDS, info=INFO)
+    vin = g.read_vin()
+    assert vin["examined"] and vin["value"] == VIN
+    ident = g.read_vehicle_identity(vin=vin)
+    sent = [c for c, *_ in g.ser.exchanges]
+    assert sent.count("0902") == 1 and "0904" in sent and "0906" in sent
+    assert ident["vin"] is vin and ident["calids"]["count"] == 8
+
+
 def test_recording_context_holds_poll_and_restores_the_poll_state(timed_gt):
     g, clock = timed_gt(pids=TRUCK_PIDS, info=INFO)
     src = GtDataSource(poll_interval=0)
@@ -237,6 +270,47 @@ def test_meta_rewrite_is_atomic(tmp_path, monkeypatch):
     assert len(read_meta(rec.path)["markers"]) == 2
 
 
+def test_a_torn_temp_file_never_damages_the_metadata(tmp_path, monkeypatch):
+    rec = _rec(tmp_path)
+    rec.write([_sample(10.0, 1, rpm=800.0)])
+    rec.add_marker(11.0)
+    good = read_meta(rec.path)
+    # a crash mid temp-write: a torn .tmp left behind, the original intact
+    tmp = rec.meta_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write('{"schema": 1, "markers": [{"t": 1')
+    assert read_meta(rec.path) == good
+    # a failure while the temp is being written: original intact, temp gone
+    real_fsync = os.fsync
+    calls = {"n": 0}
+
+    def fsync(fd):
+        calls["n"] += 1
+        raise OSError("disk yanked mid-write")
+    monkeypatch.setattr(os, "fsync", fsync)
+    rec.add_marker(12.0)
+    monkeypatch.setattr(os, "fsync", real_fsync)
+    assert calls["n"] == 1 and rec.meta_error
+    assert read_meta(rec.path) == good and not os.path.exists(tmp)
+    # the next rewrite succeeds, replaces the torn state and clears the error
+    rec.add_marker(13.0)
+    assert rec.meta_error is None
+    assert [m["label"] for m in read_meta(rec.path)["markers"]] == [
+        "mark 1", "mark 2", "mark 3"]
+    rec.close()
+
+
+def test_a_malformed_sample_stops_the_recorder_without_raising(tmp_path):
+    rec = _rec(tmp_path)
+    rec.write([_sample(10.0, 1, rpm=800.0)])
+    bad = Sample(11.0, {"rpm": None},
+                 (Reading("rpm", None, 11.0, 11.05, 2),))
+    assert rec.write([bad]) == 0                         # no exception
+    assert rec.error and "TypeError" in rec.error and not rec.active
+    rec.close()
+    assert read_meta(rec.path)["error"] == rec.error
+
+
 def test_empty_recording_removes_all_three_files(tmp_path):
     rec = _rec(tmp_path)
     paths = (rec.path, rec.long_path, rec.meta_path)
@@ -278,6 +352,50 @@ def test_the_drive_log_calibrates_to_its_own_rest_and_full():
     assert cal.ready and "gt_log_20261025_141431.csv" in cal.source
 
 
+def _drive_rows():
+    with open(DRIVE, newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+
+    def f(r, k):
+        return float(r[k]) if r[k] else None
+    return [(f(r, "Engine Speed (RPM)"), f(r, "Accelerator Pedal (%)"),
+             f(r, "Engine Load (%)"), f(r, "Manifold Absolute Pressure (kPa)"))
+            for r in rows]
+
+
+def test_drive_log_wot_counts_cross_checked_independently():
+    """The 50 / 14 counts recomputed here from the CSV with the stated rules,
+    not pinned, and the two criteria reconciled sample by sample."""
+    log = _drive_log()
+    cal = calibrate_pedal_from_log(log)
+    rows = _drive_rows()
+
+    def evidence(rpm, load, mp):
+        return rpm is not None and rpm >= 400 and (
+            (load is not None and load >= 98) or (mp is not None and mp >= 95))
+    fallback = {i for i, (rpm, _a, load, mp) in enumerate(rows)
+                if rpm is not None and rpm >= 900 and evidence(rpm, load, mp)}
+    learned = {i for i, (rpm, app, _l, _m) in enumerate(rows)
+               if rpm is not None and app is not None
+               and (app - cal.rest) / (cal.full - cal.rest) * 100 >= 75}
+    assert analyze_log(log).wot_samples == len(fallback)
+    log.pedal_cal = cal
+    assert analyze_log(log).wot_samples == len(learned)
+    assert learned
+    # Pedal leads load and MAP: a pedal-WOT sample without load/MAP evidence
+    # must be a tip-in, the very next row carrying the evidence. On this
+    # drive that is row 193 (normalized pedal 87 %, load 90.6 %, MAP 88 kPa,
+    # throttle 43.5 % and still opening; row 194: load 100 %, MAP 99). Every
+    # other learned-calibration WOT sample has load >= 98 or MAP >= 95, and
+    # all of them are in the fallback set.
+    tip_ins = learned - fallback
+    assert all(evidence(*(rows[i][0], rows[i][2], rows[i][3])) is False
+               and i + 1 in fallback for i in tip_ins)
+    assert tip_ins == {193}
+    assert all(evidence(rows[i][0], rows[i][2], rows[i][3])
+               for i in learned - tip_ins)
+
+
 def test_drive_log_wot_under_fallback_and_under_learned_calibration():
     log = _drive_log()
     raw_app = log.series("app")
@@ -307,24 +425,37 @@ def test_raw_app_without_a_calibration_never_drives_wot():
     assert "cannot be determined" in rep.wot_criterion_text
 
 
+def _idle(lr, t0, values, step=0.5, max_gap=1.0):
+    for i, v in enumerate(values):
+        lr.observe(t0 + i * step, 700.0, 0.0, v, max_gap=max_gap)
+
+
+def _pull(lr, t0, values, step=0.25, max_gap=1.0):
+    for i, v in enumerate(values):
+        lr.observe(t0 + i * step, 4000.0, 40.0, v, 100.0, 99.0,
+                   max_gap=max_gap)
+
+
 def test_learner_rules():
     lr = PedalLearner()
     # key on, engine off: MAP reads baro (99 kPa) - NOT WOT evidence
-    lr.observe(0.0, 0.0, 0.0, 80.0, 0.0, 99.0)
+    for t in (0.0, 0.25, 0.5):
+        lr.observe(t, 0.0, 0.0, 80.0, 0.0, 99.0)
     assert lr.cal.full is None
-    lr.observe(0.5, 2000.0, 0.0, 30.0)                   # revving: no rest
-    # stopped idle must hold 2 s before rest counts
-    lr.observe(1.0, 700.0, 0.0, 19.6)
-    lr.observe(2.5, 700.0, 0.0, 19.2)
+    lr.observe(0.75, 2000.0, 0.0, 30.0)                  # revving: no rest
+    # stopped idle must hold 2 s before rest counts; rest is the median
+    _idle(lr, 1.0, [19.6, 19.2, 19.4, 19.2])             # 1.0 .. 2.5 s
     assert lr.cal.rest is None
     lr.observe(3.0, 700.0, 0.0, 19.4)
-    assert lr.cal.rest == 19.2 and not lr.cal.ready
+    assert lr.cal.rest == 19.4 and not lr.cal.ready      # median of 5
     assert lr.cal.normalize(40.0) is None                # pending: no value
-    lr.observe(4.0, 3500.0, 30.0, 61.0, 100.0, 99.0)
+    _pull(lr, 4.0, [55.0, 61.0, 60.0])
     assert lr.cal.full == 61.0 and lr.cal.ready
-    lr.observe(5.0, 3500.0, 30.0, 50.0, 100.0, 99.0)
+    _pull(lr, 6.0, [50.0, 50.0, 50.0])
     assert lr.cal.full == 61.0                           # never lowered
-    assert lr.cal.normalize(19.2) == 0.0
+    _idle(lr, 8.0, [20.0] * 6)
+    assert lr.cal.rest == 19.4                           # never raised
+    assert lr.cal.normalize(19.4) == 0.0
     assert lr.cal.normalize(61.0) == 100.0
     assert lr.cal.normalize(70.0) == 100.0               # clamped
     # a missing value breaks a rest stretch
@@ -335,9 +466,56 @@ def test_learner_rules():
     assert lr2.cal.rest is None
 
 
+def test_a_rest_glitch_and_a_wot_spike_do_not_move_the_calibration():
+    lr = PedalLearner()
+    _idle(lr, 0.0, [19.2, 19.2, 4.0, 19.2, 19.2, 19.2])  # one 4 % glitch
+    assert lr.cal.rest == 19.2
+    _pull(lr, 5.0, [61.0, 60.5, 61.2])
+    assert lr.cal.full == 61.2
+    lr.observe(7.0, 4500.0, 50.0, 95.0, 100.0, 99.0, max_gap=1.0)  # 1 spike
+    lr.observe(7.25, 3000.0, 50.0, 30.0, 40.0, 50.0, max_gap=1.0)
+    assert lr.cal.full == 61.2
+    # two WOT samples are not a run either
+    _pull(lr, 9.0, [90.0, 90.0])
+    lr.observe(9.5, 3000.0, 50.0, 30.0, 40.0, 50.0, max_gap=1.0)
+    assert lr.cal.full == 61.2
+
+
+def test_rest_hold_needs_observed_continuity():
+    lr = PedalLearner()
+    lr.observe(0.0, 700.0, 0.0, 19.2, max_gap=0.5)
+    lr.observe(2.5, 700.0, 0.0, 19.2, max_gap=0.5)       # 2.5 s unseen
+    assert lr.cal.rest is None
+    _idle(lr, 3.0, [19.2] * 3, step=0.5, max_gap=0.6)    # 3.0 .. 4.0
+    lr.gap()                                             # a failed poll
+    _idle(lr, 4.5, [19.2] * 4, step=0.5, max_gap=0.6)    # 4.5 .. 6.0
+    assert lr.cal.rest is None                           # 1.5 s each side
+    lr.observe(6.5, 700.0, 0.0, 19.2, max_gap=0.6)       # 2.0 s observed
+    assert lr.cal.rest == 19.2
+
+
+def test_reset_forgets_seed_learned_and_partial_state():
+    lr = PedalLearner()
+    lr.seed(PedalCal(19.0, 60.0, "settings"))
+    _idle(lr, 0.0, [19.2] * 5)
+    v = lr.version
+    lr.reset()
+    assert (lr.cal.rest, lr.cal.full, lr.cal.source) == (None, None, "")
+    assert lr.learned_rest is None and lr.version > v
+    _idle(lr, 10.0, [19.2] * 3)                          # 1 s: no rest yet
+    assert lr.cal.rest is None
+
+
+def test_from_dict_treats_nan_and_inf_as_pending():
+    for bad in ("nan", float("inf"), "-inf"):
+        cal = PedalCal.from_dict({"rest": bad, "full": 61.0})
+        assert cal.rest is None and not cal.ready
+    assert PedalCal.from_dict({"rest": "19.2", "full": "61.2"}).ready
+
+
 def test_seed_merges_with_what_the_connection_learned():
     lr = PedalLearner()
-    lr.observe(0.0, 3500.0, 30.0, 63.0, 100.0, 99.0)     # learned full 63
+    _pull(lr, 0.0, [63.0, 63.0, 63.0])                   # learned full 63
     lr.seed(PedalCal(19.2, 61.2, "settings:VIN"))
     assert (lr.cal.rest, lr.cal.full) == (19.2, 63.0)
     assert lr.cal.source == "settings:VIN + learned"
@@ -355,10 +533,15 @@ def test_gt_derives_pedal_only_from_a_ready_calibration(tmp_path):
     assert "pedal" in src.recordable_channels()
     s = _app_sample(src, 1.0, 1, rpm=700.0, vss=0.0, app=19.2)
     assert "pedal" not in s.values and s.derived is None  # pending
-    for i, t in enumerate((2.0, 3.5)):
-        src._publish(_app_sample(src, t, 10 + i, rpm=700.0, vss=0.0, app=19.2))
+    for i in range(1, 6):
+        src._publish(_app_sample(src, 1.0 + 0.5 * i, 10 + i, rpm=700.0,
+                                 vss=0.0, app=19.2))
     assert src.pedal_calibration().rest == 19.2
-    wot = _app_sample(src, 5.0, 20, rpm=4000.0, vss=40.0, app=61.2,
+    for i in range(2):
+        src._publish(_app_sample(src, 4.0 + 0.5 * i, 20 + i, rpm=4000.0,
+                                 vss=40.0, app=61.2, load=100.0, map=99.0))
+    assert src.pedal_calibration().full is None          # 2 WOT: no run yet
+    wot = _app_sample(src, 5.0, 30, rpm=4000.0, vss=40.0, app=61.2,
                       load=100.0, map=99.0)
     assert wot.values["pedal"] == 100.0 and wot.derived == {"pedal": "app"}
     assert wot.values["app"] == 61.2                      # raw kept as decoded
@@ -366,7 +549,7 @@ def test_gt_derives_pedal_only_from_a_ready_calibration(tmp_path):
     src._publish(wot)
     assert src.channel_values()["pedal"] == 100.0
     assert src.fresh_window_s("pedal") == src.fresh_window_s("app")
-    half = _app_sample(src, 6.0, 30, rpm=2500.0, vss=40.0, app=40.2)
+    half = _app_sample(src, 5.5, 40, rpm=2500.0, vss=40.0, app=40.2)
     assert half.values["pedal"] == pytest.approx(50.0)
     # recorded: its own CSV column, and its own line form in the sidecar
     rec = DriveRecorder(["rpm", "app", "pedal"], LABELS, [str(tmp_path)])
@@ -446,9 +629,21 @@ class FakeGt(GtDataSource):
         pass
 
 
+def _settings_groups():
+    from openobd.appsettings import app_settings
+    st = app_settings()
+    st.beginGroup("pedal_cal")
+    try:
+        return set(st.childGroups())
+    finally:
+        st.endGroup()
+
+
 @pytest.fixture
 def dash(qapp, tmp_path):
     from openobd.app import Dashboard
+    from openobd.appsettings import app_settings
+    app_settings().clear()                    # each test starts unstored
     d = Dashboard()
     d._record_dirs = lambda: [str(tmp_path / "Logs")]
     src = FakeGt()
@@ -500,27 +695,127 @@ def test_recording_context_lands_in_the_metadata(dash, timed_gt):
     assert meta["dtcs_at_start"]["examined"] is False
     assert meta["supported_pids"]["pids"] == sorted(TRUCK_PIDS)
     assert d._pedal_key == VIN and VIN in d.status.text()
+    assert meta["pedal_calibration"]["persistence"] == f"settings pedal_cal/{VIN}"
     d._finalize_record()
 
 
+def _calibrate_live(src, t0=1.0, req=100):
+    """Feed a 2.5 s stopped idle then a 3-sample pull at the poll rate."""
+    for i in range(6):
+        src.feed(t0 + 0.5 * i, req + i, rpm=700.0, vss=0.0, app=19.2)
+    for i in range(3):
+        src.feed(t0 + 3.5 + 0.25 * i, req + 10 + i, rpm=4000.0, vss=40.0,
+                 app=61.2, load=100.0, map=99.0)
+    return t0 + 4.5
+
+
 def test_pedal_gauge_shows_raw_until_calibrated_then_normalized(dash):
-    from openobd.app import load_pedal_cal
     d, src = dash
     g = d.gauges["app"]
-    src.feed(1.0, 1, rpm=700.0, vss=0.0, app=19.2)
+    src.feed(0.5, 1, rpm=700.0, vss=0.0, app=19.2)
     d._tick()
     assert g.label == "Pedal raw" and g.value == 19.2
     assert "pedal cal pending" in g.toolTip()
-    src.feed(2.0, 5, rpm=700.0, vss=0.0, app=19.2)
-    src.feed(3.5, 9, rpm=700.0, vss=0.0, app=19.2)       # rest learned
-    d._tick()
-    assert g.label == "Pedal raw"                         # full still pending
-    src.feed(5.0, 13, rpm=4000.0, vss=40.0, app=61.2, load=100.0, map=99.0)
-    src.feed(6.0, 18, rpm=2500.0, vss=40.0, app=40.2, load=60.0, map=60.0)
+    t = _calibrate_live(src)
+    src.feed(t, 200, rpm=2500.0, vss=40.0, app=40.2, load=60.0, map=60.0)
     d._tick()
     assert g.label == "Pedal" and g.value == pytest.approx(50.0)
-    stored = load_pedal_cal("unknown-vin")               # not identified
-    assert (stored.rest, stored.full) == (19.2, 61.2)
+
+
+def test_without_a_vin_nothing_is_persisted_or_seeded(dash, tmp_path):
+    from openobd.app import save_pedal_cal
+    d, src = dash
+    save_pedal_cal("1GCEK19J78Z123456", PedalCal(10.0, 90.0, "other truck"))
+    d._sync_link()
+    assert d._pedal_key is None and src.vin() is None
+    assert src.pedal_calibration().rest is None          # nothing seeded
+    d.toggle_record()
+    rec = d._recorder
+    _calibrate_live(src)
+    d._tick()
+    assert src.pedal_calibration().ready                 # live learning works
+    assert _settings_groups() == {"1GCEK19J78Z123456"}   # nothing new stored
+    pc = read_meta(rec.path)["pedal_calibration"]        # written at once
+    assert pc["persistence"].startswith("session-only")
+    assert pc["changes"] and pc["changes"][-1]["ready"]
+    assert pc["vin"] is None
+    d._finalize_record()
+
+
+def test_a_vin_connection_seeds_only_its_own_and_saves_at_once(dash, timed_gt):
+    from openobd.app import load_pedal_cal, save_pedal_cal
+    d, _old = dash
+    g, _clock = timed_gt(pids=TRUCK_PIDS, info=INFO)
+    src = FakeGt(ctx_gt=g)
+    src._new_link()                                      # what start() does
+    save_pedal_cal(VIN, PedalCal(19.6, 60.0, f"settings:{VIN}"))
+    d.bind_source(src)
+    d._on_gt_ready(src)
+    d.timer.stop()
+    assert d._pedal_key == VIN and f"VIN {VIN}" in d.status.text()
+    cal = src.pedal_calibration()
+    assert (cal.rest, cal.full) == (19.6, 60.0)          # seeded at connect
+    _calibrate_live(src)
+    d._tick()
+    stored = load_pedal_cal(VIN)
+    assert (stored.rest, stored.full) == (19.2, 61.2)    # saved on change
+    assert sum(1 for c, *_ in g.ser.exchanges if c == "0902") == 1
+
+
+def test_reconnect_to_another_truck_resets_and_never_cross_applies(
+        dash, timed_gt):
+    from openobd.app import load_pedal_cal, save_pedal_cal
+    d, _old = dash
+    g, _clock = timed_gt(pids=TRUCK_PIDS, info=INFO)
+    g.open = g.close = lambda: None                      # no serial port
+    src = FakeGt(ctx_gt=g)
+    src._new_link()
+    d.bind_source(src)
+    d._on_gt_ready(src)
+    d.timer.stop()
+    d.toggle_record()
+    rec = d._recorder
+    t = _calibrate_live(src)
+    d._tick()
+    assert d._pedal_key == VIN and load_pedal_cal(VIN).ready
+    vin_b = "1GCEK19J78Z123456"
+    save_pedal_cal(vin_b, PedalCal(25.0, 80.0, f"settings:{vin_b}"))
+    g.ser.info = dict(INFO, **{"02": b"\x49\x02\x01" + vin_b.encode()})
+    src._fails_since_open = src.RECONNECT_AFTER
+    src._reconnect()                                     # truck B now
+    assert src._identity is None and src.vin() == vin_b
+    assert src.pedal.learned_rest is None
+    d._tick()
+    assert d._pedal_key == vin_b
+    cal = src.pedal_calibration()
+    assert (cal.rest, cal.full) == (25.0, 80.0)          # B's own, not A's
+    a = load_pedal_cal(VIN)
+    assert (a.rest, a.full) == (19.2, 61.2)              # A untouched
+    src.feed(t + 1.0, 500, rpm=4000.0, vss=40.0, app=70.0, load=100.0,
+             map=99.0)
+    d._tick()
+    assert load_pedal_cal(VIN).full == 61.2              # never saved to A
+    events = read_meta(rec.path)["link_events"]
+    assert events[-1]["vin"]["value"] == vin_b
+    d._finalize_record()
+
+
+def test_stop_and_start_reset_the_learner_and_reread_the_vin(timed_gt):
+    g, _clock = timed_gt(pids=TRUCK_PIDS, info=INFO)
+    g.open = lambda: None
+    src = GtDataSource(poll_interval=0)
+    src._gt = g
+    src.pedal.seed(PedalCal(19.0, 60.0, "left over"))
+    src._interval = 0.01
+    epoch = src.link[0]
+    src.start()
+    try:
+        assert src.link[0] == epoch + 1 and src.vin() == VIN
+        assert src.pedal_calibration().source != "left over"
+    finally:
+        src.stop()
+    assert src.vin() is None and src.link[0] == epoch + 2
+    assert src.pedal_calibration().rest is None and src._identity is None
 
 
 def test_a_replayed_log_without_pedal_shows_raw_app(dash):
@@ -534,6 +829,80 @@ def test_a_replayed_log_without_pedal_shows_raw_app(dash):
     assert d.gauges["app"].label == "Pedal raw"
     assert d.gauges["app"].value == pytest.approx(19.2157)
     rs.stop()
+
+
+def _log_with_meta(meta):
+    log = parse_csv("Time (s),Engine Speed (RPM),Accelerator Pedal (%)\n"
+                    "0,800,19.2\n")
+    log.meta = meta
+    return log
+
+
+def _cal(rest, full, src):
+    return {"rest": rest, "full": full, "source": src}
+
+
+def test_known_pedal_cal_order_and_vin_gate(dash):
+    from openobd.app import MainWindow, save_pedal_cal
+    known = lambda log: MainWindow._known_pedal_cal(MainWindow, log)  # noqa: E731
+    pc = {"at_start": _cal(19.0, 60.0, "start"),
+          "after_identity": _cal(19.1, 60.5, "identity"),
+          "changes": [_cal(19.2, 61.0, "c1"), _cal(19.2, 61.2, "c2"),
+                      {"rest": None, "full": None, "source": "reset"}]}
+    vin = {"vin": {"examined": True, "value": VIN}}
+    assert known(_log_with_meta({"pedal_calibration": pc})).source == "c2"
+    pc2 = dict(pc, changes=[])
+    assert known(_log_with_meta({"pedal_calibration": pc2})).source == \
+        "identity"
+    pc3 = {"at_start": _cal(19.0, 60.0, "start")}
+    assert known(_log_with_meta({"pedal_calibration": pc3})).source == "start"
+    # stored calibrations apply ONLY through an examined VIN
+    save_pedal_cal(VIN, PedalCal(18.0, 65.0, "stored"))
+    assert known(_log_with_meta(None)) is None
+    assert known(_log_with_meta({"vehicle": {"vin": {
+        "examined": False, "why": "NO DATA"}}})) is None
+    assert known(_log_with_meta({"vehicle": vin})).source == "stored"
+    # a VIN log still prefers what its own recording measured
+    assert known(_log_with_meta({"vehicle": vin,
+                                 "pedal_calibration": pc})).source == "c2"
+
+
+def _learn_window(log, dashboard_key=None):
+    from openobd.app import MainWindow
+    msgs = []
+    ns = SimpleNamespace(
+        log=log, _log_vin=MainWindow._log_vin,
+        statusBar=lambda: SimpleNamespace(
+            showMessage=lambda m, *_a: msgs.append(m)),
+        log_report=SimpleNamespace(append=lambda m: msgs.append(m)),
+        _analyze_loaded_log=lambda: None,
+        dashboard=SimpleNamespace(source=None, _pedal_key=dashboard_key))
+    MainWindow.learn_pedal_from_log(ns)
+    return msgs
+
+
+def test_learn_merges_and_never_loosens_a_stored_calibration(dash):
+    from openobd.app import load_pedal_cal, save_pedal_cal
+    log = _drive_log()
+    log.meta = {"vehicle": {"vin": {"examined": True, "value": VIN}}}
+    save_pedal_cal(VIN, PedalCal(18.0, 65.0, "stored"))
+    msgs = _learn_window(log)
+    stored = load_pedal_cal(VIN)
+    assert (stored.rest, stored.full) == (18.0, 65.0)    # not loosened
+    assert "was rest 18.0 % / full 65.0 %" in msgs[0]
+    assert "learned rest 19.2 % / full 61.2 %" in msgs[0]
+    save_pedal_cal(VIN, PedalCal(20.0, 55.0, "stored"))
+    _learn_window(log)
+    stored = load_pedal_cal(VIN)
+    assert (round(stored.rest, 1), round(stored.full, 1)) == (19.2, 61.2)
+
+
+def test_learn_on_a_vin_less_log_is_analysis_only(dash):
+    log = _drive_log()
+    msgs = _learn_window(log)
+    assert "No VIN in this log; calibration applies to this log's analysis " \
+        "only" in msgs[0]
+    assert log.pedal_cal.ready and _settings_groups() == set()
 
 
 def test_sidecar_meta_reload_helpers(tmp_path):

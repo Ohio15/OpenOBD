@@ -296,6 +296,7 @@ class DriveRecorder:
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp, self.meta_path)
+            self.meta_error = None     # the file on disk is current again
             return True
         except (OSError, TypeError, ValueError) as exc:
             self.meta_error = f"{type(exc).__name__}: {exc}"
@@ -377,8 +378,10 @@ class DriveRecorder:
             self.count += n
             if n:
                 self._sync()
-        except (OSError, ValueError) as exc:
-            # ValueError: write to a file closed underneath us.
+        except (OSError, ValueError, TypeError) as exc:
+            # ValueError: write to a file closed underneath us. TypeError: a
+            # malformed sample (a non-numeric value) - the recorder must
+            # never raise into the paint loop; it stops with the error set.
             self.count += n
             self.error = f"{type(exc).__name__}: {exc}"
             self._close_quietly()

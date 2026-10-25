@@ -320,10 +320,16 @@ class GtDataSource(DataSource):
         # (keyed by VIN) once the vehicle is identified.
         self.pedal = PedalLearner()
         self._pedal_lock = threading.Lock()
-        # Vehicle identity (Mode 09) for THIS connection, read at the first
-        # recording start (read_recording_context) and kept once the VIN
-        # read; dropped on any re-open, which may be a different vehicle.
+        # Vehicle identity (Mode 09) for THIS connection: the VIN is read
+        # right after every open (start / re-open), the rest at the first
+        # recording start (read_recording_context). All of it, and the
+        # pedal learner, is dropped on every open and on stop: a re-open
+        # may be a different vehicle.
         self._identity: Optional[dict] = None
+        # (connection epoch, VIN entry): replaced atomically after each open,
+        # so the GUI can tell that the link (and maybe the vehicle) changed.
+        self.link: tuple = (0, None)
+        self._predicted_full_s: Optional[float] = None
 
     def channels(self):
         return list(self._keys)
@@ -354,6 +360,38 @@ class GtDataSource(DataSource):
         with self._pedal_lock:
             self.pedal.seed(cal)
 
+    def _new_link(self) -> None:
+        """After an open (caller holds the IO lock or owns the link): forget
+        the previous connection's vehicle and calibration, read this one's
+        VIN, publish (epoch, VIN). Nothing is seeded here: the GUI seeds a
+        stored calibration only for an examined VIN."""
+        with self._pedal_lock:
+            self.pedal.reset()
+        self._identity = None
+        read_vin = getattr(self._gt, "read_vin", None)
+        if read_vin is None:
+            vin = {"examined": False, "why": "this link cannot read Mode 09"}
+        else:
+            try:
+                vin = read_vin()
+            except Exception as exc:
+                vin = {"examined": False,
+                       "why": f"{type(exc).__name__}: {exc}"}
+        self.link = (self.link[0] + 1, vin)
+
+    def vin(self) -> Optional[str]:
+        """This connection's VIN when it was read, else None."""
+        entry = self.link[1] or {}
+        return entry.get("value") if entry.get("examined") else None
+
+    def _max_gap(self) -> float:
+        """Continuity limit for the pedal learner: twice the longest normal
+        spacing between APP D readings (the measured cycle, or the plan's
+        all-tiers cycle if longer), 1 s before either exists. A failed poll
+        breaks continuity explicitly (pedal.gap) whatever this allows."""
+        cycles = [c for c in (self._cycle_s, self._predicted_full_s) if c]
+        return 2.0 * max(cycles) if cycles else 1.0
+
     def _derive(self, s: Sample) -> None:
         """Poll thread: learn from this cycle's own values, then add the
         normalized pedal when (and only when) the calibration is ready and
@@ -365,7 +403,8 @@ class GtDataSource(DataSource):
         with self._pedal_lock:
             self.pedal.observe(t, v.get("rpm"), v.get("vss"), v.get("app"),
                                v.get("load"), v.get("map"),
-                               source="learned live")
+                               source="learned live",
+                               max_gap=self._max_gap())
             pedal = self.pedal.cal.normalize(v.get("app"))
         if pedal is not None:
             s.values["pedal"] = pedal
@@ -437,6 +476,9 @@ class GtDataSource(DataSource):
         for d, src in self.DERIVED.items():
             self._divisors[d] = plan.divisor_of(src)
         self._predicted_cycle_s = plan.mean_cycle_s()
+        # The longest normal spacing between two APP D readings: a cycle
+        # with every tier due.
+        self._predicted_full_s = plan.predicted_cycle_s(0)
         self.plan_text = plan.describe()
 
     def _publish(self, s: Sample) -> None:
@@ -494,6 +536,8 @@ class GtDataSource(DataSource):
             self.device = getattr(self._gt, "device", "OBDX Pro GT")
             self.port_name = getattr(self._gt, "port_name", None)
             self._t0 = time.monotonic()
+            with self._io_lock:          # no poll thread yet; keep the rule
+                self._new_link()
             first = self._sample(self._gt.poll_timed())
         except BaseException:
             # The port is open: a failed first poll must release it, or every
@@ -538,21 +582,26 @@ class GtDataSource(DataSource):
     def read_recording_context(self) -> dict:
         """What a recording's metadata needs from the vehicle, read with the
         poll thread held (run_exclusive): the identity (Mode 09 VIN / CALID /
-        CVN; cached for this connection once the VIN read, re-tried at the
-        next recording otherwise), the DTCs at start (read_dtcs, every
-        recording) and the supported-PID masks. Never raises: a failure is
-        recorded as not examined, with why. Called off the GUI thread."""
+        CVN; the VIN read at connect is reused; cached for this connection
+        once the VIN read, re-tried at the next recording otherwise), the
+        DTCs at start (read_dtcs, every recording) and the supported-PID
+        masks, plus the connection epoch they belong to. Never raises: a
+        failure is recorded as not examined, with why. Called off the GUI
+        thread."""
         def read(gt):
-            ctx: dict = {}
+            ctx: dict = {"epoch": self.link[0]}
             ident = self._identity
             if ident is None:
                 try:
-                    ident = gt.read_vehicle_identity()
+                    ident = gt.read_vehicle_identity(vin=self.link[1])
                 except Exception as exc:
                     ident = {"examined": False,
                              "why": f"{type(exc).__name__}: {exc}"}
                 if (ident.get("vin") or {}).get("examined"):
                     self._identity = ident
+                    if not (self.link[1] or {}).get("examined"):
+                        # the VIN did not read at connect but read now
+                        self.link = (self.link[0], ident["vin"])
             ctx["identity"] = ident
             try:
                 ctx["dtcs_at_start"] = gt.read_dtcs()
@@ -587,6 +636,8 @@ class GtDataSource(DataSource):
                     self._reconnect_attempts = 0
                     self.reconnect_error = None
                 else:
+                    with self._pedal_lock:
+                        self.pedal.gap()    # time the learner did not see
                     # poll_timed() returns [] only when nothing at all decoded —
                     # not one PID and not the GT's own ATRV. A healthy GT always
                     # answers ATRV, so an empty poll is a failure, not a live
@@ -597,6 +648,8 @@ class GtDataSource(DataSource):
                     self.last_error = ("the GT returned no data (no PID and no "
                                        "ATRV voltage decoded)")
             except Exception as exc:
+                with self._pedal_lock:
+                    self.pedal.gap()
                 self.fail_streak += 1
                 self._fails_since_open += 1
                 self.last_error = f"{type(exc).__name__}: {exc}"
@@ -634,9 +687,11 @@ class GtDataSource(DataSource):
                 except Exception:
                     pass
                 return
+            # A re-open may be a different vehicle: drop identity and the
+            # pedal calibration, read the VIN again (under the IO lock).
+            self._new_link()
         self.reconnect_error = None
         self.reconnects += 1
-        self._identity = None        # a re-open may be a different vehicle
         self._fails_since_open = 0
         self.port_name = getattr(self._gt, "port_name", self.port_name)
 
@@ -654,5 +709,10 @@ class GtDataSource(DataSource):
         try:
             self._gt.close()
         finally:
+            # The link is gone: nothing learned on it outlives it.
+            with self._pedal_lock:
+                self.pedal.reset()
+            self._identity = None
+            self.link = (self.link[0] + 1, None)
             if locked:
                 self._io_lock.release()

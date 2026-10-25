@@ -617,6 +617,8 @@ def service_message(resp: str, service: int) -> Optional[list[int]]:
             continue
         if any(c not in _HEX for c in tok):
             continue                 # NO DATA, SEARCHING..., STOPPED, '?'
+        if _is_pending(tok, service):
+            continue                 # 7F <svc> 78: the final reply follows
         if frames:
             frames[-1][1] += tok     # spaces on: bytes after 'N:'
         elif declared is None and not loose and len(tok) == 3:
@@ -640,9 +642,30 @@ def service_message(resp: str, service: int) -> Optional[list[int]]:
     ecm = reassemble_isotp(resp).get("7E8")
     if ecm:
         for msg in ecm["messages"]:
-            if msg.startswith(prefixes):
+            if msg.startswith(prefixes) and not _is_pending(msg, service):
                 return _hex_bytes(msg)
     return None
+
+
+#: Negative response code 0x78: requestCorrectlyReceived-ResponsePending.
+#: Not an answer: the module sends its real reply after it.
+NRC_RESPONSE_PENDING = 0x78
+
+
+def _is_pending(hex_msg: str, service: int) -> bool:
+    return hex_msg.upper().startswith("7F%02X%02X" % (service,
+                                                       NRC_RESPONSE_PENDING))
+
+
+def response_pending_only(resp: str, service: int) -> bool:
+    """True when the reply holds a 7F <service> 78 (response pending) and
+    nothing else usable: the module was still working when the read ended."""
+    if service_message(resp, service) is not None:
+        return False
+    toks = [t for t in resp.upper().split() if all(c in _HEX for c in t)]
+    msgs = toks + [m for mod in reassemble_isotp(resp).values()
+                   for m in mod["messages"]]
+    return any(_is_pending(t, service) for t in msgs)
 
 
 def parse_mode01_reply(resp: str, pids: list[str],
@@ -697,6 +720,9 @@ def parse_mode09_reply(resp: str, info_type: str) -> dict:
     info_type = info_type.upper()
     _name, size = MODE09_ITEMS[info_type]
     msg = service_message(resp, 0x09)
+    if msg is None and response_pending_only(resp, 0x09):
+        return {"examined": False,
+                "why": "not examined (response pending, no final reply)"}
     if msg is None:
         text = " ".join(resp.split()) or "(empty)"
         return {"examined": False,
@@ -1258,7 +1284,34 @@ class ObdxGt:
     #: answer 0904 on this truck), and the VIN that matters is the ECM's.
     IDENTITY_HEADER = "7E0"
 
-    def read_vehicle_identity(self) -> dict:
+    def _read_mode09(self, info_type: str) -> dict:
+        """One physical Mode 09 request, parsed (parse_mode09_reply)."""
+        resp = self.command("09" + info_type, wait=0.0)
+        if is_binary_reply(self.last_raw):
+            return {"examined": False,
+                    "why": "the GT answered in its binary mode"}
+        if b">" not in self.last_raw:
+            return {"examined": False, "why": "no reply from the GT (no prompt)"}
+        return parse_mode09_reply(resp, info_type)
+
+    def _identity_ready(self) -> Optional[str]:
+        """None when a Mode 09 request may go out, else why not."""
+        if not self.ser:
+            return "the GT link is not open"
+        if self._header != self.IDENTITY_HEADER and not self._set_header(
+                self.IDENTITY_HEADER):
+            return f"GT refused ATSH{self.IDENTITY_HEADER}; request not sent"
+        return None
+
+    def read_vin(self) -> dict:
+        """The VIN alone (one 0902 request): the identity entry
+        read_vehicle_identity returns under "vin"."""
+        why = self._identity_ready()
+        parsed = ({"examined": False, "why": why} if why
+                  else self._read_mode09("02"))
+        return decode_vehicle_identity({"vin": parsed})["vin"]
+
+    def read_vehicle_identity(self, vin: Optional[dict] = None) -> dict:
         """VIN (09 02), CALIDs (09 04) and CVNs (09 06) from the ECM.
 
         Returns {"examined": bool, "header": "7E0", "vin": {...}, "calids":
@@ -1266,30 +1319,20 @@ class ObdxGt:
         "raw": message hex, ...decoded...} or {"examined": False, "why":
         ...} (with "raw" when an answer was there but did not decode): an
         unanswered request is never an empty string pretending to be a
-        value. Uses the polling state (7E0, ATH0) and leaves it in force."""
+        value. Uses the polling state (7E0, ATH0) and leaves it in force.
+        vin: an examined VIN entry already read on this connection (read_vin
+        at connect); 0902 is then not asked again."""
         out: dict = {"examined": False, "header": self.IDENTITY_HEADER}
         parsed: dict = {}
-        if not self.ser:
-            why = "the GT link is not open"
-        elif self._header != self.IDENTITY_HEADER and not self._set_header(
-                self.IDENTITY_HEADER):
-            why = f"GT refused ATSH{self.IDENTITY_HEADER}; request not sent"
-        else:
-            why = None
+        why = self._identity_ready()
         for info_type, (name, _size) in MODE09_ITEMS.items():
-            if why:
-                parsed[name] = {"examined": False, "why": why}
-                continue
-            resp = self.command("09" + info_type, wait=0.0)
-            if is_binary_reply(self.last_raw):
-                parsed[name] = {"examined": False,
-                                "why": "the GT answered in its binary mode"}
-            elif b">" not in self.last_raw:
-                parsed[name] = {"examined": False,
-                                "why": "no reply from the GT (no prompt)"}
-            else:
-                parsed[name] = parse_mode09_reply(resp, info_type)
+            if name == "vin" and vin is not None and vin.get("examined"):
+                continue                       # read at connect, kept
+            parsed[name] = ({"examined": False, "why": why} if why
+                            else self._read_mode09(info_type))
         out.update(decode_vehicle_identity(parsed))
+        if vin is not None and vin.get("examined"):
+            out["vin"] = vin
         out["examined"] = any(out[n].get("examined")
                               for n, _s in MODE09_ITEMS.values())
         return out

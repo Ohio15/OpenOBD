@@ -721,10 +721,14 @@ assert "WOT/PE samples: 50" in win.log_report.toPlainText()
 win.btn_learn_pedal.click()
 _txt = win.log_report.toPlainText()
 assert "rest 19.2 % / full 61.2 %" in _txt and "WOT/PE samples: 14" in _txt, _txt
-from openobd.app import load_pedal_cal as _lpc  # noqa: E402
-assert _lpc("unknown-vin").ready             # isolated settings, see canary
+assert "No VIN in this log; calibration applies to this log's analysis "     "only" in _txt                            # VIN-less log: nothing stored
+from openobd.appsettings import app_settings as _as  # noqa: E402
+_st = _as()
+_st.beginGroup("pedal_cal")
+assert _st.childGroups() == [], _st.childGroups()
+_st.endGroup()
 print("recording metadata OK: marker on the chart, pedal calibration learned "
-      "from the 2026-10-25 drive (WOT 50 -> 14 samples)")
+      "from the 2026-10-25 drive (WOT 50 -> 14 samples), analysis-only")
 
 # save round trip
 out = "/tmp/smoke_out.cal.json"
