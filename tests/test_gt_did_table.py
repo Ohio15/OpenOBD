@@ -55,7 +55,7 @@ def test_rejected_entries_carry_their_evidence():
 def test_the_gt_cannot_surface_trans_temp_without_a_verified_source():
     # tft comes back only by adding a verified DID_TABLE entry for it.
     did_keys = {key for key, _fn in gtmod.DID_TABLE.values()}
-    pid_keys = {key for key, _fn in gtmod.PID_TABLE.values()}
+    pid_keys = {d.key for d in gtmod.PID_TABLE.values()}
     assert "tft" not in pid_keys
     assert ("tft" in gtmod.CANONICAL_KEYS) == ("tft" in did_keys)
     assert "tft" not in gtmod.CANONICAL_KEYS

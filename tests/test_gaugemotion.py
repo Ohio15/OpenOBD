@@ -4,7 +4,7 @@ import math
 import pytest
 
 from openobd.gaugemotion import (
-    EASE_TAU_S, LiveFreshness, NeedleMotion, STALE_CAP_S, STALE_FLOOR_S,
+    EASE_TAU_S, NeedleMotion,
     ease_toward, fmt_reading, grid_cells, grid_shape, reading_decimals,
 )
 
@@ -134,107 +134,6 @@ def test_fmt_reading_is_the_true_sample_rounded():
     assert fmt_reading(float("nan"), 1) == "—"
     assert fmt_reading(-0.04, 1) == "0.0"     # no "-0.0" noise
     assert fmt_reading(-3.26, 1) == "-3.3"
-
-
-# --------------------------------------------------------------------------- #
-# live freshness (GT path)
-# --------------------------------------------------------------------------- #
-def test_nothing_arrived_yet_passes_the_source_state_through():
-    f = LiveFreshness()
-    assert f.resolve("rpm", "fresh", 0.0) == ("fresh", None)
-    assert f.resolve("rpm", None, 0.0) == (None, None)
-
-
-def test_channel_in_newest_sample_is_fresh_with_its_true_value():
-    f = LiveFreshness()
-    assert f.observe(0.0, {"rpm": 812.0, "ect": 190.0}, now=10.0)
-    assert f.resolve("rpm", "fresh", 10.2) == ("fresh", 812.0)
-
-
-def test_missed_pid_is_carried_not_blanked():
-    f = LiveFreshness()
-    f.observe(0.0, {"rpm": 800.0, "maf": 4.8}, now=10.0)
-    f.observe(1.0, {"rpm": 820.0}, now=11.0)          # MAF timed out
-    assert f.resolve("maf", "fresh", 11.1) == ("carried", 4.8)
-    assert f.resolve("rpm", "fresh", 11.1) == ("fresh", 820.0)
-
-
-def test_none_values_count_as_absent():
-    f = LiveFreshness()
-    f.observe(0.0, {"maf": 4.8}, now=0.0)
-    f.observe(1.0, {"maf": None, "rpm": 700.0}, now=1.0)
-    assert f.resolve("maf", "fresh", 1.0) == ("carried", 4.8)
-
-
-def test_repeated_sample_is_not_new():
-    f = LiveFreshness()
-    assert f.observe(5.0, {"rpm": 800.0}, now=0.0) is True
-    assert f.observe(5.0, {"rpm": 800.0}, now=0.1) is False
-    assert f.observe(None, None, now=0.2) is False
-
-
-def test_rounds_stop_arriving_means_stale_with_last_value_held():
-    f = LiveFreshness()
-    f.observe(0.0, {"rpm": 800.0}, now=0.0)
-    f.observe(1.0, {"rpm": 810.0}, now=1.0)
-    limit = f.stale_after()
-    # latest() keeps returning the same old sample: nothing new observed
-    f.observe(1.0, {"rpm": 810.0}, now=1.0 + limit + 0.01)
-    assert f.resolve("rpm", "fresh", 1.0 + limit + 0.01) == ("stale", 810.0)
-
-
-def test_long_missing_channel_is_withdrawn():
-    f = LiveFreshness()
-    f.observe(0.0, {"rpm": 800.0, "maf": 4.8}, now=0.0)
-    t = 0.0
-    for i in range(1, 12):                 # 1 Hz rounds without MAF
-        t = float(i)
-        f.observe(t, {"rpm": 800.0}, now=t)
-    assert f.resolve("maf", "fresh", t) == ("unavail", None)
-    assert f.resolve("rpm", "fresh", t) == ("fresh", 800.0)
-
-
-def test_source_failure_always_wins_and_shows_no_value():
-    f = LiveFreshness()
-    f.observe(0.0, {"rpm": 800.0}, now=0.0)
-    assert f.resolve("rpm", "failed", 0.1) == ("failed", None)
-
-
-def test_never_answered_channel_is_plain():
-    f = LiveFreshness()
-    f.observe(0.0, {"rpm": 800.0}, now=0.0)
-    assert f.resolve("ethanol", "fresh", 0.1) == (None, None)
-
-
-def test_stale_threshold_adapts_to_poll_rate_within_bounds():
-    f = LiveFreshness()
-    assert f.stale_after() == STALE_FLOOR_S
-    t = 0.0
-    for i in range(20):                    # fast 10 Hz link
-        t = i * 0.1
-        f.observe(t, {"rpm": 1.0}, now=t)
-    assert f.stale_after() == STALE_FLOOR_S      # 3 x 0.1 s floors at 2 s
-    g = LiveFreshness()
-    for i in range(20):                    # slow 2 s rounds
-        t = i * 2.0
-        g.observe(t, {"rpm": 1.0}, now=t)
-    assert g.stale_after() == pytest.approx(6.0, rel=0.05)
-    h = LiveFreshness()
-    for i in range(20):                    # pathological 30 s rounds
-        t = i * 30.0
-        h.observe(t, {"rpm": 1.0}, now=t)
-    assert h.stale_after() == STALE_CAP_S
-
-
-def test_resolve_all_covers_every_gauge():
-    f = LiveFreshness()
-    f.observe(0.0, {"rpm": 800.0}, now=0.0)
-    states, values = f.resolve_all(["rpm", "vss"], {"rpm": "fresh",
-                                                    "vss": "fresh"}, 0.1)
-    assert states == {"rpm": "fresh", "vss": None}
-    assert values == {"rpm": 800.0, "vss": None}
-    states, _ = f.resolve_all(["rpm"], None, 0.1)
-    assert states == {"rpm": "fresh"}
 
 
 # --------------------------------------------------------------------------- #

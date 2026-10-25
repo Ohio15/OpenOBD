@@ -11,6 +11,7 @@ with zero dashboard changes — the same seam `gt.py` implements for the CLI
 from __future__ import annotations
 
 import bisect
+import logging
 import time
 import threading
 from collections import deque
@@ -18,6 +19,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .logbin import Log, time_axis
+from .pollplan import PollPlan, fresh_window_s
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -238,16 +242,42 @@ class GtDataSource(DataSource):
     from the original connect, so a recording shows the outage as a time gap.
 
     Timing: every value carries its own request's send/receive times (see
-    Reading); a Sample's t is its sweep midpoint. The recorder zeroes time at
+    Reading); a Sample's t is its cycle midpoint. The recorder zeroes time at
     its first recorded sample.
+
+    Tiered polling (gt.ObdxGt.poll_timed / pollplan): one Sample per poll
+    cycle holding ONLY the readings obtained in that cycle, so the recording
+    shows a not-due channel as a blank cell. The live display must not
+    flicker on those gaps, so the source also keeps each channel's last
+    reading (channel_values / channel_ages / channel_states): a value stays
+    "fresh" for twice its tier period, then reads "stale". That held value is
+    for display only; it never enters a Sample or the recording.
     """
 
-    def __init__(self, port=None, poll_interval=0.05):
+    #: Pause after a failed poll before the next try. Polling itself runs
+    #: back to back (poll_interval 0): the link is the rate limit.
+    FAIL_PAUSE_S = 0.05
+    #: Smoothing for the measured cycle period (seconds between Samples).
+    CYCLE_EMA_ALPHA = 0.3
+
+    def __init__(self, port=None, poll_interval=0.0):
         from . import gt as _gt  # local import: pyserial only needed on this path
         self._gt = _gt.ObdxGt(port=port)
         self._keys = list(_gt.CANONICAL_KEYS)
         self._interval = poll_interval
         self._latest = None
+        # Per-channel last reading on this source's clock, for the live
+        # display only. Replaced (never mutated) by the poll thread, so a GUI
+        # reader iterating its snapshot can't race an update.
+        self._last_by_key: dict[str, Reading] = {}
+        self._cycle_s: Optional[float] = None     # measured, EMA
+        self._prev_t: Optional[float] = None
+        # Divisor per channel and predicted cycle from the GT's poll plan,
+        # captured on the poll thread (the plan may be rebuilt there).
+        self._divisors: dict[str, int] = {}
+        self._predicted_cycle_s: Optional[float] = None
+        self._plan_seen = None
+        self.plan_text: Optional[str] = None
         # Recorder queue, filled by the poll thread. Bounded so an idle
         # (non-recording) session can't grow it without limit; ~8k samples
         # is minutes of headroom at the real poll rate.
@@ -291,11 +321,84 @@ class GtDataSource(DataSource):
         # a live value. channel_states() says why.
         return None if self.failing() else self._latest
 
-    def channel_states(self) -> dict:
+    def _now(self) -> float:
+        return time.monotonic() - (self._t0 or 0.0)
+
+    def channel_values(self) -> dict[str, float]:
+        """Each channel's LAST READING (display only; it may be several
+        cycles old for a MEDIUM/SLOW channel - channel_ages says how old)."""
+        return {k: r.value for k, r in self._last_by_key.items()}
+
+    def channel_ages(self, now: Optional[float] = None) -> dict[str, float]:
+        """Seconds since each channel's last reading was sampled."""
+        now = self._now() if now is None else now
+        return {k: max(0.0, now - r.t) for k, r in self._last_by_key.items()}
+
+    def fresh_window_s(self, key: str) -> Optional[float]:
+        """Twice the channel's tier period, from the measured cycle time (the
+        plan's prediction until a cycle has been measured)."""
+        cycle = self._cycle_s or self._predicted_cycle_s
+        return fresh_window_s(self._divisors.get(key, 1), cycle)
+
+    def channel_states(self, now: Optional[float] = None) -> dict:
         """Freshness vocabulary the Dashboard already applies to tm sources:
-        every channel "failed" while polls are failing, "fresh" otherwise."""
-        state = "failed" if self.failing() else "fresh"
-        return {k: state for k in self._keys}
+        every channel "failed" while polls are failing; otherwise "fresh"
+        when its last reading is within twice its tier period, "stale" when
+        older, and None for a channel that has not answered yet."""
+        last = self._last_by_key
+        keys = set(self._keys) | set(last)
+        if self.failing():
+            return {k: "failed" for k in keys}
+        now = self._now() if now is None else now
+        out: dict = {}
+        for k in keys:
+            r = last.get(k)
+            if r is None:
+                out[k] = None
+                continue
+            window = self.fresh_window_s(k)
+            out[k] = ("fresh" if window is None or now - r.t <= window
+                      else "stale")
+        return out
+
+    def plan_summary(self) -> Optional[dict]:
+        """The GT's poll plan as data (pollplan.PollPlan.summary), or None
+        before the plan exists."""
+        plan = self._plan_seen
+        return plan.summary() if plan is not None else None
+
+    def _capture_plan(self) -> None:
+        """Poll thread: note the plan's tier divisors and prediction (the
+        plan is rebuilt there on reconnect or a batching refusal)."""
+        plan = getattr(self._gt, "_plan", None)
+        if not isinstance(plan, PollPlan) or plan is self._plan_seen:
+            return
+        self._plan_seen = plan
+        keys = set(plan.key_of.values()) | set(self._keys) | {"voltage"}
+        self._divisors = {k: plan.divisor_of(k) for k in keys}
+        self._predicted_cycle_s = plan.mean_cycle_s()
+        self.plan_text = plan.describe()
+
+    def _publish(self, s: Sample) -> None:
+        """A cycle's Sample: the newest for latest(), queued for the
+        recorder, and folded into the per-channel display state."""
+        last = dict(self._last_by_key)
+        if s.readings:
+            for r in s.readings:
+                last[r.key] = r
+        else:
+            for k, v in s.values.items():
+                last[k] = Reading(k, v, s.t, s.t, -1)
+        self._last_by_key = last
+        if self._prev_t is not None and s.t > self._prev_t:
+            gap = s.t - self._prev_t
+            self._cycle_s = (gap if self._cycle_s is None else
+                             self._cycle_s + self.CYCLE_EMA_ALPHA
+                             * (gap - self._cycle_s))
+        self._prev_t = s.t
+        self._capture_plan()
+        self._latest = s
+        self._queue.append(s)
 
     def status_message(self) -> str | None:
         """One line for the Dashboard status bar while polls are failing."""
@@ -331,8 +434,11 @@ class GtDataSource(DataSource):
             raise
         if first is not None:
             self._keys = sorted(first.values.keys())
-            self._latest = first
-            self._queue.append(first)
+            self._publish(first)
+        self._capture_plan()
+        if self.plan_text:
+            # Once per connect: what this link will poll, and how fast.
+            _log.info("GT %s %s", self.port_name, self.plan_text)
         self._stop.clear()
         self._kick.clear()
         self._thread = threading.Thread(target=self._run, name="gt-poll", daemon=True)
@@ -374,8 +480,7 @@ class GtDataSource(DataSource):
                 with self._io_lock:
                     s = self._sample(self._gt.poll_timed())
                 if s is not None:
-                    self._latest = s
-                    self._queue.append(s)
+                    self._publish(s)
                     self.fail_streak = 0
                     self._fails_since_open = 0
                     self._reconnect_attempts = 0
@@ -394,7 +499,8 @@ class GtDataSource(DataSource):
                 self.fail_streak += 1
                 self._fails_since_open += 1
                 self.last_error = f"{type(exc).__name__}: {exc}"
-            self._stop.wait(self._interval)
+            self._stop.wait(self._interval if self.fail_streak == 0
+                            else max(self._interval, self.FAIL_PAUSE_S))
 
     def _reconnect(self) -> None:
         """Close and re-open the GT once, after the backoff for this attempt.

@@ -110,5 +110,6 @@ def test_a_good_poll_recovers_the_source():
     src = _source_with([OSError("x"), OSError("x"), {"rpm": 650.0}])
     src._run()
     assert not src.failing() and src.status_message() is None
-    assert src.channel_states() == {"rpm": "fresh", "voltage": "fresh"}
+    # voltage never answered: no state, not a claim of freshness
+    assert src.channel_states() == {"rpm": "fresh", "voltage": None}
     assert src.latest().values == {"rpm": 650.0}

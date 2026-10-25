@@ -33,7 +33,6 @@ import csv
 import os
 import sys
 import threading
-import time
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, QEvent, Signal
@@ -60,7 +59,7 @@ from .diagui import DiagnosticsPage
 from .livedata import ActiveTestsPage, LiveDataPage
 from .logbin import (
     Log, Overlay, parse_csv, analyze_log, bin_log_to_table, detect_shift_points,
-    CANONICAL, time_axis,
+    CANONICAL, time_axis, attach_long,
 )
 
 pg.setConfigOption("background", (28, 30, 34))
@@ -69,7 +68,7 @@ pg.setConfigOptions(antialias=True)
 from .model import CalTableModel, HeatmapDelegate
 from .transport import DataSource, LogReplaySource, GtDataSource, Sample
 from . import tmsource, tmstore
-from .recorder import DriveRecorder, default_log_dirs
+from .recorder import DriveRecorder, default_log_dirs, sidecar_path
 from PySide6.QtCore import QStandardPaths
 
 # Gauge widgets, cluster layouts and the dashboard style registry live in
@@ -77,7 +76,6 @@ from PySide6.QtCore import QStandardPaths
 from .gauges import (  # noqa: E402
     DASHBOARD_STYLES, GaugeBase, build_classic_cluster, build_modern_cluster,
 )
-from .gaugemotion import LiveFreshness  # noqa: E402
 
 
 # Column labels for recorded datalogs. Chosen so logbin.map_channel maps them
@@ -111,11 +109,31 @@ RECORD_LABELS = {
     # source (gt.py follow-up: TCM DID 1940) is added to gt.DID_TABLE.
     "tft": "Trans Fluid Temp (F)",
     "run_time": "Engine Run Duration (s)",
+    # v0.33.0 channels (batched polling made room for them).
+    "abs_load": "Absolute Load (%)",
+    "rel_tps": "Relative Throttle Position (%)",
+    "app_e": "Accelerator Pedal E (%)",
+    "app_f": "Accelerator Pedal F (%)",
+    "stft_b2": "STFT Bank 2 (%)",
+    "ltft_b2": "LTFT Bank 2 (%)",
+    "fuel_system": "Fuel System Status",
+    "o2_b1s1": "O2 Voltage B1S1 (V)",
+    "o2_b1s2": "O2 Voltage B1S2 (V)",
+    "o2_b2s1": "O2 Voltage B2S1 (V)",
+    "o2_b2s2": "O2 Voltage B2S2 (V)",
+    "cat_b1s1": "Catalyst Temp B1S1 (F)",
+    "cat_b2s1": "Catalyst Temp B2S1 (F)",
 }
-RECORD_ORDER = ["rpm", "vss", "map", "maf", "load", "tps", "app",
-                "cmd_throttle", "spark", "ect", "iat", "tft", "stft", "ltft",
+# Column order. A recording only gets the keys in here that its source can
+# produce (Dashboard.toggle_record filters by recordable_channels()), so
+# "tft" holds its place for a future verified source but yields no column
+# on the GT today (tests/test_gt_did_table.py checks that).
+RECORD_ORDER = ["rpm", "vss", "map", "maf", "load", "abs_load", "tps",
+                "rel_tps", "app", "app_e", "app_f", "cmd_throttle", "spark",
+                "ect", "iat", "tft", "stft", "ltft", "stft_b2", "ltft_b2",
+                "fuel_system", "o2_b1s1", "o2_b1s2", "o2_b2s1", "o2_b2s2",
                 "eq_ratio", "fuel_press", "fuel_level", "voltage", "baro",
-                "ambient", "ethanol", "run_time"]
+                "ambient", "ethanol", "cat_b1s1", "cat_b2s1", "run_time"]
 
 
 class Dashboard(QWidget):
@@ -223,27 +241,25 @@ class Dashboard(QWidget):
     def _build_modern_cluster(self) -> QWidget:
         return build_modern_cluster(self.gauges)
 
-    # -- gauge feed: per-channel freshness for coarse live sources ---------- #
+    # -- gauge feed: per-channel latest for the tiered GT ------------------- #
     def _gauge_states(self, s: Optional[Sample], states: Optional[dict]):
-        """The OBDX GT reports one link-level state (fresh/failed) for every
-        channel. Refine it per channel from sample arrival so a PID missing
-        from one poll round reads "carried" (last real value held) instead of
-        flickering to "—", and a link that stops producing new rounds reads
-        "not advancing". truck-mcp sources already classify per channel
-        through tmstore and replays have no live clock, so both pass through
-        untouched."""
+        """The GT polls in tiers: a cycle's Sample holds only the channels
+        due in it, so drawing gauges from the newest Sample would blank every
+        MEDIUM/SLOW gauge three cycles in four. For the GT the gauges read
+        the source's per-channel LAST READING instead, with the source's own
+        per-channel freshness (fresh within twice the tier period, then
+        stale; failed while polls fail). truck-mcp sources already classify
+        per channel through tmstore and replays have no live clock, so both
+        pass through untouched."""
         if not isinstance(self.source, GtDataSource):
             self._derived_values = None
             return states
-        if getattr(self, "_fresh_src", None) is not self.source:
-            self._fresh_src = self.source
-            self._fresh = LiveFreshness()
-        now = time.monotonic()
-        self._fresh.observe(None if s is None else s.t,
-                            None if s is None else s.values, now)
-        derived, self._derived_values = self._fresh.resolve_all(
-            self.gauges, states, now)
-        return derived
+        values = self.source.channel_values()
+        states = states or {}
+        self._derived_values = {
+            k: (None if states.get(k) in (None, "failed") else values.get(k))
+            for k in self.gauges}
+        return {k: states.get(k) for k in self.gauges}
 
     def _gauge_value(self, key: str, s: Sample) -> Optional[float]:
         derived = getattr(self, "_derived_values", None)
@@ -457,6 +473,11 @@ class Dashboard(QWidget):
         dev = getattr(src, "device", "OBDX Pro GT")
         self._live_status = (
             f"{dev} live — {len(self.gauges)} gauges @ {getattr(src, 'port_name', '')}")
+        plan = getattr(src, "plan_text", None)
+        if plan:
+            # The poll plan, once per connect: tiers, requests per cycle and
+            # the predicted cycle time this link should reach.
+            self._live_status += f" · {plan}"
         self._source_alarm = False
         self.status.setText(self._live_status)
 
@@ -1409,7 +1430,9 @@ class MainWindow(QMainWindow):
             return
         rep = rep or analyze_log(self.log)
         L = []
-        L.append(f"Source: {self.log.source}")
+        L.append(f"Source: {self.log.source}"
+                 + ("  ·  per-channel times from the .long.csv sidecar"
+                    if self.log.timed else ""))
         L.append(f"Samples: {rep.n_samples}"
                  + (f"  ·  Duration: {rep.duration_s:.1f}s"
                     if rep.duration_s else ""))
@@ -1539,6 +1562,18 @@ class MainWindow(QMainWindow):
             self.log = parse_csv(text, source=os.path.basename(p))
         except Exception as e:
             QMessageBox.critical(self, "Load log failed", str(e)); return
+        # A Dashboard recording's long-format sidecar, when it sits next to
+        # the CSV: regime and shift analysis then use each channel's own
+        # request times instead of the wide row's cycle midpoint.
+        self._log_sidecar = None
+        side = sidecar_path(p)
+        if os.path.exists(side) and os.path.abspath(side) != os.path.abspath(p):
+            try:
+                with open(side, "r", encoding="utf-8", errors="replace") as fh:
+                    attach_long(self.log, fh.read())
+                self._log_sidecar = side
+            except (OSError, ValueError):
+                self.log.timed = None     # unreadable sidecar: wide CSV only
         self._log_times = time_axis(self.log)
         rep = analyze_log(self.log)
         # Event marker positions. The chart axis is zero-based (time_axis

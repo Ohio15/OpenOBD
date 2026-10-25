@@ -110,6 +110,17 @@ port it saw, rather than guessing a port that might be the OBDLink MX+.
   a row every gauge reads *read failed*, no last value is shown as if it were
   live, and the status line says why. It returns to live on the next good
   poll.
+* **Batched, tiered polling.** Up to six Mode 01 PIDs go in one request (one
+  multi-frame ECM reply), and channels are polled in tiers: engine and pedal
+  channels every cycle, trims/O2/temperatures every 4th, near-constant ones
+  every 20th (`openobd/pollplan.py`). On this truck that is 3 requests and a
+  predicted ~231 ms per fast cycle (was 22 requests, 0.69 Hz). The plan is
+  shown in the status line at connect. A recording row holds only the
+  channels read in that cycle (blank = not sampled); the gauges show each
+  channel's last reading, *stale* once it is older than twice its tier
+  period. If the ECM refuses a batch it is re-asked one PID per request.
+* **Log Analysis reads the `.long.csv` sidecar** next to a loaded recording:
+  regime trims and shift detection then use each channel's own request time.
 * Battery voltage comes from mode 01 PID 42, or from the GT's own ATRV when
   the ECM does not report it. ATRV is parsed strictly, so a garbled reply
   leaves the gauge empty rather than inventing a number.
@@ -189,6 +200,7 @@ openobd/
   coalesce.py    merge N reference cals into one best cal with provenance           [stdlib only]
   transport.py   DataSource seam: LogReplaySource, GtDataSource (live, over gt.py)  [stdlib only]
   gt.py          OBDX Pro GT over ELM327 text: detect, identify, poll, DTCs, scan  [pyserial]
+  pollplan.py    GT poll plan: 6-PID batches, fast/medium/slow tiers, cost model   [stdlib only]
   vehnet.py      the truck's module map + the staged comms-fault localizer         [stdlib only]
   tmstore.py     read truck-mcp *.tmsession.db drive logs; five-state display rule [stdlib only]
   tmsource.py    a truck-mcp drive log as a Dashboard DataSource (live or replay)   [stdlib only]
