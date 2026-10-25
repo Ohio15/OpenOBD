@@ -7,20 +7,23 @@ seam the dashboard's GtDataSource wraps:
 
     open() / close() / command(cmd) / request_raw(mode_pid)
 
-plus poll_timed() which reads the supported mode-01 PIDs and decodes them into
-OpenOBD canonical channel keys (see logbin.CANONICAL) with GAUGE_SPECS units
-(vss in mph, temps in F, fuel pressure in psi), each carrying the send and
-reply times of its own request; poll_once() is the same sweep as a plain
-{key: value} dict.
+plus poll_timed() which runs one poll cycle of the pollplan schedule: the due
+supported mode-01 PIDs, up to six per request, decoded into OpenOBD canonical
+channel keys (see logbin.CANONICAL) with GAUGE_SPECS units (vss in mph, temps
+in F, fuel pressure in psi), each carrying the send and reply times of its own
+request; poll_once() is a full sweep (every tier) as a plain {key: value}
+dict.
 
 Read-only: only ELM AT config + OBD mode-01 requests are issued. No ECU writes.
 """
 from __future__ import annotations
 
+import logging
 import re
 import time
-from typing import Optional
+from typing import Callable, NamedTuple, Optional
 
+from . import pollplan
 from .transport import Reading
 
 try:
@@ -35,29 +38,65 @@ def _u16(b):
     return b[0] * 256 + b[1]
 
 
-# pid byte (mode 01) -> (canonical_key, decode(list[int]) -> float in gauge units)
-PID_TABLE = {
-    "04": ("load",         lambda b: b[0] * 100.0 / 255.0),        # %
-    "05": ("ect",          lambda b: (b[0] - 40) * 9 / 5 + 32),    # F
-    "06": ("stft",         lambda b: (b[0] - 128) * 100.0 / 128),  # %
-    "07": ("ltft",         lambda b: (b[0] - 128) * 100.0 / 128),  # %
-    "0A": ("fuel_press",   lambda b: b[0] * 3 * 0.1450377),        # kPa->psi
-    "0B": ("map",          lambda b: float(b[0])),                 # kPa
-    "0C": ("rpm",          lambda b: _u16(b) / 4.0),               # rpm
-    "0D": ("vss",          lambda b: b[0] * 0.6213712),            # km/h->mph
-    "0E": ("spark",        lambda b: b[0] / 2.0 - 64.0),           # deg
-    "0F": ("iat",          lambda b: (b[0] - 40) * 9 / 5 + 32),    # F
-    "10": ("maf",          lambda b: _u16(b) / 100.0),             # g/s
-    "11": ("tps",          lambda b: b[0] * 100.0 / 255.0),        # %
-    "1F": ("run_time",     lambda b: float(_u16(b))),              # s
-    "2F": ("fuel_level",   lambda b: b[0] * 100.0 / 255.0),        # %
-    "33": ("baro",         lambda b: float(b[0])),                 # kPa
-    "42": ("voltage",      lambda b: _u16(b) / 1000.0),            # V
-    "44": ("eq_ratio",     lambda b: _u16(b) * 2.0 / 65536.0),     # lambda
-    "46": ("ambient",      lambda b: (b[0] - 40) * 9 / 5 + 32),    # F
-    "49": ("app",          lambda b: b[0] * 100.0 / 255.0),        # %
-    "4C": ("cmd_throttle", lambda b: b[0] * 100.0 / 255.0),        # %
-    "52": ("ethanol",      lambda b: b[0] * 100.0 / 255.0),        # %
+def _temp_f(c):
+    return c * 9 / 5 + 32
+
+
+class PidDef(NamedTuple):
+    """One Mode 01 PID: its canonical key, the data bytes its reply carries
+    (needed to walk a batched reply, where the ECM may answer the PIDs in any
+    order), and the decoder from those bytes to gauge units."""
+    key: str
+    nbytes: int
+    decode: Callable[[list], float]
+
+
+# PID byte (mode 01) -> PidDef. Units are GAUGE_SPECS units. Lengths per SAE
+# J1979 (cross-checked against truck-mcp obd.py PIDS). PIDs 03, 08, 09, 14, 15,
+# 18, 19, 3C, 3D, 43, 45, 47 and 4A were added in v0.33.0; all are in this
+# ECM's supported-PID bitmap from the 2026-10-25 drive's probe.
+PID_TABLE: dict[str, PidDef] = {
+    # Fuel system status: byte0 is a bitfield (1 open loop cold, 2 closed
+    # loop, 4 open loop load/decel, 8 open loop fault, 16 closed loop with a
+    # fault). Recorded as the raw code; byte1 (system 2) is not used here.
+    "03": PidDef("fuel_system",  2, lambda b: float(b[0])),
+    "04": PidDef("load",         1, lambda b: b[0] * 100.0 / 255.0),        # %
+    "05": PidDef("ect",          1, lambda b: _temp_f(b[0] - 40)),          # F
+    "06": PidDef("stft",         1, lambda b: (b[0] - 128) * 100.0 / 128),  # %
+    "07": PidDef("ltft",         1, lambda b: (b[0] - 128) * 100.0 / 128),  # %
+    "08": PidDef("stft_b2",      1, lambda b: (b[0] - 128) * 100.0 / 128),  # %
+    "09": PidDef("ltft_b2",      1, lambda b: (b[0] - 128) * 100.0 / 128),  # %
+    "0A": PidDef("fuel_press",   1, lambda b: b[0] * 3 * 0.1450377),        # kPa->psi
+    "0B": PidDef("map",          1, lambda b: float(b[0])),                 # kPa
+    "0C": PidDef("rpm",          2, lambda b: _u16(b) / 4.0),               # rpm
+    "0D": PidDef("vss",          1, lambda b: b[0] * 0.6213712),            # km/h->mph
+    "0E": PidDef("spark",        1, lambda b: b[0] / 2.0 - 64.0),           # deg
+    "0F": PidDef("iat",          1, lambda b: _temp_f(b[0] - 40)),          # F
+    "10": PidDef("maf",          2, lambda b: _u16(b) / 100.0),             # g/s
+    "11": PidDef("tps",          1, lambda b: b[0] * 100.0 / 255.0),        # %
+    # O2 sensor voltage: byte0 / 200 V. byte1 is that sensor's own STFT
+    # (0xFF = not used for trim) and is deliberately not decoded.
+    "14": PidDef("o2_b1s1",      2, lambda b: b[0] / 200.0),                # V
+    "15": PidDef("o2_b1s2",      2, lambda b: b[0] / 200.0),                # V
+    "18": PidDef("o2_b2s1",      2, lambda b: b[0] / 200.0),                # V
+    "19": PidDef("o2_b2s2",      2, lambda b: b[0] / 200.0),                # V
+    "1F": PidDef("run_time",     2, lambda b: float(_u16(b))),              # s
+    "2F": PidDef("fuel_level",   1, lambda b: b[0] * 100.0 / 255.0),        # %
+    "33": PidDef("baro",         1, lambda b: float(b[0])),                 # kPa
+    "3C": PidDef("cat_b1s1",     2, lambda b: _temp_f(_u16(b) / 10.0 - 40)),  # F
+    "3D": PidDef("cat_b2s1",     2, lambda b: _temp_f(_u16(b) / 10.0 - 40)),  # F
+    "42": PidDef("voltage",      2, lambda b: _u16(b) / 1000.0),            # V
+    "43": PidDef("abs_load",     2, lambda b: _u16(b) * 100.0 / 255.0),     # %
+    "44": PidDef("eq_ratio",     4, lambda b: _u16(b) * 2.0 / 65536.0),     # lambda
+    "45": PidDef("rel_tps",      1, lambda b: b[0] * 100.0 / 255.0),        # %
+    "46": PidDef("ambient",      1, lambda b: _temp_f(b[0] - 40)),          # F
+    # Pedal sensors: on this truck PID 49 is APP D (the "app" channel); 47
+    # and 4A are APP E and F.
+    "47": PidDef("app_e",        1, lambda b: b[0] * 100.0 / 255.0),        # %
+    "49": PidDef("app",          1, lambda b: b[0] * 100.0 / 255.0),        # %
+    "4A": PidDef("app_f",        1, lambda b: b[0] * 100.0 / 255.0),        # %
+    "4C": PidDef("cmd_throttle", 1, lambda b: b[0] * 100.0 / 255.0),        # %
+    "52": PidDef("ethanol",      1, lambda b: b[0] * 100.0 / 255.0),        # %
 }
 
 # ---- GM enhanced parameters (mode 22 ReadDataByIdentifier) ----------------- #
@@ -99,8 +138,11 @@ REJECTED_DIDS = {
 #   ("7E2", "1940"): ("tft", lambda b: (b[0] - 40) * 9 / 5 + 32)
 # here with that evidence cited. Until then the GT has no trans temp channel.
 # canonical keys this transport can ever surface (for gauge pre-build)
-CANONICAL_KEYS = sorted({v[0] for v in PID_TABLE.values()}
+CANONICAL_KEYS = sorted({d.key for d in PID_TABLE.values()}
                         | {v[0] for v in DID_TABLE.values()})
+_PID_LENGTHS = {pid: d.nbytes for pid, d in PID_TABLE.items()}
+
+_log = logging.getLogger(__name__)
 
 OBDX_VID = 0x0483
 OBDX_PID = 0x5740
@@ -522,6 +564,104 @@ def parse_frames(resp: str) -> list[tuple[str, str]]:
     return frames
 
 
+_HEX = frozenset("0123456789ABCDEF")
+# ELM multi-frame line with headers off: '<frame index>:<data>' (index is one
+# hex digit, 0..F, wrapping). The index is NOT data.
+_MF_LINE = re.compile(r"^([0-9A-F]):([0-9A-F]*)$")
+
+
+def _hex_bytes(h: str) -> list[int]:
+    h = h[:len(h) - (len(h) % 2)]
+    return [int(h[i:i + 2], 16) for i in range(0, len(h), 2)]
+
+
+def mode01_message(resp: str) -> Optional[list[int]]:
+    """The response MESSAGE bytes (service byte first) of a reply to one
+    Mode 01 request, or None when there is none (NO DATA, '?', garbage).
+
+    ELM327 text formats this reads (ATS0 ATCAF1, from ObdxGt.open):
+      single frame, headers off:  '410C1AF8'
+      multi-frame, headers off:   '01A' '0:410C1AF80D20' '1:...' '2:...'
+          The first line is the 3-hex-digit total message length; every
+          frame line carries a one-digit index and a colon. Neither is data:
+          stripping the reply to hex digits (the old _extract) turned them
+          into payload bytes and misaligned every value after them. Frames
+          are joined in index order (a gap ends the message there) and cut
+          at the declared length, which drops the last frame's padding.
+      headers on (ATH1), when the ATH0 restore after a diagnostic did not
+          take: reassembled per responder by reassemble_isotp; the ECM's
+          (7E8) message is used.
+    Spaces on (a 'N:' line followed by 2-digit byte tokens) is accepted too.
+    Ported from truck-mcp obd.py frames_by_module / parse_multi_pid."""
+    declared: Optional[int] = None
+    frames: list[list] = []          # [index, hex data]
+    loose: list[str] = []
+    for tok in resp.upper().split():
+        m = _MF_LINE.match(tok)
+        if m:
+            frames.append([int(m.group(1), 16), m.group(2)])
+            continue
+        if any(c not in _HEX for c in tok):
+            continue                 # NO DATA, SEARCHING..., STOPPED, '?'
+        if frames:
+            frames[-1][1] += tok     # spaces on: bytes after 'N:'
+        elif declared is None and not loose and len(tok) == 3:
+            declared = int(tok, 16)  # multi-frame length line
+        else:
+            loose.append(tok)
+    if frames:
+        buf = ""
+        for k, (idx, data) in enumerate(frames):
+            if idx != k % 16:
+                break                # missing frame: nothing after it aligns
+            buf += data
+        msg = _hex_bytes(buf)
+        return msg[:declared] if declared is not None else msg
+    if loose and all(len(t) == 2 for t in loose):
+        loose = ["".join(loose)]     # spaces on, single frame
+    for tok in loose:
+        if tok.startswith(("41", "7F")):
+            return _hex_bytes(tok)
+    ecm = reassemble_isotp(resp).get("7E8")
+    if ecm:
+        for msg in ecm["messages"]:
+            if msg.startswith(("41", "7F")):
+                return _hex_bytes(msg)
+    return None
+
+
+def parse_mode01_reply(resp: str, pids: list[str],
+                       lengths: dict[str, int]) -> dict[str, list[int]]:
+    """Decode the reply to ONE Mode 01 request for `pids` (1..6 of them)
+    into {pid: data bytes} for every requested PID present.
+
+    The ECM answers '41' then, for each PID it chose to answer, the PID byte
+    and its data, in ANY order, omitting PIDs it does not support. The walk
+    only advances over PIDs that were requested and not yet seen, with the
+    byte length from `lengths`: a trailing 0x00 pad is a legal PID id, and
+    accepting it would read padding as data (truck-mcp parse_multi_pid). A
+    PID cut short by a truncated reply is dropped, never padded out. A
+    negative response (7F 01 nrc) or no message yields {}."""
+    msg = mode01_message(resp)
+    if not msg or msg[0] != 0x41:
+        return {}
+    remaining = {p.upper() for p in pids}
+    out: dict[str, list[int]] = {}
+    i = 1
+    while i < len(msg) and remaining:
+        pid = "%02X" % msg[i]
+        if pid not in remaining:
+            break
+        n = lengths[pid]
+        data = msg[i + 1:i + 1 + n]
+        if len(data) < n:
+            break
+        out[pid] = data
+        remaining.discard(pid)
+        i += 1 + n
+    return out
+
+
 def parse_atrv(resp: str) -> Optional[float]:
     """ATRV text reply ('12.6V') -> volts, or None when it does not parse.
     None means UNREADABLE, never 'no voltage'."""
@@ -598,8 +738,18 @@ class ObdxGt:
         # time.monotonic() just before the last command() was written and
         # just after its reply was read: the exchange that dates its value.
         self.last_exchange: Optional[tuple[float, float]] = None
-        # Sequence number of the data requests issued by poll_timed().
+        # Sequence number of the data requests issued by poll_timed(): one
+        # per request on the link, shared by every value one reply decoded.
         self._request_seq = 0
+        # Batched, tiered polling (pollplan). The plan is rebuilt whenever
+        # the supported set or the batch size changes (connect / reconnect).
+        self._plan: Optional[pollplan.PollPlan] = None
+        self._plan_for: Optional[tuple] = None
+        self._cycle = 0
+        # Set when the ECM answered PIDs singly that it would not answer as
+        # a batch: from then on (until the next open) every PID goes alone.
+        self.batching_refused = False
+        self.batch_refusals = 0
 
     @staticmethod
     def autodetect() -> Optional[str]:
@@ -655,7 +805,11 @@ class ObdxGt:
                     f"interface (ATI={ati!r}, AT@1={at1!r})")
             self.device = at1.strip() or "OBDX Pro GT"
             self._probe_supported()
-            self._set_header("7E0")  # physical ECM addr for mode-22 DIDs
+            # A new link may be a different truck/ECM: batching is tried
+            # again and the plan is rebuilt from the new supported set.
+            self.batching_refused = False
+            self._plan = None
+            self._set_header("7E0")  # physical ECM addr (Mode 01 batches, DIDs)
         except Exception:
             self.close()         # never leave the port held after a failed open
             raise
@@ -765,80 +919,147 @@ class ObdxGt:
                 break
 
     def possible_keys(self) -> list[str]:
-        """Every canonical key poll_once() can produce on this connection:
+        """Every canonical key poll_timed() can produce on this connection:
         the PIDs the ECM said it supports (all of PID_TABLE before the probe),
         the ATRV voltage fallback, and the mode-22 DIDs. The recorder fixes its
         columns from this, so a PID that only starts answering mid-drive (key
         on after connect, engine start) still lands in the log."""
-        keys = {key for pid, (key, _fn) in PID_TABLE.items()
+        keys = {d.key for pid, d in PID_TABLE.items()
                 if not self.supported or pid in self.supported}
         keys.add("voltage")
         keys |= {key for key, _fn in DID_TABLE.values()}
         return sorted(keys)
 
-    def poll_once(self) -> dict:
-        """One sweep as {key: value} (CLI, diagnostics). Recording uses
-        poll_timed(), which keeps each value's own request time."""
-        return {r.key: r.value for r in self.poll_timed()}
+    # -- polling plan ------------------------------------------------------- #
+    def poll_plan(self) -> pollplan.PollPlan:
+        """The plan for the current supported set and batching state."""
+        size = 1 if self.batching_refused else pollplan.MAX_PIDS_PER_REQUEST
+        want = (frozenset(self.supported), size, len(DID_TABLE))
+        if self._plan is None or self._plan_for != want:
+            self._plan = pollplan.PollPlan.build(
+                {pid: d.key for pid, d in PID_TABLE.items()}, self.supported,
+                batch_size=size, n_dids=len(DID_TABLE))
+            self._plan_for = want
+            self._cycle = 0          # a new plan starts with a full cycle
+            _log.info("GT %s %s", self.port_name, self._plan.describe())
+        return self._plan
 
-    def _reading(self, out: list, key: str, fn, data: list) -> None:
-        """Decode `data` (the reply to the request just made) into a Reading
-        carrying that request's send/reply times. A decode failure drops the
-        value; the request number is still consumed, so gaps stay visible."""
+    def poll_once(self) -> dict:
+        """One FULL sweep (every tier) as {key: value} (CLI, diagnostics).
+        Recording uses poll_timed(), which keeps each value's own request
+        time and follows the tier schedule."""
+        return {r.key: r.value for r in self.poll_timed(full=True)}
+
+    def _next_request(self) -> tuple[int, tuple[float, float]]:
+        """Number the request just made and return (number, its exchange)."""
         self._request_seq += 1
+        return self._request_seq, self.last_exchange
+
+    @staticmethod
+    def _reading(out: list, key: str, fn, data, request: int,
+                 exchange: tuple[float, float]) -> None:
+        """Decode `data` into a Reading carrying its request's number and
+        send/reply times. Several readings may come from one request (a
+        batched reply); they share both. A decode failure drops the value
+        and the request number stays consumed, so the gap is visible."""
         try:
             value = float(fn(data))
         except Exception:
             return
-        sent, received = self.last_exchange
-        out.append(Reading(key, value, sent, received, self._request_seq))
+        sent, received = exchange
+        out.append(Reading(key, value, sent, received, request))
 
-    def poll_timed(self) -> list:
-        """One sequential sweep as a list of Readings, in request order. Each
-        carries the exchange of the request that returned it: a sweep is ~22
-        requests at ~63 ms each, so stamping the whole sweep once at its end
-        (as before) aged RPM by ~0.95 s and engine load by ~1.33 s at their
-        stamp (2026-10-25, brain 8d92fae5)."""
+    def _request_pids(self, out: list, pids: list[str]) -> int:
+        """One Mode 01 request for `pids`; appends a Reading per PID the ECM
+        answered and returns how many decoded. Raises GtNoResponse when the
+        GT sent no prompt at all."""
+        cmd = "01" + "".join(pids)
+        resp = self.request_raw(cmd)
+        request, exchange = self._next_request()
+        if b">" not in self.last_raw:
+            # Fail the poll now: walking the rest of the plan at the read
+            # deadline each would take ~30 s to report a dead GT.
+            raise GtNoResponse(
+                f"no reply from the GT on {self.port_name} for {cmd}")
+        got = parse_mode01_reply(resp, pids, _PID_LENGTHS)
+        before = len(out)
+        for pid in pids:                      # request order, not reply order
+            if pid in got:
+                d = PID_TABLE[pid]
+                self._reading(out, d.key, d.decode, got[pid], request,
+                              exchange)
+        return len(out) - before
+
+    def poll_timed(self, full: bool = False) -> list:
+        """One poll CYCLE as a list of Readings, in request order.
+
+        The cycle asks for the plan's due PIDs (pollplan: FAST every cycle,
+        MEDIUM every 4th, SLOW every 20th; cycle 0 and full=True ask for
+        all), up to six per request. Each Reading carries the exchange of the
+        request that returned it, so a value is bounded by its own request
+        (2026-10-25, brain 8d92fae5); values from one batched reply share
+        it. Only readings actually obtained are returned: a not-due or
+        unanswered PID has NO reading, never a carried one.
+
+        A batch the ECM answers with nothing (NO DATA / negative response)
+        is retried one PID per request in the same cycle. If the ECM answers
+        those, it refused BATCHING (batching_refused is set and the plan
+        drops to one PID per request until the next open); if it answers
+        none, the ECM is quiet and the rest of the cycle is not re-asked."""
         out: list = []
         if not self.ser:
             return out
-        # Physical ECM addressing is what makes these values ECM values. If a
-        # header command was refused earlier, re-establish it; if the GT still
-        # refuses, report nothing rather than another module's bytes.
+        # Physical ECM addressing is what makes these values ECM values (and
+        # is what lets a multi-frame batch be flow-controlled: one
+        # responder). If a header command was refused earlier, re-establish
+        # it; if the GT still refuses, report nothing rather than another
+        # module's bytes.
         if self._header != "7E0" and not self._set_header("7E0"):
             return out
-        for pid, (key, fn) in PID_TABLE.items():
-            if self.supported and pid not in self.supported:
+        plan = self.poll_plan()
+        cycle = 0 if full else self._cycle
+        ecm_quiet = False
+        for batch in plan.batches_for_cycle(cycle):
+            if self.batching_refused and len(batch) > 1:
+                for pid in batch:
+                    self._request_pids(out, [pid])
                 continue
-            data = self._extract(self.request_raw("01" + pid), "01" + pid)
-            if b">" not in self.last_raw:
-                # Fail the poll now: walking the rest of the table at the read
-                # deadline each would take ~30 s to report a dead GT.
-                raise GtNoResponse(
-                    f"no reply from the GT on {self.port_name} for 01{pid}")
-            if not data:
-                self._request_seq += 1
+            if self._request_pids(out, batch) or len(batch) == 1 or ecm_quiet:
                 continue
-            self._reading(out, key, fn, data)
-        if not any(r.key == "voltage" for r in out):
+            answered = sum(self._request_pids(out, [pid]) for pid in batch)
+            if answered:
+                self.batching_refused = True
+                self.batch_refusals += 1
+                _log.warning("GT %s: the ECM answered %s singly but not as "
+                             "one batched request; polling one PID per "
+                             "request until the next connect",
+                             self.port_name, "01" + "".join(batch))
+            else:
+                ecm_quiet = True
+        # Module voltage from the GT's own ATRV when PID 42 gave none, on the
+        # SLOW tier where voltage lives. Also on any cycle where nothing at
+        # all decoded: a healthy GT always answers ATRV, so the transport can
+        # tell a quiet ECM (key off) from a dead link.
+        if ((plan.tier_due(pollplan.SLOW, cycle) or not out)
+                and not any(r.key == "voltage" for r in out)):
             # Strict parse, as the Module Map does: a binary or garbled reply
             # is UNREADABLE and leaves the gauge empty, never a made-up value
             # pulled out of noise by a loose regex.
             rv = self.command("ATRV", wait=0.05)
+            request, exchange = self._next_request()
             if not is_binary_reply(self.last_raw):
                 volts = parse_atrv(rv)
                 if volts is not None:
-                    self._reading(out, "voltage", lambda b: b[0], [volts])
-                else:
-                    self._request_seq += 1
-            else:
-                self._request_seq += 1
-        for (module, did), (key, fn) in DID_TABLE.items():
-            data = self.request_did(did, module=module)
-            if not data:
-                self._request_seq += 1
-                continue
-            self._reading(out, key, fn, data)
+                    self._reading(out, "voltage", lambda b: b[0], [volts],
+                                  request, exchange)
+        if plan.dids_due(cycle):
+            for (module, did), (key, fn) in DID_TABLE.items():
+                data = self.request_did(did, module=module)
+                request, exchange = self._next_request()
+                if data:
+                    self._reading(out, key, fn, data, request, exchange)
+        if not full:
+            self._cycle += 1
         return out
 
     # -- diagnostics -------------------------------------------------------- #

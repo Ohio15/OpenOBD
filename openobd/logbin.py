@@ -22,6 +22,7 @@ HP Tuners' verbose names and our own short names resolve to canonical keys.
 """
 from __future__ import annotations
 
+import bisect
 import csv
 import io
 import math
@@ -42,12 +43,35 @@ CANONICAL = {
     "vss":         ["vehicle speed", "vss", "vehiclespeed"],
     "map":         ["manifold absolute", "map"],
     "maf":         ["mass air flow", "maf", "airflow"],
-    "load":        ["engine load", "calculated load", "absload", "load"],
+    # PID 43 absolute load is NOT calculated load (it can exceed 100 %), so
+    # it is matched before "load", and "absload" moved here from "load".
+    "abs_load":    ["absolute load", "abs load", "absload"],
+    "load":        ["engine load", "calculated load", "load"],
+    # Relative throttle and pedal sensors E/F before the generic needles
+    # ("throttle position", "accelerator pedal") that would swallow them.
+    "rel_tps":     ["relative throttle", "rel tps", "reltps"],
     "tps":         ["throttle position", "tps"],
+    "app_e":       ["accelerator pedal e", "pedal position e"],
+    "app_f":       ["accelerator pedal f", "pedal position f"],
     "app":         ["accelerator pedal", "pedal position", "app"],
     "cmd_throttle":["commanded throttle", "throttle command"],
+    # Bank 2 trims before the bank-agnostic "short/long term fuel" needles.
+    "stft_b2":     ["stft bank 2", "stft b2", "short term fuel trim bank 2",
+                    "bank 2 short term"],
+    "ltft_b2":     ["ltft bank 2", "ltft b2", "long term fuel trim bank 2",
+                    "bank 2 long term"],
     "stft":        ["short term fuel", "stft", "shorttermft"],
     "ltft":        ["long term fuel", "ltft", "longtermft"],
+    "fuel_system": ["fuel system status", "fuel sys status"],
+    # O2 sensor voltages and catalyst temps per position, before the generic
+    # "o2 sensor" / "voltage" needles. Every needle names the sensor type, so
+    # a B1S1 catalyst column can never land on the B1S1 O2 sensor.
+    "o2_b1s1":     ["o2 voltage b1s1", "o2 sensor b1s1", "o2 b1s1"],
+    "o2_b1s2":     ["o2 voltage b1s2", "o2 sensor b1s2", "o2 b1s2"],
+    "o2_b2s1":     ["o2 voltage b2s1", "o2 sensor b2s1", "o2 b2s1"],
+    "o2_b2s2":     ["o2 voltage b2s2", "o2 sensor b2s2", "o2 b2s2"],
+    "cat_b1s1":    ["catalyst temp b1s1", "cat temp b1s1"],
+    "cat_b2s1":    ["catalyst temp b2s1", "cat temp b2s1"],
     "eq_ratio":    ["equivalence", "eq ratio", "commanded eq"],
     "afr":         ["air fuel", "afr", "lambda"],
     "o2":          ["o2 sensor", "oxygen"],
@@ -97,6 +121,9 @@ class Log:
     channels: list[LogChannel]
     n_samples: int
     source: str = ""
+    #: Per-channel (t, value) readings from the long-format sidecar, when
+    #: one was loaded next to the CSV (attach_long); None otherwise.
+    timed: Optional[dict] = None
 
     def by_canonical(self, key: str) -> Optional[LogChannel]:
         for ch in self.channels:
@@ -347,9 +374,130 @@ class LogReport:
     notes: list[str] = field(default_factory=list)
 
 
+# --------------------------------------------------------------------------- #
+# Long-format sidecar (<stem>.long.csv, written by recorder.DriveRecorder):
+# one line per value with that value's OWN request time. A tiered GT log has
+# blanks in the wide CSV for not-due channels, and every wide row's single
+# time is only its cycle midpoint; the sidecar is the precise record.
+# --------------------------------------------------------------------------- #
+LONG_HEADER = ("Time (s)", "Channel", "Value")
+
+
+def parse_long_csv(text: str) -> dict[str, list[tuple[float, float]]]:
+    """Sidecar text -> {canonical key: [(t, value), ...] sorted by t}.
+    Lines that do not parse are skipped (never guessed); a file whose header
+    is not the sidecar's raises ValueError."""
+    reader = csv.reader(io.StringIO(text))
+    header = next(reader, None)
+    if not header or tuple(h.strip() for h in header[:3]) != LONG_HEADER:
+        raise ValueError("not an OpenOBD long-format sidecar")
+    out: dict[str, list[tuple[float, float]]] = {}
+    for row in reader:
+        if len(row) < 3:
+            continue
+        t, v = _to_float(row[0]), _to_float(row[2])
+        key = row[1].strip()
+        if t is None or v is None or not key:
+            continue
+        out.setdefault(key, []).append((t, v))
+    for series in out.values():
+        series.sort(key=lambda tv: tv[0])
+    return out
+
+
+def attach_long(log: "Log", text: str) -> "Log":
+    """Attach a sidecar's per-channel timed series to a parsed wide log;
+    analyze_log / detect_shift_points then use each channel's own times."""
+    log.timed = parse_long_csv(text)
+    return log
+
+
+class _Timed:
+    """Nearest-in-time lookup over one channel's (t, value) readings."""
+
+    def __init__(self, series: list[tuple[float, float]]):
+        self.t = [p[0] for p in series]
+        self.v = [p[1] for p in series]
+
+    def __bool__(self):
+        return bool(self.t)
+
+    def at(self, t: float, tol: float) -> Optional[float]:
+        """The reading nearest t, if within tol seconds; else None. Analysis
+        pairing only: nothing here is written back as a sample."""
+        if not self.t:
+            return None
+        i = bisect.bisect_left(self.t, t)
+        best = None
+        for j in (i - 1, i):
+            if 0 <= j < len(self.t):
+                d = abs(self.t[j] - t)
+                if d <= tol and (best is None or d < best[0]):
+                    best = (d, self.v[j])
+        return None if best is None else best[1]
+
+
+def _pair_tolerance(rpm: "_Timed") -> float:
+    """Pairing window: one rpm sampling period (median spacing), at least
+    0.25 s, so a value is classified by the rpm/pedal read in the same or an
+    adjacent poll cycle."""
+    gaps = sorted(b - a for a, b in zip(rpm.t, rpm.t[1:]) if b > a)
+    med = gaps[len(gaps) // 2] if gaps else 0.0
+    return max(0.25, med)
+
+
 def _mean(vals: Iterable[Optional[float]]) -> Optional[float]:
     xs = [v for v in vals if v is not None]
     return sum(xs) / len(xs) if xs else None
+
+
+def _regime(r: Optional[float], a: Optional[float]) -> Optional[str]:
+    if r is None:
+        return None
+    if r < 900 and (a is None or a < 5):
+        return "idle"
+    if a is not None and a >= 75:
+        return "PE (WOT/high load)"
+    if a is not None and a < 25:
+        return "cruise"
+    return "part-throttle"
+
+
+def _timed_regimes(log: Log) -> Optional[list]:
+    """Regime trims from the sidecar's per-channel times, or None when the
+    log has no usable sidecar. Each rpm reading is a regime point (pedal
+    paired by time); each STFT / LTFT reading is classified by the rpm and
+    pedal nearest ITS OWN time, so a MEDIUM-tier LTFT is never averaged
+    against the wrong cycle's operating point."""
+    td = log.timed or {}
+    rpm = _Timed(td.get("rpm", []))
+    if not rpm:
+        return None
+    app = _Timed(td.get("app", []) or td.get("tps", []))
+    tol = _pair_tolerance(rpm)
+
+    def regime_at(t: float) -> Optional[str]:
+        return _regime(rpm.at(t, tol), app.at(t, tol) if app else None)
+
+    counts: dict[str, int] = {}
+    for t, r in zip(rpm.t, rpm.v):
+        rg = _regime(r, app.at(t, tol) if app else None)
+        if rg:
+            counts[rg] = counts.get(rg, 0) + 1
+    trims: dict[str, dict[str, list[float]]] = {}
+    for key in ("stft", "ltft"):
+        for t, v in td.get(key, []):
+            rg = regime_at(t)
+            if rg:
+                trims.setdefault(rg, {}).setdefault(key, []).append(v)
+    out = []
+    for name, cnt in counts.items():
+        tr = trims.get(name, {})
+        s = _mean(tr.get("stft", [])) if tr.get("stft") else None
+        l = _mean(tr.get("ltft", [])) if tr.get("ltft") else None
+        comb = None if s is None and l is None else (s or 0.0) + (l or 0.0)
+        out.append(RegimeStats(name, cnt, s, l, comb))
+    return out
 
 
 def analyze_log(log: Log) -> LogReport:
@@ -385,20 +533,23 @@ def analyze_log(log: Log) -> LogReport:
             return "cruise"
         return "part-throttle"
 
-    buckets: dict[str, list[int]] = {}
-    for i in range(n):
-        rg = regime_of(i)
-        if rg:
-            buckets.setdefault(rg, []).append(i)
-
     regimes: list[RegimeStats] = []
-    for name, idxs in buckets.items():
-        s = _mean(stft[i] for i in idxs if i < len(stft)) if stft else None
-        l = _mean(ltft[i] for i in idxs if i < len(ltft)) if ltft else None
-        comb = None
-        if s is not None or l is not None:
-            comb = (s or 0.0) + (l or 0.0)
-        regimes.append(RegimeStats(name, len(idxs), s, l, comb))
+    timed = _timed_regimes(log)
+    if timed is not None:
+        regimes = timed
+    else:
+        buckets: dict[str, list[int]] = {}
+        for i in range(n):
+            rg = regime_of(i)
+            if rg:
+                buckets.setdefault(rg, []).append(i)
+        for name, idxs in buckets.items():
+            s = _mean(stft[i] for i in idxs if i < len(stft)) if stft else None
+            l = _mean(ltft[i] for i in idxs if i < len(ltft)) if ltft else None
+            comb = None
+            if s is not None or l is not None:
+                comb = (s or 0.0) + (l or 0.0)
+            regimes.append(RegimeStats(name, len(idxs), s, l, comb))
     regimes.sort(key=lambda r: -r.n)
 
     # Knock events. Prefer a real KR channel; else detect a timing-collapse
@@ -453,7 +604,10 @@ def analyze_log(log: Log) -> LogReport:
                 notes.append(f"Cruise trims average {cruise.combined_trim_mean:+.1f}%"
                              " (lean) — MAF under-read / small leak.")
 
-    if not any(regime_of(i) == "PE (WOT/high load)" for i in range(n)):
+    has_pe = (any(r.name == "PE (WOT/high load)" for r in regimes)
+              if timed is not None else
+              any(regime_of(i) == "PE (WOT/high load)" for i in range(n)))
+    if not has_pe:
         notes.append("No WOT/PE samples in this log — can't validate shift points "
                      "or PE fueling. Capture a full-throttle pull with KR logged.")
 
@@ -485,12 +639,58 @@ class ShiftEvent:
     inferred: bool = False      # detected from RPM drop, no gear channel
 
 
+def _timed_shifts(log: Log, wot_threshold: float) -> Optional[list]:
+    """Shift detection on the sidecar's per-channel times, or None without
+    one. Same rules as the wide path (gear increments, else an RPM drop of
+    400+ with VSS not falling), but consecutive readings are the channel's
+    OWN readings at their own times, and vss / pedal are paired by time."""
+    td = log.timed or {}
+    rpm = _Timed(td.get("rpm", []))
+    if not rpm:
+        return None
+    vss = _Timed(td.get("vss", []))
+    app = _Timed(td.get("app", []) or td.get("tps", []))
+    gear = _Timed(td.get("gear", []))
+    tol = _pair_tolerance(rpm)
+
+    def wot(t: float) -> bool:
+        a = app.at(t, tol) if app else None
+        return a is not None and a >= wot_threshold
+
+    events: list[ShiftEvent] = []
+    if gear:
+        last, last_t = None, None
+        for t, g in zip(gear.t, gear.v):
+            g = round(g)
+            if last is not None and g > last:
+                events.append(ShiftEvent(
+                    from_gear=last, to_gear=g, time_s=last_t,
+                    rpm=rpm.at(last_t, tol),
+                    vss=vss.at(last_t, tol) if vss else None,
+                    wot=wot(last_t)))
+            last, last_t = g, t
+        return events
+    for i in range(1, len(rpm.t)):
+        t0, t1 = rpm.t[i - 1], rpm.t[i]
+        r0, r1 = rpm.v[i - 1], rpm.v[i]
+        v0 = vss.at(t0, tol) if vss else None
+        v1 = vss.at(t1, tol) if vss else None
+        if (r0 - r1) >= 400 and (v0 is None or v1 is None or v1 >= v0 - 1):
+            events.append(ShiftEvent(
+                from_gear=None, to_gear=None, time_s=t1, rpm=r0, vss=v0,
+                wot=wot(t0), inferred=True))
+    return events
+
+
 def detect_shift_points(log: Log, wot_threshold: float = 70.0) -> list[ShiftEvent]:
     """
     Return upshift events. If a 'gear' channel is present, detect increments
     directly (most reliable). Otherwise infer upshifts from a sharp RPM drop
     while VSS keeps climbing (auto upshift signature).
     """
+    timed = _timed_shifts(log, wot_threshold)
+    if timed is not None:
+        return timed
     rpm = log.series("rpm")
     vss = log.series("vss")
     gear = log.series("gear")

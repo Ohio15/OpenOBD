@@ -348,7 +348,16 @@ assert win.dashboard.gauges["rpm"].state == "failed"
 gsrc.fail_streak = 0
 win.dashboard._tick()
 assert win.dashboard.status.text() == live_caption, "live caption not restored"
+# no reading yet: no freshness claim (plain), not a live-styled "fresh"
+assert win.dashboard.gauges["rpm"].state is None
+import time as _t0  # noqa: E402
+from openobd.transport import Reading as _R0, Sample  # noqa: E402
+gsrc._t0 = _t0.monotonic()
+gsrc._publish(Sample(t=0.025, values={"rpm": 800.0},
+                     readings=(_R0("rpm", 800.0, 0.0, 0.05, 1),)))
+win.dashboard._tick()
 assert win.dashboard.gauges["rpm"].state == "fresh"
+assert win.dashboard.gauges["rpm"].value == 800.0
 print("GT poll health OK: failed state + reason shown, live caption restored")
 # v0.32.1: the GT has no verified trans temp source (ECM DID 1644 read a
 # constant on a whole drive). An unfiltered GT source must leave the Trans
@@ -411,6 +420,16 @@ times = [r[0] for r in rec_rows]
 assert len(times) == len(set(times)), "duplicate samples in recording"
 print("recording OK:", rec_n, "unique samples streamed to", rec_path)
 win.dashboard.stop()
+# Log Analysis picks up the recording's .long.csv sidecar next to the CSV
+from openobd.recorder import sidecar_path as _side  # noqa: E402
+assert os.path.exists(_side(rec_path))
+win.load_log_path(rec_path)
+assert win.log.timed and win._log_sidecar == _side(rec_path)
+assert "sidecar" in win.log_report.toPlainText()
+win.load_log_path(log_path)            # back to the fixture log (no sidecar)
+assert win.log.timed is None
+win.dashboard.stop()
+print("sidecar load OK: per-channel times attached, plain CSV unchanged")
 
 # teardown-on-rebind: old source must be stopped
 old_src = win.dashboard.source
@@ -593,10 +612,20 @@ d = win.dashboard
 win.main_tabs.setCurrentWidget(d)
 win.resize(1400, 900)
 app.processEvents()
+from openobd.transport import Reading as _Rd  # noqa: E402
 gsrc = GtDataSource()
 gsrc._keys = ["rpm", "vss", "maf", "voltage"]
-gsrc._latest = Sample(t=0.0, values={"rpm": 3000.0, "vss": 40.0,
-                                     "maf": 12.34, "voltage": 13.81})
+gsrc._t0 = _time.monotonic()
+
+
+def _cycle(t, vals):
+    """A GT cycle's Sample: readings stamped on the source clock."""
+    rs = tuple(_Rd(k, v, t, t + 0.05, 1) for k, v in vals.items())
+    return Sample(t=t + 0.025, values=dict(vals), readings=rs)
+
+
+gsrc._publish(_cycle(0.0, {"rpm": 3000.0, "vss": 40.0, "maf": 12.34,
+                           "voltage": 13.81}))
 d._on_gt_ready(gsrc)
 d.timer.stop()                      # tick by hand; the frame animator runs
 d._tick()
@@ -610,12 +639,18 @@ while rpm.motion.moving and _time.monotonic() < t_end:
     _time.sleep(0.005)
 assert rpm.shown == 3000.0, f"needle never landed: {rpm.shown}"
 assert fmt_reading(d.gauges["voltage"].value, d.gauges["voltage"].decimals) == "13.8"
-# a PID missing from the next poll round is carried, not blanked
-gsrc._latest = Sample(t=1.0, values={"rpm": 3100.0, "vss": 41.0,
-                                     "voltage": 13.8})
+# a channel not in the newest cycle (not due / missed) keeps its last
+# reading on the gauge (the source's per-channel latest), never blanked
+gsrc._publish(_cycle(0.25, {"rpm": 3100.0, "vss": 41.0, "voltage": 13.8}))
+assert "maf" not in gsrc.latest().values
 d._tick()
-assert d.gauges["maf"].state == "carried" and d.gauges["maf"].value == 12.34
+assert d.gauges["maf"].state == "fresh" and d.gauges["maf"].value == 12.34
 assert d.gauges["rpm"].state == "fresh" and d.gauges["rpm"].value == 3100.0
+# once a reading outlives twice its tier period it reads stale, value held
+gsrc._t0 -= 100.0
+d._tick()
+assert d.gauges["maf"].state == "stale" and d.gauges["maf"].value == 12.34
+gsrc._t0 += 100.0
 # channels the GT can't feed collapse; the RPM/Speed anchors stay put
 assert d.gauges["ect"].isHidden() and d.gauges["tps"].isHidden()
 assert not d.gauges["rpm"].isHidden() and not d.gauges["maf"].isHidden()
@@ -656,7 +691,7 @@ assert d.shortcut_tooltip(d.btn_record) == "Last recording: C:/x.csv (Ctrl+R)"
 d.btn_record.setToolTip("")
 assert d.shortcut_tooltip(d.btn_record).endswith("datalog (Ctrl+R)")
 assert len(d._shortcuts) == 6
-print("gauge fluency OK: eased needle landed, carried/failed states, "
+print("gauge fluency OK: eased needle landed, held/stale/failed states, "
       "collapse + reflow, shortcuts")
 
 # save round trip

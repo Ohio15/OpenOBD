@@ -5,6 +5,74 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
 
 ## Unreleased
 
+### Changed (GT polling: batched and tiered)
+- **The GT now asks for up to six Mode 01 PIDs per request and polls in
+  tiers** (`openobd/pollplan.py`, ported from truck-mcp `sweep.py` /
+  `obd.py`). The 2026-10-25 drive polled 22 PIDs one request at a time,
+  ~63 ms each: 0.69 Hz, too slow for shift analysis and WOT pulls. FAST
+  (rpm, vss, map, maf, tps, app, app E/F, spark, load, abs load, STFT B1/B2,
+  relative TPS, commanded throttle, EQ ratio, fuel pressure) is asked every
+  cycle, MEDIUM (LTFT B1/B2, four O2 voltages, fuel system, IAT, ECT) every
+  4th, SLOW (baro, ambient, fuel level, ethanol, voltage, run time, cat temps)
+  every 20th; cycle 0 asks for everything. Only supported PIDs are planned,
+  and the plan is rebuilt when the supported set changes (reconnect). For
+  this truck's 34 supported PIDs the plan predicts 3 requests / ~231 ms per
+  fast cycle (4.3 Hz) and ~270 ms mean (3.55 requests/cycle) from the
+  measured costs (1 PID 55.7 ms, 3 PIDs 55.0 ms, 6 PIDs 79.9 ms; truck-mcp
+  cassette no-accel-1000rpm 2026-09-18). The plan is shown in the Dashboard
+  status line at connect and logged (`openobd.gt` / `openobd.transport`
+  loggers). Polling runs back to back (`poll_interval` 0); a 50 ms pause
+  follows a failed poll.
+- **A proper multi-frame reply parser** (`gt.mode01_message` /
+  `parse_mode01_reply`). The ELM's headers-off multi-frame text (a 3-digit
+  length line, then `N:` frame lines) is joined by frame index, cut at the
+  declared length (drops padding) and walked by (PID, byte length) in the
+  order the ECM answered. The old hex-strip `_extract` would have read the
+  length line and the indices as data. A PID left out of the reply gets no
+  reading; a headers-on reply (failed ATH0 restore) is reassembled per
+  responder. `PID_TABLE` entries are now `PidDef(key, nbytes, decode)`.
+- **A batch the ECM answers with nothing is re-asked one PID per request in
+  the same cycle.** If the singles answer, the ECM refused batching:
+  `ObdxGt.batching_refused` is set (logged) and the plan drops to one PID
+  per request until the next connect. If they do not, the ECM is quiet (key
+  off) and the rest of the cycle is not re-asked.
+- **One Sample per cycle with only that cycle's readings.** A not-due
+  channel is a blank cell in the recording and has no sidecar line; nothing
+  is carried forward into a recording. Values from one batched reply share
+  its request number and exchange times. The ATRV voltage fallback runs on
+  SLOW cycles (and on any cycle where nothing decoded, so a quiet ECM is not
+  a dead link) and is numbered like any request. Mode 22 DIDs are polled on
+  MEDIUM cycles.
+- **The Dashboard reads each GT channel's last reading, not the newest
+  Sample.** `GtDataSource` keeps a per-channel latest (`channel_values()`,
+  `channel_ages()`); `channel_states()` says `fresh` while a channel's last
+  reading is within twice its tier period (measured cycle time), `stale`
+  after, `failed` while polls fail, and nothing for a channel that never
+  answered (it used to claim `fresh` for every key). This replaces
+  `gaugemotion.LiveFreshness`, which judged freshness from the newest
+  sample and would have blanked every MEDIUM/SLOW gauge between refreshes;
+  it is removed with its tests.
+
+### Added
+- **New GT channels**: STFT/LTFT bank 2 (PIDs 08/09), O2 sensor voltage
+  B1S1/B1S2/B2S1/B2S2 (14/15/18/19, byte0/200 V), catalyst temp B1S1/B2S1
+  (3C/3D), fuel system status (03, raw code), absolute load (43), relative
+  TPS (45), pedal E/F (47/4A). All are in this ECM's supported-PID bitmap
+  (2026-10-25 probe). Each has a recording column (`RECORD_LABELS` /
+  `RECORD_ORDER`) and a `logbin.CANONICAL` entry; bank-2 trims, upstream O2
+  volts (read to 0.01 V) and cat temps have gauges in both clusters.
+- **Log Analysis reads the `.long.csv` sidecar** when it sits next to a
+  loaded CSV (`logbin.parse_long_csv` / `attach_long`, `Log.timed`). Regime
+  trims classify each STFT/LTFT reading by the rpm and pedal nearest its own
+  time, and shift detection walks rpm readings at their own times; without
+  a sidecar both are unchanged. The report says when the sidecar was used.
+
+### Changed (channel mapping)
+- `"absload"` now maps to the new `abs_load` channel instead of `load`:
+  PID 43 absolute load is a different quantity from calculated load and can
+  exceed 100 %. New needles are ordered so they cannot capture an existing
+  channel's label (checked by tests).
+
 ### Fixed (dependency audit)
 - **`requirements.txt` is now pinned to exact versions** (`PySide6==6.11.2`,
   `pyserial==3.5`, `pyqtgraph==0.14.0`, `numpy==2.5.2`, `pytest==9.1.1`,

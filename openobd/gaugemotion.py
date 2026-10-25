@@ -18,7 +18,7 @@ can be unit-tested without a display:
 from __future__ import annotations
 
 import math
-from typing import Iterable, Optional
+from typing import Optional
 
 #: Easing time constant. 95% of a step is covered in ~3*tau (~0.27 s): fast
 #: enough that the needle never lags a 10 Hz replay noticeably, slow enough
@@ -116,6 +116,9 @@ class NeedleMotion:
 # --------------------------------------------------------------------------- #
 #: Channels whose readings are inherently whole numbers.
 INTEGER_CHANNELS = frozenset({"gear"})
+#: Channels on a sub-volt scale: O2 sensors switch 0.1-0.9 V, so a tenth
+#: would hide the switching. Read to a hundredth.
+FINE_CHANNELS = frozenset({"o2_b1s1", "o2_b1s2", "o2_b2s1", "o2_b2s2"})
 
 
 def reading_decimals(vmin: float, vmax: float, key: str = "") -> int:
@@ -126,6 +129,8 @@ def reading_decimals(vmin: float, vmax: float, key: str = "") -> int:
     tenth, where a whole-unit readout would hide real movement."""
     if key in INTEGER_CHANNELS:
         return 0
+    if key in FINE_CHANNELS:
+        return 2
     return 0 if abs(vmax - vmin) >= 150 else 1
 
 
@@ -138,107 +143,6 @@ def fmt_reading(value: Optional[float], decimals: int) -> str:
     if txt.startswith("-") and float(txt) == 0.0:
         txt = txt[1:]
     return txt
-
-
-# --------------------------------------------------------------------------- #
-# Live freshness for sources with a coarse (link-level) vocabulary
-# --------------------------------------------------------------------------- #
-#: Never call a channel stale sooner than this — the first GT polls, before
-#: the interval estimate exists, must not flash "not advancing".
-STALE_FLOOR_S = 2.0
-#: ... and never wait longer than this before saying so.
-STALE_CAP_S = 10.0
-#: A channel is stale after this many typical poll intervals without news.
-STALE_FACTOR = 3.0
-_EMA_ALPHA = 0.3
-
-
-class LiveFreshness:
-    """Per-channel freshness derived from sample arrival on the wall clock.
-
-    The GT polls every PID in sequence, so a full round takes ~0.5-2 s and a
-    PID that times out is simply absent from that round's sample. Before this
-    existed the cluster rendered the absent channel as "—" with the needle
-    dropped to zero for one round (a flicker every missed PID), and a link
-    that kept answering with empty rounds stayed "fresh" forever.
-
-    States (tmstore vocabulary, so the cluster's badges already know them):
-      fresh   — present in the newest sample, and samples are arriving
-      carried — absent from the newest sample; showing its last real reading
-      stale   — no new sample for longer than stale_after(); last reading held
-      unavail — absent for longer than stale_after(); value withdrawn
-    A non-fresh state from the source itself (the GT's "failed") always wins.
-    """
-
-    def __init__(self, floor_s: float = STALE_FLOOR_S,
-                 cap_s: float = STALE_CAP_S, factor: float = STALE_FACTOR):
-        self.floor_s = floor_s
-        self.cap_s = cap_s
-        self.factor = factor
-        self._last_sample_t: Optional[float] = None
-        self._newest_at: Optional[float] = None
-        self._newest_keys: frozenset = frozenset()
-        self._interval: Optional[float] = None
-        self._last: dict[str, tuple[float, float]] = {}   # key -> (value, seen_at)
-
-    def observe(self, sample_t: Optional[float],
-                values: Optional[dict], now: float) -> bool:
-        """Feed the source's latest() each tick (the same sample may repeat).
-        A sample counts as new when its timestamp changed. Returns True for a
-        new sample."""
-        if sample_t is None or values is None or sample_t == self._last_sample_t:
-            return False
-        if self._newest_at is not None:
-            gap = now - self._newest_at
-            if gap > 0:
-                self._interval = (gap if self._interval is None else
-                                  self._interval + _EMA_ALPHA * (gap - self._interval))
-        self._last_sample_t = sample_t
-        self._newest_at = now
-        keys = []
-        for k, v in values.items():
-            if v is None:
-                continue
-            self._last[k] = (v, now)
-            keys.append(k)
-        self._newest_keys = frozenset(keys)
-        return True
-
-    def stale_after(self) -> float:
-        if self._interval is None:
-            return self.floor_s
-        return max(self.floor_s, min(self.cap_s, self.factor * self._interval))
-
-    def resolve(self, key: str, source_state: Optional[str],
-                now: float) -> tuple[Optional[str], Optional[float]]:
-        """(state, value-to-display) for one channel."""
-        if source_state not in (None, "fresh"):
-            if source_state == "failed":
-                return source_state, None
-            last = self._last.get(key)
-            return source_state, (last[0] if last else None)
-        if self._newest_at is None:
-            return source_state, None          # nothing has arrived yet
-        limit = self.stale_after()
-        last = self._last.get(key)
-        if now - self._newest_at > limit:
-            return "stale", (last[0] if last else None)
-        if key in self._newest_keys:
-            return "fresh", last[0]
-        if last is None:
-            return None, None                  # never answered: plain "—"
-        if now - last[1] <= limit:
-            return "carried", last[0]
-        return "unavail", None
-
-    def resolve_all(self, keys: Iterable[str], source_states: Optional[dict],
-                    now: float) -> tuple[dict, dict]:
-        states: dict[str, Optional[str]] = {}
-        values: dict[str, Optional[float]] = {}
-        for k in keys:
-            src = source_states.get(k) if source_states is not None else None
-            states[k], values[k] = self.resolve(k, src, now)
-        return states, values
 
 
 # --------------------------------------------------------------------------- #
