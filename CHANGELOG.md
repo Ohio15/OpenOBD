@@ -3,6 +3,19 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## Unreleased
+
+### Fixed (dependency audit)
+- **`requirements.txt` is now pinned to exact versions** (`PySide6==6.11.2`,
+  `pyserial==3.5`, `pyqtgraph==0.14.0`, `numpy==2.5.2`, `pytest==9.1.1`,
+  `pyinstaller==6.22.2`), the versions installed in the `.venv` the release
+  exe is built from, so the build is unchanged. The PR-side Security Audit
+  runs `pip-audit --strict --no-deps --disable-pip -r requirements.txt`,
+  which rejects any entry not pinned with `==`; the `>=` ranges failed every
+  pull request since the guard re-sync in #42, while pushes to main (which
+  resolve the graph instead) stayed green. Both modes now pass with no known
+  vulnerabilities.
+
 ## 0.32.3 — 2026-10-25
 
 ### Fixed (truck-mcp session provenance)
