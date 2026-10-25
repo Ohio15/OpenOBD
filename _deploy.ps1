@@ -30,6 +30,34 @@ if ($running.Count) {
     }
 }
 
+# Keep the outgoing exe so docs\RELEASE.md step 9 always has a rollback copy.
+if (Test-Path $dest) {
+    $old = Get-Item $dest
+    $oldVer = $old.VersionInfo.ProductVersion
+    if (-not $oldVer) { $oldVer = "unknown-" + $old.LastWriteTime.ToString("yyyyMMdd-HHmmss") }
+    $backupDir = Join-Path $destDir "backup"
+    New-Item -ItemType Directory -Force $backupDir | Out-Null
+    Copy-Item $dest (Join-Path $backupDir "OpenOBD-$oldVer.exe") -Force
+    Write-Host "backed up $oldVer to $backupDir"
+}
+
 Copy-Item $src $dest -Force
-$ver = (Get-Item $dest).LastWriteTime
-Write-Host "deployed $dest ($ver)"
+$ver = (Get-Item $dest).VersionInfo.ProductVersion
+$want = (Get-Item $src).VersionInfo.ProductVersion
+if ($ver -ne $want) { throw "deploy VERIFY FAILED: installed $ver, built $want" }
+Write-Host "deployed $dest (v$ver)"
+
+# Start menu and Desktop shortcuts always point at the installed exe, so
+# launching OpenOBD runs exactly what was just deployed. GetFolderPath follows
+# a OneDrive-redirected Desktop.
+$shell = New-Object -ComObject WScript.Shell
+foreach ($folder in "Programs", "Desktop") {
+    $lnk = Join-Path ([Environment]::GetFolderPath($folder)) "OpenOBD.lnk"
+    $s = $shell.CreateShortcut($lnk)
+    $s.TargetPath = $dest
+    $s.WorkingDirectory = $destDir
+    $s.IconLocation = "$dest,0"
+    $s.Description = "OpenOBD v$ver"
+    $s.Save()
+    Write-Host "shortcut $lnk -> $dest"
+}
