@@ -29,7 +29,13 @@ csv = ("[Log Information]\nVehicle,2010 Silverado\n[Channel Information]\n"
        "s,RPM,mph,%,deg,deg,%,%\n"
        "[Channel Data]\n" + "\n".join(rows) + "\n")
 
-log_path = "/tmp/smoke_log.csv"
+# Every file the smoke writes lives in one per-run temp tree. A literal
+# "/tmp/..." is drive-relative on Windows (\tmp on the current drive) and
+# only worked where that directory happened to exist; a clean CI runner has
+# none.
+import tempfile  # noqa: E402
+_tmp_root = tempfile.mkdtemp(prefix="openobd_smoke_")
+log_path = os.path.join(_tmp_root, "smoke_log.csv")
 with open(log_path, "w") as fh:
     fh.write(csv)
 
@@ -42,11 +48,9 @@ with open(log_path, "w") as fh:
 # "OpenOBD") ignores setDefaultFormat/setPath and hits the real registry —
 # the canary below proves the isolation actually held.
 import sqlite3 as _sq  # noqa: E402
-import tempfile  # noqa: E402
 from PySide6.QtCore import QSettings  # noqa: E402
 from openobd.appsettings import app_settings  # noqa: E402
 from tests.test_tmstore import _make_session  # noqa: E402
-_tmp_root = tempfile.mkdtemp(prefix="openobd_smoke_")
 QSettings.setDefaultFormat(QSettings.IniFormat)
 QSettings.setPath(QSettings.IniFormat, QSettings.UserScope,
                   os.path.join(_tmp_root, "settings"))
@@ -751,7 +755,7 @@ print("recording metadata OK: marker on the chart, pedal calibration learned "
       "from the 2026-10-25 drive (WOT 50 -> 14 samples), analysis-only")
 
 # save round trip
-out = "/tmp/smoke_out.cal.json"
+out = os.path.join(_tmp_root, "smoke_out.cal.json")
 win.path = out
 win.save_cal()
 from openobd.calspec import Calibration

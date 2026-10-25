@@ -53,6 +53,10 @@ The pytest suite is headless (no Qt, no hardware). `tests\smoke_gui.py`
 builds the real main window offscreen; it isolates its own settings and
 truck-mcp data root, so it does not touch your real settings.
 
+The same two commands run in CI on every PR and every push to main
+(`.github/workflows/tests.yml`, Windows and Ubuntu); a green PR is not a
+substitute for running them here against the tree you are about to build.
+
 ## 4. Build
 
 ```powershell
