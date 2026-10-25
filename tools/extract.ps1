@@ -1,4 +1,4 @@
-Add-Type -TypeDefinition @"
+﻿Add-Type -TypeDefinition @"
 using System;using System.Text;using System.Runtime.InteropServices;using System.Collections.Generic;
 public class H{
 [DllImport("user32.dll")]public static extern bool SetProcessDPIAware();

@@ -3,6 +3,15 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## Unreleased
+
+### Fixed
+- `_deploy.ps1` failed to parse under Windows PowerShell 5.1 (the runbook's
+  `powershell -File` path): the BOM-less UTF-8 em dashes were read as ANSI.
+  The script is now ASCII; `tools/extract.ps1` (which needs degree signs)
+  carries a UTF-8 BOM. `tests/test_script_encoding.py` keeps every tracked
+  script ASCII-or-BOM.
+
 ## 0.32.0 — 2026-10-25
 
 ### Fixed (drive logging from the OBDX GT)
