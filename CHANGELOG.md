@@ -3,7 +3,7 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
-## Unreleased
+## 0.33.0 — 2026-10-25
 
 ### Added (recording metadata sidecar)
 - **Every Dashboard recording now has a `<stem>.meta.json`** beside
