@@ -106,6 +106,9 @@ RECORD_LABELS = {
     # Every key the GT can produce needs a column, or it is silently dropped
     # from the log (tft and run_time were). run_time deliberately avoids the
     # word "time": map_channel would read "Run Time" as the time axis.
+    # tft has no verified GT source since v0.32.1 (gt.REJECTED_DIDS), so the
+    # recorder writes no such column; the label stays for when a verified
+    # source (gt.py follow-up: TCM DID 1940) is added to gt.DID_TABLE.
     "tft": "Trans Fluid Temp (F)",
     "run_time": "Engine Run Duration (s)",
 }
