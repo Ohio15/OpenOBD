@@ -5,6 +5,18 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
 
 ## Unreleased
 
+### Added (CI runs the test gate)
+- `.github/workflows/tests.yml` runs the docs/RELEASE.md step 3 gate,
+  `python -m pytest tests/ -q` then `tests/smoke_gui.py` offscreen, on every
+  PR and push to main, on windows-latest and ubuntu-latest with Python 3.13
+  and requirements.txt's pins. Until now pytest and the smoke ran only in the
+  local pre-commit hook. A `Tests summary (always runs)` job fails unless
+  every leg succeeded and is the context to mark required.
+- `tests/smoke_gui.py` wrote its fixture log and save round-trip file to a
+  literal `/tmp/...`, which on Windows is `	mp` on the current drive and
+  only worked where that directory existed. Both now go in the smoke's
+  per-run temp tree.
+
 ### Fixed (flaky GUI smoke: GT freshness on wall time)
 - `tests/smoke_gui.py`'s GT poll-health and gauge-fluency sections judged
   reading freshness on the real `time.monotonic()`, while the fluency section
