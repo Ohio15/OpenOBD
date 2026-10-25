@@ -351,38 +351,53 @@ assert win.dashboard.status.text() == live_caption, "live caption not restored"
 assert win.dashboard.gauges["rpm"].state == "fresh"
 print("GT poll health OK: failed state + reason shown, live caption restored")
 
-# recording path: drain-based, streamed to a temp CSV (bypass the save dialog)
-import tempfile, csv as _csv  # noqa: E402
-# speed chosen so the 19.9s log does NOT loop during ~0.16s of ticking
-# (a looped replay legitimately repeats timestamps)
-win.dashboard.bind_source(LogReplaySource(win.log, speed=50.0))
-win.dashboard.start()
+# recording path, through the REAL toggle_record (the old hand-built recorder
+# bypassed it, which is how GT recording being refused went unnoticed): rows
+# stream drain-based into the final CSV in the log folder, no save dialog.
+import csv as _csv  # noqa: E402
+import openobd.transport as _transport  # noqa: E402
+
+
+class _FakeClock:
+    """Replay time advances only when this section says so, so the 19.9 s log
+    cannot loop (a loop legitimately repeats timestamps) on a slow machine."""
+    now = 1000.0
+
+    @classmethod
+    def monotonic(cls):
+        return cls.now
+
+
+_real_transport_time = _transport.time
+_transport.time = _FakeClock
 d = win.dashboard
-avail = set(d.source.channels())
-from openobd.app import RECORD_ORDER  # noqa: E402
-d._rec_keys = [k for k in RECORD_ORDER if k in avail]
-d._rec_file = tempfile.NamedTemporaryFile(
-    "w", newline="", encoding="utf-8", suffix=".csv", delete=False)
-d._rec_writer = _csv.writer(d._rec_file)
-d._rec_count = 0
-d.source.drain()
-d.recording = True
-import time as _time  # noqa: E402
+_rec_dir = os.path.join(_tmp_root, "logs")
+d._record_dirs = lambda: [_rec_dir]
+d.bind_source(LogReplaySource(win.log, speed=50.0))
+d.start()
+d.timer.stop()
+d.toggle_record()
+assert d.recording, d.status.text()
+rec_path = d.last_record_path
+assert os.path.dirname(rec_path) == _rec_dir and os.path.exists(rec_path)
 for _ in range(8):
-    _time.sleep(0.02)
+    _FakeClock.now += 0.02
     app.processEvents()
     d._tick()
-d.recording = False
-rec_n = d._rec_count
-d._rec_file.close()
-with open(d._rec_file.name) as fh:
-    rec_rows = fh.read().strip().splitlines()
-os.unlink(d._rec_file.name)
-d._rec_file = d._rec_writer = None
-assert rec_n == len(rec_rows), f"row count mismatch: {rec_n} vs {len(rec_rows)}"
-times = [r.split(",")[0] for r in rec_rows]
+assert d.source.playing and d.source.position() < d.source.duration(),     "replay looped/finished during the recording section (precondition broken)"
+rec_n = d._recorder.count
+d._finalize_record()          # non-interactive: no dialog, file already final
+_transport.time = _real_transport_time
+assert not d.recording and d._recorder is None
+assert "Saved" in d.status.text() and rec_path in d.status.text()
+with open(rec_path, newline="", encoding="utf-8") as fh:
+    rec_rows = list(_csv.reader(fh))
+header, rec_rows = rec_rows[0], rec_rows[1:]
+assert header[0] == "Time (s)"
+assert rec_n == len(rec_rows) and rec_n > 0, f"row count mismatch: {rec_n} vs {len(rec_rows)}"
+times = [r[0] for r in rec_rows]
 assert len(times) == len(set(times)), "duplicate samples in recording"
-print("recording OK:", rec_n, "unique samples streamed")
+print("recording OK:", rec_n, "unique samples streamed to", rec_path)
 win.dashboard.stop()
 
 # teardown-on-rebind: old source must be stopped
@@ -390,6 +405,31 @@ old_src = win.dashboard.source
 win.dashboard.bind_source(LogReplaySource(win.log, speed=1.0))
 assert win.dashboard.source is not old_src
 print("rebind teardown OK")
+
+# Record on a bound truck-mcp session is refused with a message that says WHAT
+# is bound (archived / SIMULATED) and how to record the truck instead. The
+# simulated session lives in its own directory so Live Data's picker (fed from
+# TRUCK_MCP_DATA) is unaffected.
+from openobd import tmstore as _tms  # noqa: E402
+from tests.test_tmstore import _SEED_NOTE, _SEED_SWEEP  # noqa: E402
+_sim_dir = os.path.join(_tmp_root, "sim-sessions")
+os.makedirs(_sim_dir)
+_make_session(os.path.join(_sim_dir, "seed.tmsession.db"), uid="seed",
+              ended="2026-08-21T10:30:00Z", notes=_SEED_NOTE,
+              sweep_config=_SEED_SWEEP)
+(_sim_entry,) = _tms.list_sessions(_sim_dir)
+assert _sim_entry["simulated"] and not _sim_entry["live"], _sim_entry
+d._bind_tm_session(_sim_entry)
+assert "SIMULATED" in d.status.text(), d.status.text()
+d.toggle_record()
+assert d.recording is False, "Record must stay refused for a truck-mcp session"
+_refusal = d.status.text()
+assert "archived SIMULATED" in _refusal and d.btn_connect.text() in _refusal, _refusal
+assert "session_export" not in _refusal, _refusal
+d.stop()
+d.bind_source(LogReplaySource(win.log, speed=1.0))
+assert not getattr(d.source, "simulated", False), "provenance must not outlive its source"
+print("record refusal OK: archived SIMULATED named, GT path given, no export hint")
 
 # scalar edit path + dirty tracking + invalid-input restore
 assert win.dirty is False

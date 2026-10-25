@@ -30,8 +30,21 @@ class Sample:
 class DataSource:
     """Abstract live/replay source of canonical channel samples."""
 
+    #: True only for sources that replay/follow a store which is ALREADY the
+    #: durable record (truck-mcp drive-log sessions). The Dashboard refuses to
+    #: re-record those. Declared, never inferred from other capabilities: the
+    #: old duck-typed check (hasattr channel_states) also matched the GT once
+    #: it grew freshness states, which silently disabled GT recording.
+    is_store_record = False
+
     def channels(self) -> list[str]:
         raise NotImplementedError
+
+    def recordable_channels(self) -> list[str]:
+        """Every key this source can EVER produce — the recorder's columns.
+        Defaults to channels(); a live source whose channels() is a snapshot
+        of what answered so far overrides it."""
+        return self.channels()
 
     def latest(self) -> Optional[Sample]:
         """Non-blocking: the most recent sample, or None if not started."""
@@ -165,6 +178,15 @@ class GtDataSource(DataSource):
     #: Consecutive failed polls before every gauge flips to "read failed" and
     #: latest() stops serving the last good sample (mirrors tmsource FAIL_LIMIT).
     FAIL_LIMIT = 2
+    #: Consecutive failed polls on the current link before the poll thread
+    #: closes and re-opens it. A USB unplug/replug (or a Windows re-enumeration
+    #: onto a NEW COM number) leaves the old handle dead forever; before this
+    #: the source never recovered and a recording silently stopped growing.
+    RECONNECT_AFTER = 3
+    #: Backoff between re-open attempts: first try immediately, then 1, 2, 4,
+    #: ... seconds, capped. Interruptible by stop() and request_reconnect().
+    RECONNECT_BASE_S = 1.0
+    RECONNECT_MAX_S = 10.0
 
     """
     Live source backed by the OBDX Pro GT (openobd.gt.ObdxGt), an ELM327 v2.1
@@ -172,7 +194,13 @@ class GtDataSource(DataSource):
     polling thread that fills a latest-sample slot; latest() is non-blocking so
     the dashboard's 100ms timer never stalls on serial IO. channels() reflects
     the canonical keys the PID table can surface (gauges pre-build), and after
-    the first poll narrows to what the ECU actually answered.
+    the first poll narrows to what the ECU actually answered;
+    recordable_channels() keeps everything the link CAN produce.
+
+    Link loss: after RECONNECT_AFTER failed polls the thread re-opens the GT,
+    re-running VID/PID autodetect when no port was pinned, so a replug that
+    comes back on a different COM number is found. Sample times keep counting
+    from the original connect, so a recording shows the outage as a time gap.
     """
 
     def __init__(self, port=None, poll_interval=0.05):
@@ -198,9 +226,23 @@ class GtDataSource(DataSource):
         # frozen on its last values as if live (2026-10-01).
         self.fail_streak = 0
         self.last_error: str | None = None
+        # Link recovery state (see RECONNECT_AFTER).
+        self._explicit_port = port is not None
+        self._fails_since_open = 0
+        self._reconnect_attempts = 0     # attempts in the current outage
+        self.reconnect_error: str | None = None
+        self.reconnects = 0              # successful re-opens this session
+        self._kick = threading.Event()   # cuts a backoff wait short
 
     def channels(self):
         return list(self._keys)
+
+    def recordable_channels(self):
+        possible = getattr(self._gt, "possible_keys", None)
+        keys = set(self._keys)
+        if possible is not None:
+            keys |= set(possible())
+        return sorted(keys)
 
     def failing(self) -> bool:
         return self.fail_streak >= self.FAIL_LIMIT
@@ -220,8 +262,13 @@ class GtDataSource(DataSource):
         """One line for the Dashboard status bar while polls are failing."""
         if not self.failing():
             return None
-        return (f"GT not answering — {self.fail_streak} polls failed: "
-                f"{self.last_error}")
+        msg = (f"GT not answering — {self.fail_streak} polls failed: "
+               f"{self.last_error}")
+        if self._reconnect_attempts:
+            msg += f" · reconnect attempt {self._reconnect_attempts}"
+            if self.reconnect_error:
+                msg += f" failed: {self.reconnect_error}"
+        return msg
 
     def drain(self):
         out = []
@@ -233,15 +280,22 @@ class GtDataSource(DataSource):
 
     def start(self):
         self._gt.open()
-        self.device = getattr(self._gt, "device", "OBDX Pro GT")
-        self.port_name = getattr(self._gt, "port_name", None)
-        self._t0 = time.monotonic()
-        vals = self._gt.poll_once()
+        try:
+            self.device = getattr(self._gt, "device", "OBDX Pro GT")
+            self.port_name = getattr(self._gt, "port_name", None)
+            self._t0 = time.monotonic()
+            vals = self._gt.poll_once()
+        except BaseException:
+            # The port is open: a failed first poll must release it, or every
+            # later Connect fails with "Access is denied" until a restart.
+            self._gt.close()
+            raise
         if vals:
             self._keys = sorted(vals.keys())
             self._latest = Sample(t=0.0, values=vals)
             self._queue.append(self._latest)
         self._stop.clear()
+        self._kick.clear()
         self._thread = threading.Thread(target=self._run, name="gt-poll", daemon=True)
         self._thread.start()
 
@@ -251,8 +305,16 @@ class GtDataSource(DataSource):
         with self._io_lock:
             return fn(self._gt)
 
+    def request_reconnect(self) -> None:
+        """Skip the current backoff wait (the user pressed Connect while the
+        link is down)."""
+        self._kick.set()
+
     def _run(self):
         while not self._stop.is_set():
+            if self._fails_since_open >= self.RECONNECT_AFTER:
+                self._reconnect()
+                continue
             try:
                 with self._io_lock:
                     vals = self._gt.poll_once()
@@ -260,15 +322,75 @@ class GtDataSource(DataSource):
                     s = Sample(t=time.monotonic() - self._t0, values=vals)
                     self._latest = s
                     self._queue.append(s)
-                self.fail_streak = 0
+                    self.fail_streak = 0
+                    self._fails_since_open = 0
+                    self._reconnect_attempts = 0
+                    self.reconnect_error = None
+                else:
+                    # poll_once() returns {} only when nothing at all decoded —
+                    # not one PID and not the GT's own ATRV. A healthy GT always
+                    # answers ATRV, so an empty poll is a failure, not a live
+                    # source with nothing to say (it used to reset the streak
+                    # and leave the gauges frozen as live).
+                    self.fail_streak += 1
+                    self._fails_since_open += 1
+                    self.last_error = ("the GT returned no data (no PID and no "
+                                       "ATRV voltage decoded)")
             except Exception as exc:
                 self.fail_streak += 1
+                self._fails_since_open += 1
                 self.last_error = f"{type(exc).__name__}: {exc}"
             self._stop.wait(self._interval)
 
+    def _reconnect(self) -> None:
+        """Close and re-open the GT once, after the backoff for this attempt.
+        Never raises: the outcome is reported through status_message()."""
+        if self._reconnect_attempts:
+            delay = min(self.RECONNECT_MAX_S, self.RECONNECT_BASE_S
+                        * 2 ** (self._reconnect_attempts - 1))
+            self._kick.wait(delay)
+            self._kick.clear()
+        if self._stop.is_set():
+            return
+        self._reconnect_attempts += 1
+        with self._io_lock:
+            try:
+                self._gt.close()
+            except Exception:
+                pass   # the handle of an unplugged device may refuse to close
+            if not self._explicit_port:
+                # Re-run VID/PID autodetect: a replugged GT can come back on a
+                # different COM number.
+                self._gt.port_name = None
+            try:
+                self._gt.open()
+            except Exception as exc:
+                self.reconnect_error = f"{type(exc).__name__}: {exc}"
+                return
+            if self._stop.is_set():
+                try:
+                    self._gt.close()   # stop() raced the open: don't hold the port
+                except Exception:
+                    pass
+                return
+        self.reconnect_error = None
+        self.reconnects += 1
+        self._fails_since_open = 0
+        self.port_name = getattr(self._gt, "port_name", self.port_name)
+
     def stop(self):
         self._stop.set()
+        self._kick.set()
         if self._thread:
-            self._thread.join(timeout=1.5)
+            # A poll can be mid-read (read deadline ~1.2 s) or mid-reopen
+            # (ATZ etc., ~2 s); give it time to see the stop flag.
+            self._thread.join(timeout=3.0)
             self._thread = None
-        self._gt.close()
+        # Close under the IO lock so the port is never closed underneath a
+        # poll or a reopen. Bounded: a wedged thread must not hang the GUI.
+        locked = self._io_lock.acquire(timeout=5.0)
+        try:
+            self._gt.close()
+        finally:
+            if locked:
+                self._io_lock.release()
