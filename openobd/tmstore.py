@@ -343,33 +343,78 @@ def _load_json(raw, _label: str) -> dict:
         return {"_decode_error": True, "_raw": raw}
 
 
-# truck-mcp writers that fabricate sessions rather than record a vehicle. The
-# seeder (truck-mcp scripts/seed_demo_data.py) stamps its sessions with
-# sweep_config.started_by = "seed_demo_data" and notes beginning "SIMULATED";
-# either is provenance from the store itself, never inferred from a label.
+# Provenance of a truck-mcp session, three-valued so that a store we cannot
+# read is never presented as a real drive.
+PROVENANCE_SIMULATED = "simulated"
+PROVENANCE_REAL = "real"
+PROVENANCE_UNKNOWN = "unknown"
+
+# session.source values truck-mcp writes (sessionstore.SOURCES). Anything else
+# is a value this reader does not understand, hence unknown provenance.
+KNOWN_SOURCES = frozenset({"live", "import", "simulated", "replay"})
+SOURCE_SIMULATED = "simulated"
+
+# Legacy markers, for files written before truck-mcp v0.11.0a9 stamped
+# session.source / extra.simulated. The seeder (scripts/seed_demo_data.py) set
+# sweep_config.started_by = "seed_demo_data" and notes beginning "SIMULATED".
+# Provenance comes from the store itself, never inferred from a label.
 SIMULATED_STARTED_BY = frozenset({"seed_demo_data"})
 SIMULATED_NOTES_PREFIX = "SIMULATED"
 
 
-def session_simulated(meta: dict) -> bool:
-    """True when a session's own metadata says it was fabricated, not driven.
+def _unreadable(value) -> bool:
+    return isinstance(value, dict) and value.get("_decode_error") is True
 
-    Absence of a marker is reported as not-simulated (the store has no positive
-    "real vehicle" flag); a corrupt sweep_config falls back to the notes."""
+
+def session_provenance(meta: dict) -> str:
+    """'simulated', 'real' or 'unknown' from a session's own metadata.
+
+    Positive simulated signals win, in order: session.source == 'simulated'
+    (authoritative), extra.simulated is True, then the legacy seeder markers
+    (sweep_config.started_by, notes prefix). With none of them:
+      * 'unknown' when the evidence could not be read: a corrupt sweep_config
+        or extra column (a marker may be hiding there), or a session.source
+        value this reader does not recognise;
+      * 'real' otherwise (an absent source is an older file; it is real only
+        because every readable marker says so)."""
+    if meta.get("source") == SOURCE_SIMULATED:
+        return PROVENANCE_SIMULATED
+    extra = meta.get("extra")
+    if isinstance(extra, dict) and extra.get("simulated") is True:
+        return PROVENANCE_SIMULATED
     sweep = meta.get("sweep_config")
     if isinstance(sweep, dict) and sweep.get("started_by") in SIMULATED_STARTED_BY:
-        return True
+        return PROVENANCE_SIMULATED
     notes = meta.get("notes")
-    return isinstance(notes, str) and notes.lstrip().upper().startswith(
-        SIMULATED_NOTES_PREFIX)
+    if isinstance(notes, str) and notes.lstrip().upper().startswith(
+            SIMULATED_NOTES_PREFIX):
+        return PROVENANCE_SIMULATED
+    if _unreadable(sweep) or _unreadable(extra):
+        return PROVENANCE_UNKNOWN
+    source = meta.get("source")
+    if source not in (None, "") and not (
+            isinstance(source, str) and source in KNOWN_SOURCES):
+        return PROVENANCE_UNKNOWN
+    return PROVENANCE_REAL
+
+
+def session_simulated(meta: dict) -> bool:
+    """True only when the session is positively marked simulated."""
+    return session_provenance(meta) == PROVENANCE_SIMULATED
 
 
 def session_tag(entry: dict) -> str:
-    """Picker prefix for a tmstore.list_sessions() entry: LIVE and SIMULATED
-    are both shown, so a fabricated demo session can never pass for a drive."""
+    """Picker prefix for a tmstore.list_sessions() entry: LIVE, SIMULATED and
+    UNKNOWN provenance are all shown, so a fabricated or unreadable session
+    can never pass for a drive."""
     tag = "● LIVE  " if entry.get("live") else ""
-    if entry.get("simulated"):
+    prov = entry.get("provenance")
+    if prov is None:  # entry built without provenance: fall back to the flag
+        prov = PROVENANCE_SIMULATED if entry.get("simulated") else PROVENANCE_REAL
+    if prov == PROVENANCE_SIMULATED:
         tag += "[SIMULATED]  "
+    elif prov == PROVENANCE_UNKNOWN:
+        tag += "[PROVENANCE UNKNOWN]  "
     return tag
 
 
@@ -602,6 +647,7 @@ def list_sessions(directory: Optional[str | Path] = None) -> list[dict]:
                         "source": meta.get("source") or "live",
                         "engine_state": meta.get("engine_state") or "unknown",
                         "live": meta.get("ended_utc") in (None, ""),
+                        "provenance": session_provenance(meta),
                         "simulated": session_simulated(meta),
                         "channel_count": reader.channel_count(),
                     })

@@ -523,9 +523,13 @@ class Dashboard(QWidget):
             self.status.setText(f"Could not bind session: {exc}")
             return
         # Provenance rides on the source, so it is replaced with the source.
-        self.source.simulated = bool(entry.get("simulated"))
-        if self.source.simulated:
+        self.source.provenance = entry.get("provenance") or (
+            tmstore.PROVENANCE_SIMULATED if entry.get("simulated")
+            else tmstore.PROVENANCE_REAL)
+        if self.source.provenance == tmstore.PROVENANCE_SIMULATED:
             note = "SIMULATED demo data, not the truck — " + note
+        elif self.source.provenance == tmstore.PROVENANCE_UNKNOWN:
+            note = "PROVENANCE UNKNOWN, may not be the truck — " + note
         n = sum(1 for k in self.gauges if k in set(self.source.channels()))
         skip = ("  ·  excluded: " + ", ".join(
             f"{nm} ({why})" for nm, why in excluded)) if excluded else ""
@@ -543,7 +547,8 @@ class Dashboard(QWidget):
             # decimated to the poll rate on the observer's clock.
             self.status.setText(tmsource.record_refusal_message(
                 live=isinstance(self.source, tmsource.TmLiveSource),
-                simulated=getattr(self.source, "simulated", False),
+                provenance=getattr(self.source, "provenance",
+                                   tmstore.PROVENANCE_REAL),
                 connect_label=self.btn_connect.text()))
             return
         if not self.recording:

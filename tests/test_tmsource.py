@@ -394,38 +394,52 @@ _CONNECT = "🔌 Connect GT Pro"
 
 
 def test_refusal_archived_real_session_points_at_gt_not_export():
-    msg = tmsource.record_refusal_message(False, False, _CONNECT)
+    msg = tmsource.record_refusal_message(False, "real", _CONNECT)
     assert "archived" in msg and "not the truck" in msg
     assert f'press "{_CONNECT}", then Record' in msg
     assert "session_export" not in msg and "SIMULATED" not in msg
 
 
 def test_refusal_archived_simulated_session_says_simulated():
-    msg = tmsource.record_refusal_message(False, True, _CONNECT)
+    msg = tmsource.record_refusal_message(False, "simulated", _CONNECT)
     assert "archived SIMULATED" in msg and "demo data" in msg
     assert f'press "{_CONNECT}", then Record' in msg
     assert "session_export" not in msg
 
 
 def test_refusal_live_session_keeps_export_hint_and_gt_path():
-    msg = tmsource.record_refusal_message(True, False, _CONNECT)
+    msg = tmsource.record_refusal_message(True, "real", _CONNECT)
     assert "live truck-mcp session" in msg and "session_export" in msg
     assert f'press "{_CONNECT}", then Record' in msg
     assert "SIMULATED" not in msg and "archived" not in msg
 
 
 def test_refusal_live_simulated_session_flags_both():
-    msg = tmsource.record_refusal_message(True, True, _CONNECT)
+    msg = tmsource.record_refusal_message(True, "simulated", _CONNECT)
     assert "live SIMULATED truck-mcp session" in msg and "session_export" in msg
 
 
 def test_refusal_names_the_button_it_is_given():
-    msg = tmsource.record_refusal_message(False, False, "Connect")
+    msg = tmsource.record_refusal_message(False, "real", "Connect")
     assert 'press "Connect", then Record' in msg
 
 
-def test_session_sources_default_to_not_simulated():
-    # The binder sets simulated per instance from tmstore provenance; an
-    # unset source must read as not simulated, never inherit another's flag.
-    assert tmsource.TmLiveSource.simulated is False
-    assert tmsource.TmReplaySource.simulated is False
+def test_refusal_archived_unknown_session_says_unknown_not_replay():
+    msg = tmsource.record_refusal_message(False, "unknown", _CONNECT)
+    assert "archived UNKNOWN-PROVENANCE" in msg and "may not be the truck" in msg
+    assert "replay" not in msg and "SIMULATED" not in msg
+    assert f'press "{_CONNECT}", then Record' in msg
+    assert "session_export" not in msg
+
+
+def test_refusal_live_unknown_session_flags_unknown():
+    msg = tmsource.record_refusal_message(True, "unknown", _CONNECT)
+    assert "live UNKNOWN-PROVENANCE truck-mcp session" in msg
+    assert "session_export" in msg and "SIMULATED" not in msg
+
+
+def test_session_sources_default_to_real_provenance():
+    # The binder sets provenance per instance from tmstore metadata; an unset
+    # source must never inherit another's value.
+    assert tmsource.TmLiveSource.provenance == "real"
+    assert tmsource.TmReplaySource.provenance == "real"

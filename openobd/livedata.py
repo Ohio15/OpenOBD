@@ -427,8 +427,12 @@ class LiveDataPage(QWidget):
         veh = meta.get("vin") or meta.get("label") or "session"
         src = meta.get("source") or "live"
         self._status_base = f"{veh}  ·  source={src}"
-        if tmstore.session_simulated(meta):
+        prov = tmstore.session_provenance(meta)
+        if prov == tmstore.PROVENANCE_SIMULATED:
             self._status_base = ("SIMULATED demo data, not the truck  ·  "
+                                 + self._status_base)
+        elif prov == tmstore.PROVENANCE_UNKNOWN:
+            self._status_base = ("PROVENANCE UNKNOWN, may not be the truck  ·  "
                                  + self._status_base)
         self._status.setText(self._status_base)
         self._tick()

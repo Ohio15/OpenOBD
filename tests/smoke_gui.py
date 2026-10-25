@@ -440,8 +440,33 @@ assert "archived SIMULATED" in _refusal and d.btn_connect.text() in _refusal, _r
 assert "session_export" not in _refusal, _refusal
 d.stop()
 d.bind_source(LogReplaySource(win.log, speed=1.0))
-assert not getattr(d.source, "simulated", False), "provenance must not outlive its source"
+assert getattr(d.source, "provenance", "real") == "real", "provenance must not outlive its source"
 print("record refusal OK: archived SIMULATED named, GT path given, no export hint")
+
+# Authoritative source='simulated' with no legacy marker (a truck-mcp simulator
+# drive), and unreadable provenance, must each be named distinctly.
+_pv_dir = os.path.join(_tmp_root, "prov-sessions")
+os.makedirs(_pv_dir)
+_make_session(os.path.join(_pv_dir, "sim.tmsession.db"), uid="simdrive",
+              ended="2026-08-21T10:30:00Z", source="simulated")
+_make_session(os.path.join(_pv_dir, "bad.tmsession.db"), uid="baddrive",
+              ended="2026-08-21T10:30:00Z", sweep_config="{bad")
+_pv = {e["session_uid"]: e for e in _tms.list_sessions(_pv_dir)}
+assert _pv["simdrive"]["provenance"] == "simulated", _pv["simdrive"]
+assert _pv["baddrive"]["provenance"] == "unknown", _pv["baddrive"]
+assert "[PROVENANCE UNKNOWN]" in _tms.session_tag(_pv["baddrive"])
+d._bind_tm_session(_pv["simdrive"])
+d.toggle_record()
+assert "archived SIMULATED" in d.status.text(), d.status.text()
+d.stop()
+d._bind_tm_session(_pv["baddrive"])
+assert "PROVENANCE UNKNOWN" in d.status.text(), d.status.text()
+d.toggle_record()
+assert d.recording is False
+assert "UNKNOWN-PROVENANCE" in d.status.text() and "replay" not in d.status.text(), d.status.text()
+d.stop()
+d.bind_source(LogReplaySource(win.log, speed=1.0))
+print("provenance OK: source=simulated flagged, corrupt sweep_config shown as unknown")
 
 # scalar edit path + dirty tracking + invalid-input restore
 assert win.dirty is False
