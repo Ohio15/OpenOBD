@@ -353,11 +353,29 @@ print("GT poll health OK: failed state + reason shown, live caption restored")
 
 # recording path: drain-based, streamed to a temp CSV (bypass the save dialog)
 import tempfile, csv as _csv  # noqa: E402
-# speed chosen so the 19.9s log does NOT loop during ~0.16s of ticking
-# (a looped replay legitimately repeats timestamps)
-win.dashboard.bind_source(LogReplaySource(win.log, speed=50.0))
-win.dashboard.start()
+# A looped replay legitimately repeats timestamps, so the no-loop precondition
+# must hold regardless of machine speed. Wall time is what drives the replay,
+# so (1) swap the transport module's clock for a fake that only advances when
+# this section says so, and (2) stop the dashboard's own QTimer so
+# processEvents() cannot add ticks. 8 ticks x 0.02s x speed 50 = 8.0 log-seconds,
+# well inside the 19.9s log, however long the loop really takes.
+import openobd.transport as _transport  # noqa: E402
+
+
+class _FakeClock:
+    now = 1000.0
+
+    @classmethod
+    def monotonic(cls):
+        return cls.now
+
+
+_real_transport_time = _transport.time
+_transport.time = _FakeClock
 d = win.dashboard
+d.bind_source(LogReplaySource(win.log, speed=50.0))
+d.start()
+d.timer.stop()
 avail = set(d.source.channels())
 from openobd.app import RECORD_ORDER  # noqa: E402
 d._rec_keys = [k for k in RECORD_ORDER if k in avail]
@@ -369,10 +387,13 @@ d.source.drain()
 d.recording = True
 import time as _time  # noqa: E402
 for _ in range(8):
-    _time.sleep(0.02)
+    _time.sleep(0.02)  # real time passes, but the replay only sees the fake clock
+    _FakeClock.now += 0.02
     app.processEvents()
     d._tick()
 d.recording = False
+assert d.source.playing and d.source.position() < d.source.duration(),     "replay looped/finished during the recording section (precondition broken)"
+_transport.time = _real_transport_time
 rec_n = d._rec_count
 d._rec_file.close()
 with open(d._rec_file.name) as fh:

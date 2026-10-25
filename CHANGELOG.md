@@ -3,6 +3,14 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## Unreleased
+
+### Fixed
+- `tests/smoke_gui.py` recording section no longer fails on slow machines: the
+  replay is driven by a fake clock and the dashboard timer is stopped, so the
+  19.9 s log cannot loop mid-recording (a loop repeats timestamps and tripped
+  the duplicate-sample check). Test-only; the check itself is unchanged.
+
 ## 0.31.0 — 2026-10-05
 
 ### Fixed
