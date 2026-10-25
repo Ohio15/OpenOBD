@@ -69,12 +69,35 @@ PID_TABLE = {
 # into the sample exactly like PIDs, so a guessed one would reach the gauges.
 #   key format:  (module_header_or_None, did_hex) : (canonical_key, decode(list[int]))
 #   example:     (None, "1940"): ("some_engine_param", lambda b: b[0])
-DID_TABLE = {
-    # Trans fluid temp: correlated live to the DIC (194 F) on this truck.
-    # ECM DID 1644, byte1, GM standard (byte-40) C -> F. Stable across
-    # engine on/off and distinct from coolant; verify tracking on a drive.
-    (None, "1644"): ("tft", lambda b: (b[1] - 40) * 9 / 5 + 32),
+#
+# Passing a single-point match is NOT verification: an entry must also be
+# shown to TRACK the physical value through a transient (cold -> warm) on a
+# drive. A DID that fails that check goes in REJECTED_DIDS, never back here.
+DID_TABLE: dict = {}
+
+# DIDs that were promoted and then failed live verification. Never polled;
+# tests/test_gt_did_table.py fails while any of these is also in DID_TABLE,
+# so re-promoting one means removing it here, with the new evidence, first.
+#   key: (module_header_or_None, did_hex) -> (canonical_key, why rejected)
+REJECTED_DIDS = {
+    (None, "1644"): (
+        "tft",
+        "ECM DID 1644 byte1 was promoted as trans fluid temp (commit ee0189f, "
+        "2026-08-18) from one match to the DIC (194 F). It read raw 0x83 "
+        "(131 -> 91.0 C / 195.8 F) on all 1463 samples of the 2026-10-25 "
+        "drive (gt_log_20261025_141431.csv, 2107 s) while coolant rose "
+        "127 -> 203 F, and 0x0083 in every tools/snap_*.tsv snapshot "
+        "(key-on, park, reverse, neutral, drive). A constant is not a live "
+        "reading; most likely a default/substitute value."),
 }
+
+# Follow-up, NOT a channel: the candidate live trans temp source is the TCM
+# (header 7E2 -> 7EA), DID 1940, byte0, GM (byte-40) C. truck-mcp saw
+# 0x67-0x68 (63-64 C) there on 2026-08-03 and no answer on 2026-09-18, so it
+# is unproven. To promote it: request_did("1940", module="7E2") across a
+# cold -> warm drive, show it tracks (and differs from ECT), then add
+#   ("7E2", "1940"): ("tft", lambda b: (b[0] - 40) * 9 / 5 + 32)
+# here with that evidence cited. Until then the GT has no trans temp channel.
 # canonical keys this transport can ever surface (for gauge pre-build)
 CANONICAL_KEYS = sorted({v[0] for v in PID_TABLE.values()}
                         | {v[0] for v in DID_TABLE.values()})

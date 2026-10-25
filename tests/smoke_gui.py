@@ -350,6 +350,18 @@ win.dashboard._tick()
 assert win.dashboard.status.text() == live_caption, "live caption not restored"
 assert win.dashboard.gauges["rpm"].state == "fresh"
 print("GT poll health OK: failed state + reason shown, live caption restored")
+# v0.32.1: the GT has no verified trans temp source (ECM DID 1644 read a
+# constant on a whole drive). An unfiltered GT source must leave the Trans
+# gauge dimmed — never a live-looking number — and every other gauge intact.
+gfull = GtDataSource()
+win.dashboard._on_gt_ready(gfull)
+win.dashboard.timer.stop()
+assert "tft" not in gfull.channels() and "tft" not in gfull.recordable_channels()
+assert win.dashboard.gauges["tft"].available is False
+assert win.dashboard.gauges["rpm"].available is True
+win.dashboard._tick()
+win.dashboard._cluster.grab()
+print("GT without trans temp OK: Trans gauge dimmed, cluster paints")
 
 # recording path, through the REAL toggle_record (the old hand-built recorder
 # bypassed it, which is how GT recording being refused went unnoticed): rows
