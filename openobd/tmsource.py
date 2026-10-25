@@ -229,6 +229,28 @@ def build_replay_log(path: str | Path) -> tuple[Log, ResolvedMap]:
     return log, resolved
 
 
+def record_refusal_message(live: bool, simulated: bool, connect_label: str) -> str:
+    """Why Record is refused for a bound truck-mcp session, and how to record
+    the truck instead. `connect_label` is the GT connect button's own text so
+    the instruction names exactly what is on screen.
+
+    A truck-mcp session IS already a record — re-recording it would persist
+    carried/archived values as measurements. An archived session (and every
+    simulated one) is not the truck at all, so pointing the user at
+    session_export there sends them to export data that is not their drive;
+    that hint is kept only for a live session, where the store is the record
+    being written right now."""
+    sim = "SIMULATED " if simulated else ""
+    how = f'To record from the truck, press "{connect_label}", then Record.'
+    if live:
+        return (f"Recording is disabled for this live {sim}truck-mcp session "
+                "— its drive-log store is already the record (use truck-mcp "
+                f"session_export). {how}")
+    what = "demo data" if simulated else "a replay"
+    return (f"This is an archived {sim}truck-mcp session ({what}, not the "
+            f"truck) — Record is disabled for it. {how}")
+
+
 class TmReplaySource(LogReplaySource):
     """LogReplaySource over a synthesized session log that KEEPS the archive
     vocabulary: every channel reports state 'archive', so the cluster badges

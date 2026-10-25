@@ -107,6 +107,7 @@ CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE session (id INTEGER PRIMARY KEY CHECK (id=1), session_uid TEXT,
   label TEXT, started_utc TEXT, ended_utc TEXT, vin TEXT, adapter_id TEXT,
   truck_mcp_version TEXT, engine_state TEXT DEFAULT 'unknown',
+  notes TEXT NOT NULL DEFAULT '',
   sweep_config TEXT DEFAULT '{}', source TEXT DEFAULT 'live', extra TEXT DEFAULT '{}');
 CREATE TABLE channel (id INTEGER PRIMARY KEY, name TEXT UNIQUE, unit TEXT DEFAULT '',
   kind TEXT DEFAULT 'numeric', source TEXT DEFAULT '', pid TEXT, did TEXT,
@@ -122,14 +123,16 @@ CREATE TABLE event (id INTEGER PRIMARY KEY, ts_utc TEXT, kind TEXT, label TEXT D
 """
 
 
-def _make_session(path, uid="uid-1", ended=None):
+def _make_session(path, uid="uid-1", ended=None, notes="", sweep_config="{}"):
     conn = sqlite3.connect(str(path))
     conn.executescript(_SCHEMA)
     conn.execute("INSERT INTO schema_meta VALUES ('schema_version','1')")
     conn.execute("INSERT INTO session (id, session_uid, label, started_utc, "
-                 "ended_utc, vin, truck_mcp_version, source) VALUES "
+                 "ended_utc, vin, truck_mcp_version, source, notes, "
+                 "sweep_config) VALUES "
                  "(1, ?, 'drive', '2026-08-21T10:00:00Z', ?, "
-                 "'3GCRKTE35AG150432', '0.11.0a7', 'live')", (uid, ended))
+                 "'3GCRKTE35AG150432', '0.11.0a7', 'live', ?, ?)",
+                 (uid, ended, notes, sweep_config))
     for cid, name, unit in [(1, "rpm", "rpm"), (2, "ect", "F"),
                             (3, "tft", "F"), (4, "gear", "")]:
         conn.execute("INSERT INTO channel (id, name, unit) VALUES (?,?,?)",
@@ -258,6 +261,50 @@ def test_list_sessions_newest_first_and_reports_junk(tmp_path):
     bad = [s for s in sessions if s["error"]]
     assert len(good) == 1 and good[0]["vin"] == "3GCRKTE35AG150432"
     assert len(bad) == 1
+
+
+# --- simulated provenance --------------------------------------------------- #
+# Exactly what truck-mcp scripts/seed_demo_data.py writes into each session.
+_SEED_NOTE = "SIMULATED demonstration data written by scripts/seed_demo_data.py"
+_SEED_SWEEP = json.dumps({"preset": "towing", "started_by": "seed_demo_data"})
+
+
+def test_list_sessions_flags_seeded_session_simulated(tmp_path):
+    _make_session(tmp_path / "real.tmsession.db", uid="real")
+    _make_session(tmp_path / "seed.tmsession.db", uid="seed",
+                  ended="2026-08-21T10:30:00Z", notes=_SEED_NOTE,
+                  sweep_config=_SEED_SWEEP)
+    by_uid = {s["session_uid"]: s for s in tmstore.list_sessions(tmp_path)}
+    assert by_uid["seed"]["simulated"] is True
+    assert by_uid["real"]["simulated"] is False
+    # simulated is provenance, independent of live/archived
+    assert by_uid["seed"]["live"] is False and by_uid["real"]["live"] is True
+
+
+def test_simulated_from_sweep_config_alone():
+    assert tmstore.session_simulated(
+        {"sweep_config": {"started_by": "seed_demo_data"}, "notes": ""})
+
+
+def test_simulated_from_notes_alone_survives_corrupt_sweep_config():
+    meta = {"sweep_config": {"_decode_error": True, "_raw": "{bad"},
+            "notes": _SEED_NOTE}
+    assert tmstore.session_simulated(meta)
+
+
+def test_not_simulated_without_a_marker():
+    assert not tmstore.session_simulated({})
+    assert not tmstore.session_simulated(
+        {"sweep_config": {"preset": "towing", "started_by": "session_drive_log"},
+         "notes": "towing up the grade, SIMULATED nothing"})
+    assert not tmstore.session_simulated({"sweep_config": None, "notes": None})
+
+
+def test_session_tag_shows_live_and_simulated():
+    assert tmstore.session_tag({"live": True}) == "● LIVE  "
+    assert tmstore.session_tag({"live": False, "simulated": True}) == "[SIMULATED]  "
+    assert tmstore.session_tag({"live": True, "simulated": True}) ==         "● LIVE  [SIMULATED]  "
+    assert tmstore.session_tag({}) == ""
 
 
 def test_candidate_roots_env_is_authoritative(tmp_path, monkeypatch):

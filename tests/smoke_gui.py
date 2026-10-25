@@ -391,6 +391,31 @@ win.dashboard.bind_source(LogReplaySource(win.log, speed=1.0))
 assert win.dashboard.source is not old_src
 print("rebind teardown OK")
 
+# Record on a bound truck-mcp session is refused with a message that says WHAT
+# is bound (archived / SIMULATED) and how to record the truck instead. The
+# simulated session lives in its own directory so Live Data's picker (fed from
+# TRUCK_MCP_DATA) is unaffected.
+from openobd import tmstore as _tms  # noqa: E402
+from tests.test_tmstore import _SEED_NOTE, _SEED_SWEEP  # noqa: E402
+_sim_dir = os.path.join(_tmp_root, "sim-sessions")
+os.makedirs(_sim_dir)
+_make_session(os.path.join(_sim_dir, "seed.tmsession.db"), uid="seed",
+              ended="2026-08-21T10:30:00Z", notes=_SEED_NOTE,
+              sweep_config=_SEED_SWEEP)
+(_sim_entry,) = _tms.list_sessions(_sim_dir)
+assert _sim_entry["simulated"] and not _sim_entry["live"], _sim_entry
+d._bind_tm_session(_sim_entry)
+assert "SIMULATED" in d.status.text(), d.status.text()
+d.toggle_record()
+assert d.recording is False, "Record must stay refused for a truck-mcp session"
+_refusal = d.status.text()
+assert "archived SIMULATED" in _refusal and d.btn_connect.text() in _refusal, _refusal
+assert "session_export" not in _refusal, _refusal
+d.stop()
+d.bind_source(LogReplaySource(win.log, speed=1.0))
+assert d._tm_simulated is False, "provenance must clear on rebind"
+print("record refusal OK: archived SIMULATED named, GT path given, no export hint")
+
 # scalar edit path + dirty tracking + invalid-input restore
 assert win.dirty is False
 win.cal.scalars[0].value = 4.10

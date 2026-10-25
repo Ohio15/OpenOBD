@@ -832,6 +832,7 @@ class Dashboard(QWidget):
         super().__init__()
         self.style = style if style in DASHBOARD_STYLES else "classic"
         self.source: Optional[DataSource] = None
+        self._tm_simulated = False     # bound truck-mcp session is fabricated
         self.gauges: dict[str, GaugeBase] = {}
         self.recording = False
         self._rec_file = None          # open csv file the recorder streams to
@@ -1031,6 +1032,9 @@ class Dashboard(QWidget):
     def bind_source(self, source: DataSource):
         self._teardown_source()
         self.source = source
+        # Provenance of a bound truck-mcp session; _bind_tm_session sets it
+        # after binding, every other source (GT, CSV log) leaves it cleared.
+        self._tm_simulated = False
         avail = set(source.channels())
         # The cluster is permanent — reset every gauge and dim the ones this
         # source can't feed instead of rebuilding a filtered grid.
@@ -1172,7 +1176,7 @@ class Dashboard(QWidget):
             act = menu.addAction("No drive-log sessions found")
             act.setEnabled(False)
         for s in sessions[:25]:
-            tag = "● LIVE  " if s.get("live") else ""
+            tag = tmstore.session_tag(s)
             label = s.get("label") or s.get("name")
             started = (s.get("started_utc") or "")[:19].replace("T", " ")
             act = menu.addAction(
@@ -1216,6 +1220,9 @@ class Dashboard(QWidget):
                 self.timer.start(100)   # old source untouched — keep it live
             self.status.setText(f"Could not bind session: {exc}")
             return
+        self._tm_simulated = bool(entry.get("simulated"))
+        if self._tm_simulated:
+            note = "SIMULATED demo data, not the truck — " + note
         n = sum(1 for k in self.gauges if k in set(self.source.channels()))
         skip = ("  ·  excluded: " + ", ".join(
             f"{nm} ({why})" for nm, why in excluded)) if excluded else ""
@@ -1231,9 +1238,10 @@ class Dashboard(QWidget):
             # freshness/quality this CSV cannot carry — re-recording it would
             # persist carried/archived values as if they were measurements,
             # decimated to the poll rate on the observer's clock.
-            self.status.setText(
-                "Recording is disabled for truck-mcp sessions — the drive-log "
-                "store is already the record (use truck-mcp session_export).")
+            self.status.setText(tmsource.record_refusal_message(
+                live=isinstance(self.source, tmsource.TmLiveSource),
+                simulated=self._tm_simulated,
+                connect_label=self.btn_connect.text()))
             return
         if not self.recording:
             avail = set(self.source.channels())

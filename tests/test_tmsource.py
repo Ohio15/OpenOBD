@@ -387,3 +387,38 @@ def test_live_source_drain_dedups_by_store_timestamp(tmp_path):
     src._read()                               # same newest_ts — no new sample
     assert src.drain() == []
     src.stop()
+
+
+# --- Record refusal: names what is bound and how to record the truck --------- #
+_CONNECT = "🔌 Connect GT Pro"
+
+
+def test_refusal_archived_real_session_points_at_gt_not_export():
+    msg = tmsource.record_refusal_message(False, False, _CONNECT)
+    assert "archived" in msg and "not the truck" in msg
+    assert f'press "{_CONNECT}", then Record' in msg
+    assert "session_export" not in msg and "SIMULATED" not in msg
+
+
+def test_refusal_archived_simulated_session_says_simulated():
+    msg = tmsource.record_refusal_message(False, True, _CONNECT)
+    assert "archived SIMULATED" in msg and "demo data" in msg
+    assert f'press "{_CONNECT}", then Record' in msg
+    assert "session_export" not in msg
+
+
+def test_refusal_live_session_keeps_export_hint_and_gt_path():
+    msg = tmsource.record_refusal_message(True, False, _CONNECT)
+    assert "live truck-mcp session" in msg and "session_export" in msg
+    assert f'press "{_CONNECT}", then Record' in msg
+    assert "SIMULATED" not in msg and "archived" not in msg
+
+
+def test_refusal_live_simulated_session_flags_both():
+    msg = tmsource.record_refusal_message(True, True, _CONNECT)
+    assert "live SIMULATED truck-mcp session" in msg and "session_export" in msg
+
+
+def test_refusal_names_the_button_it_is_given():
+    msg = tmsource.record_refusal_message(False, False, "Connect")
+    assert 'press "Connect", then Record' in msg

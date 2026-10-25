@@ -343,6 +343,36 @@ def _load_json(raw, _label: str) -> dict:
         return {"_decode_error": True, "_raw": raw}
 
 
+# truck-mcp writers that fabricate sessions rather than record a vehicle. The
+# seeder (truck-mcp scripts/seed_demo_data.py) stamps its sessions with
+# sweep_config.started_by = "seed_demo_data" and notes beginning "SIMULATED";
+# either is provenance from the store itself, never inferred from a label.
+SIMULATED_STARTED_BY = frozenset({"seed_demo_data"})
+SIMULATED_NOTES_PREFIX = "SIMULATED"
+
+
+def session_simulated(meta: dict) -> bool:
+    """True when a session's own metadata says it was fabricated, not driven.
+
+    Absence of a marker is reported as not-simulated (the store has no positive
+    "real vehicle" flag); a corrupt sweep_config falls back to the notes."""
+    sweep = meta.get("sweep_config")
+    if isinstance(sweep, dict) and sweep.get("started_by") in SIMULATED_STARTED_BY:
+        return True
+    notes = meta.get("notes")
+    return isinstance(notes, str) and notes.lstrip().upper().startswith(
+        SIMULATED_NOTES_PREFIX)
+
+
+def session_tag(entry: dict) -> str:
+    """Picker prefix for a tmstore.list_sessions() entry: LIVE and SIMULATED
+    are both shown, so a fabricated demo session can never pass for a drive."""
+    tag = "● LIVE  " if entry.get("live") else ""
+    if entry.get("simulated"):
+        tag += "[SIMULATED]  "
+    return tag
+
+
 class TmSessionReader:
     """Read-only view of one *.tmsession.db, safe while the writer runs."""
 
@@ -572,6 +602,7 @@ def list_sessions(directory: Optional[str | Path] = None) -> list[dict]:
                         "source": meta.get("source") or "live",
                         "engine_state": meta.get("engine_state") or "unknown",
                         "live": meta.get("ended_utc") in (None, ""),
+                        "simulated": session_simulated(meta),
                         "channel_count": reader.channel_count(),
                     })
             except (TmSessionError, sqlite3.Error) as exc:
