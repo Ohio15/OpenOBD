@@ -3,6 +3,24 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## Unreleased
+
+### Fixed
+- Record on a bound truck-mcp session said "use truck-mcp session_export"
+  for every session, including archived ones, so a user trying to log a
+  drive was sent to export data that was not the truck. The refusal now says
+  whether the bound session is live or archived (and SIMULATED, when it is),
+  and always says how to record the truck: press "🔌 Connect GT Pro", then
+  Record. The session_export hint is kept only for a live session. Recording
+  a truck-mcp session stays refused.
+
+### Added
+- `tmstore.list_sessions()` reports `simulated` per session, read from the
+  session's own provenance (`sweep_config.started_by == "seed_demo_data"` or
+  notes beginning "SIMULATED", as truck-mcp's seed_demo_data.py writes them).
+  The Dashboard and Live Data session pickers tag those `[SIMULATED]`, and
+  the status line after binding one says SIMULATED.
+
 ## 0.31.0 — 2026-10-05
 
 ### Fixed
