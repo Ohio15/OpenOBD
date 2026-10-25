@@ -20,11 +20,46 @@ from typing import Optional
 from .logbin import Log, time_axis
 
 
+@dataclass(frozen=True)
+class Reading:
+    """One channel value with the exchange that produced it.
+
+    sent / received: when the request was written and its reply read in
+                     full. ObdxGt stamps on time.monotonic(); a DataSource
+                     rebases both onto its own clock (seconds since connect).
+    request:         sequence number of that request on the link. Values
+                     decoded from the same response share it."""
+    key: str
+    value: float
+    sent: float
+    received: float
+    request: int
+
+    @property
+    def t(self) -> float:
+        """Best estimate of when the module sampled the value: the midpoint
+        of its request/response exchange."""
+        return (self.sent + self.received) / 2
+
+
 @dataclass
 class Sample:
-    """A single timestamped snapshot: canonical_key -> value."""
+    """A single timestamped snapshot: canonical_key -> value.
+
+    readings, when present, carries the per-request truth behind `values`:
+    each value with its own request's exchange times. A sequential GT sweep
+    spans ~1.4 s, so one time per row cannot date every value in it
+    (2026-10-25, brain 8d92fae5). For such a sample `t` is the sweep
+    midpoint and sweep_start()/sweep_end() bound the row's skew."""
     t: float
     values: dict[str, float]
+    readings: Optional[tuple[Reading, ...]] = None
+
+    def sweep_start(self) -> Optional[float]:
+        return min(r.sent for r in self.readings) if self.readings else None
+
+    def sweep_end(self) -> Optional[float]:
+        return max(r.received for r in self.readings) if self.readings else None
 
 
 class DataSource:
@@ -201,6 +236,10 @@ class GtDataSource(DataSource):
     re-running VID/PID autodetect when no port was pinned, so a replug that
     comes back on a different COM number is found. Sample times keep counting
     from the original connect, so a recording shows the outage as a time gap.
+
+    Timing: every value carries its own request's send/receive times (see
+    Reading); a Sample's t is its sweep midpoint. The recorder zeroes time at
+    its first recorded sample.
     """
 
     def __init__(self, port=None, poll_interval=0.05):
@@ -284,20 +323,36 @@ class GtDataSource(DataSource):
             self.device = getattr(self._gt, "device", "OBDX Pro GT")
             self.port_name = getattr(self._gt, "port_name", None)
             self._t0 = time.monotonic()
-            vals = self._gt.poll_once()
+            first = self._sample(self._gt.poll_timed())
         except BaseException:
             # The port is open: a failed first poll must release it, or every
             # later Connect fails with "Access is denied" until a restart.
             self._gt.close()
             raise
-        if vals:
-            self._keys = sorted(vals.keys())
-            self._latest = Sample(t=0.0, values=vals)
-            self._queue.append(self._latest)
+        if first is not None:
+            self._keys = sorted(first.values.keys())
+            self._latest = first
+            self._queue.append(first)
         self._stop.clear()
         self._kick.clear()
         self._thread = threading.Thread(target=self._run, name="gt-poll", daemon=True)
         self._thread.start()
+
+    def _sample(self, readings) -> Optional[Sample]:
+        """One sweep's readings -> a Sample on this source's clock, or None
+        when nothing decoded. Each value keeps its own request's exchange
+        times; the Sample time is the sweep midpoint (halfway between the
+        first answered request's send and the last one's reply), the single
+        documented reference for the wide recording row."""
+        if not readings:
+            return None
+        t0 = self._t0
+        rebased = tuple(Reading(r.key, r.value, r.sent - t0, r.received - t0,
+                                r.request) for r in readings)
+        s = Sample(t=0.0, values={r.key: r.value for r in rebased},
+                   readings=rebased)
+        s.t = (s.sweep_start() + s.sweep_end()) / 2
+        return s
 
     def run_exclusive(self, fn):
         """Run fn(gt) with gauge polling held off — lets Diagnostics reuse a
@@ -317,9 +372,8 @@ class GtDataSource(DataSource):
                 continue
             try:
                 with self._io_lock:
-                    vals = self._gt.poll_once()
-                if vals:
-                    s = Sample(t=time.monotonic() - self._t0, values=vals)
+                    s = self._sample(self._gt.poll_timed())
+                if s is not None:
                     self._latest = s
                     self._queue.append(s)
                     self.fail_streak = 0
@@ -327,7 +381,7 @@ class GtDataSource(DataSource):
                     self._reconnect_attempts = 0
                     self.reconnect_error = None
                 else:
-                    # poll_once() returns {} only when nothing at all decoded —
+                    # poll_timed() returns [] only when nothing at all decoded —
                     # not one PID and not the GT's own ATRV. A healthy GT always
                     # answers ATRV, so an empty poll is a failure, not a live
                     # source with nothing to say (it used to reset the streak

@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from openobd import gt as gtmod
 from openobd.gt import GtBinaryMode, ObdxGt
-from openobd.transport import GtDataSource
+from openobd.transport import GtDataSource, Reading
 
 from test_module_map_truck import FakeTruckGt
 
@@ -75,14 +75,14 @@ def _source_with(polls):
     src = GtDataSource(poll_interval=0)
     script = list(polls)
 
-    def poll_once():
+    def poll_timed():
         step = script.pop(0)
         if not script:
             src._stop.set()
         if isinstance(step, Exception):
             raise step
-        return step
-    src._gt = SimpleNamespace(poll_once=poll_once)
+        return [Reading(k, v, float(i), float(i) + 0.05, i) for i, (k, v) in enumerate(step.items())]
+    src._gt = SimpleNamespace(poll_timed=poll_timed)
     src._t0 = 0.0
     src._keys = ["rpm", "voltage"]
     return src
