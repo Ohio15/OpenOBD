@@ -579,12 +579,12 @@ def test_closing_the_app_mid_record_finalizes_csv_and_sidecar(qapp, tmp_path):
 # --------------------------------------------------------------------------- #
 def test_wide_csv_loads_with_blanks_missing_and_joint_features_intact(tmp_path):
     from openobd.app import RECORD_LABELS
-    keys = ["rpm", "app", "load", "stft", "ltft"]
+    keys = ["rpm", "pedal", "load", "stft", "ltft"]
     rec = DriveRecorder(keys, RECORD_LABELS, [str(tmp_path)])
     sweeps = []
     req = 1
     for i in range(40):
-        vals = {"rpm": 2000.0, "app": 20.0, "load": 45.0, "stft": 1.5, "ltft": 2.5}
+        vals = {"rpm": 2000.0, "pedal": 20.0, "load": 45.0, "stft": 1.5, "ltft": 2.5}
         if i == 7:
             del vals["ltft"]                             # PID silent this sweep
         sweeps.append(sweep(8.0 + 1.4 * i, vals, req))

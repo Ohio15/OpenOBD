@@ -143,7 +143,7 @@ def test_bin_value_mean():
 # --------------------------------------------------------------------------- #
 def test_detect_shift_via_gear_channel():
     # gear goes 1->2 at the RPM peak; pedal is WOT
-    lines = ["Time,Engine Speed,Vehicle Speed,Current Gear,Accelerator Pedal"]
+    lines = ["Time,Engine Speed,Vehicle Speed,Current Gear,Pedal Normalized"]
     data = [
         (0.0, 3000, 20, 1, 95),
         (0.1, 5400, 30, 1, 95),   # peak in 1st just before shift
@@ -163,7 +163,7 @@ def test_detect_shift_via_gear_channel():
 
 def test_detect_shift_inferred_rpm_drop():
     # no gear channel: RPM drops sharply while VSS keeps climbing
-    lines = ["Time,Engine Speed,Vehicle Speed,Accelerator Pedal"]
+    lines = ["Time,Engine Speed,Vehicle Speed,Pedal Normalized"]
     seq = [(0.0, 3000, 20, 90), (0.1, 5300, 30, 90),
            (0.2, 3600, 31, 90), (0.3, 4200, 33, 90)]
     for t, r, v, a in seq:

@@ -59,8 +59,10 @@ from .diagui import DiagnosticsPage
 from .livedata import ActiveTestsPage, LiveDataPage
 from .logbin import (
     Log, Overlay, parse_csv, analyze_log, bin_log_to_table, detect_shift_points,
-    CANONICAL, time_axis, attach_long,
+    CANONICAL, time_axis, attach_long, calibrate_pedal_from_log,
 )
+from . import pollplan
+from .pedal import UNKNOWN_VIN, PedalCal
 
 pg.setConfigOption("background", (28, 30, 34))
 pg.setConfigOption("foreground", (200, 203, 208))
@@ -68,7 +70,9 @@ pg.setConfigOptions(antialias=True)
 from .model import CalTableModel, HeatmapDelegate
 from .transport import DataSource, LogReplaySource, GtDataSource, Sample
 from . import tmsource, tmstore
-from .recorder import DriveRecorder, default_log_dirs, sidecar_path
+from .recorder import (
+    DriveRecorder, default_log_dirs, meta_path, read_meta, sidecar_path,
+)
 from PySide6.QtCore import QStandardPaths
 
 # Gauge widgets, cluster layouts and the dashboard style registry live in
@@ -100,7 +104,12 @@ RECORD_LABELS = {
     "voltage": "Module Voltage (V)",
     "baro": "Barometric Pressure (kPa)",
     "ambient": "Ambient Air Temp (F)",
-    "ethanol": "Ethanol (%)",
+    # PID 52 is an ECM ESTIMATE (no flex-fuel sensor): labelled as such. Old
+    # recordings' "Ethanol (%)" still reloads as ethanol (logbin.CANONICAL).
+    "ethanol": "Ethanol, ECM estimate (%)",
+    # DERIVED from APP D with the learned pedal calibration (openobd.pedal);
+    # the raw "app" column is always recorded beside it.
+    "pedal": "Pedal, normalized (%)",
     # Every key the GT can produce needs a column, or it is silently dropped
     # from the log (tft and run_time were). run_time deliberately avoids the
     # word "time": map_channel would read "Run Time" as the time axis.
@@ -129,11 +138,66 @@ RECORD_LABELS = {
 # "tft" holds its place for a future verified source but yields no column
 # on the GT today (tests/test_gt_did_table.py checks that).
 RECORD_ORDER = ["rpm", "vss", "map", "maf", "load", "abs_load", "tps",
-                "rel_tps", "app", "app_e", "app_f", "cmd_throttle", "spark",
+                "rel_tps", "app", "pedal", "app_e", "app_f", "cmd_throttle",
+                "spark",
                 "ect", "iat", "tft", "stft", "ltft", "stft_b2", "ltft_b2",
                 "fuel_system", "o2_b1s1", "o2_b1s2", "o2_b2s1", "o2_b2s2",
                 "eq_ratio", "fuel_press", "fuel_level", "voltage", "baro",
                 "ambient", "ethanol", "cat_b1s1", "cat_b2s1", "run_time"]
+
+
+#: Notes written into a recording's metadata for the channels it carries.
+CHANNEL_NOTES = {
+    "ethanol": ("PID 52 is the ECM's ethanol ESTIMATE (this truck has no "
+                "flex-fuel sensor): it read 0 then 0-11.4 % noise on the "
+                "2026-10-25 drive. Recorded as the ECM reports it."),
+    "app": ("PID 49 APP D, the pedal sensor's position as decoded (about 19 % "
+            "at rest and 61 % flat out on this truck), not driver demand."),
+    "pedal": ("DERIVED, not requested: clamp((APP D - rest) / (full - rest) "
+              "* 100, 0, 100) with the pedal calibration in force when the "
+              "sample was taken (pedal_calibration). Blank while the "
+              "calibration is pending. In the .long.csv its lines carry the "
+              "APP D reading's time and 'derived:app' in the Request column."),
+}
+
+
+def _pedal_settings_group(key: str) -> str:
+    safe = "".join(c for c in key if c.isalnum() or c in "-_") or UNKNOWN_VIN
+    return f"pedal_cal/{safe}"
+
+
+def load_pedal_cal(key: str) -> Optional[PedalCal]:
+    """The stored pedal calibration for a VIN (or UNKNOWN_VIN), or None."""
+    st = app_settings()
+    st.beginGroup(_pedal_settings_group(key))
+    cal = PedalCal.from_dict({"rest": st.value("rest"),
+                              "full": st.value("full"),
+                              "source": st.value("source")})
+    st.endGroup()
+    return None if cal.rest is None and cal.full is None else cal
+
+
+def save_pedal_cal(key: str, cal: PedalCal) -> None:
+    st = app_settings()
+    st.beginGroup(_pedal_settings_group(key))
+    for name, val in (("rest", cal.rest), ("full", cal.full),
+                      ("source", cal.source)):
+        if val is None:
+            st.remove(name)
+        else:
+            st.setValue(name, val)
+    st.endGroup()
+    st.sync()
+
+
+def poll_cost_model() -> dict:
+    """The cost model the poll plan's predictions come from."""
+    return {"request_cost_points_s": [list(p) for p in
+                                      pollplan.REQUEST_COST_POINTS],
+            "atrv_cost_s": pollplan.ATRV_COST_S,
+            "basis": "truck-mcp cassette no-accel-1000rpm 2026-09-18 "
+                     "(1 PID 55.7 ms, 3 PIDs 55.0 ms, 6 PIDs 79.9 ms); "
+                     "predictions only, nothing waits on them"}
 
 
 class Dashboard(QWidget):
@@ -141,6 +205,9 @@ class Dashboard(QWidget):
     # seconds); these marshal the result back onto the GUI thread.
     gt_ready = Signal(object)
     gt_error = Signal(str)
+    # The recording-start vehicle read (identity + DTCs, poll thread held)
+    # runs on a worker thread too: (recorder, context dict).
+    record_ctx_ready = Signal(object)
 
     def __init__(self, style: str = "classic"):
         super().__init__()
@@ -154,6 +221,11 @@ class Dashboard(QWidget):
         self.timer.timeout.connect(self._tick)
         self.gt_ready.connect(self._on_gt_ready)
         self.gt_error.connect(self._on_gt_error)
+        self.record_ctx_ready.connect(self._on_record_context)
+        # Settings key the GT's pedal calibration persists under: the VIN
+        # once a recording start has read it, else UNKNOWN_VIN.
+        self._pedal_key: Optional[str] = None
+        self._pedal_seen = -1
 
         root = QVBoxLayout(self)
         bar = QHBoxLayout()
@@ -169,10 +241,14 @@ class Dashboard(QWidget):
         self.btn_tm.clicked.connect(self._pick_tm_session)
         self.btn_record = QPushButton("⏺ Record")
         self.btn_record.clicked.connect(self.toggle_record)
+        self.btn_mark = QPushButton("📍 Mark")
+        self.btn_mark.clicked.connect(self.add_marker)
+        self.btn_mark.setEnabled(False)
         bar.addWidget(self.status, 1)
         bar.addWidget(self.btn_connect)
         bar.addWidget(self.btn_tm)
         bar.addWidget(self.btn_record)
+        bar.addWidget(self.btn_mark)
         bar.addWidget(self.btn_start)
         bar.addWidget(self.btn_stop)
         root.addLayout(bar)
@@ -256,16 +332,63 @@ class Dashboard(QWidget):
             return states
         values = self.source.channel_values()
         states = states or {}
+        keys = set(self.gauges) | {"pedal"}
         self._derived_values = {
             k: (None if states.get(k) in (None, "failed") else values.get(k))
-            for k in self.gauges}
-        return {k: states.get(k) for k in self.gauges}
+            for k in keys}
+        return {k: states.get(k) for k in keys}
 
     def _gauge_value(self, key: str, s: Sample) -> Optional[float]:
         derived = getattr(self, "_derived_values", None)
         if derived is not None:
             return derived.get(key)
-        return s.values.get(key)
+        return s.values.get(key) if s is not None else None
+
+    def _pedal_feed(self, s: Optional[Sample]) -> dict:
+        """Which channel the Pedal gauge (key "app") shows: the normalized
+        "pedal" when the source has a value for it, else raw APP D with the
+        label suffix "raw". Never a value from a pending calibration: the
+        source only produces "pedal" from a ready one."""
+        g = self.gauges.get("app")
+        if g is None:
+            return {}
+        normalized = self._gauge_value("pedal", s) is not None
+        g.set_label_suffix(None if normalized else "raw")
+        if normalized:
+            g.setToolTip("Pedal, normalized from APP D with the learned "
+                         "calibration — click to reset min/max capture")
+        else:
+            why = ""
+            if isinstance(self.source, GtDataSource):
+                why = " · " + self.source.pedal_calibration().status()
+            g.setToolTip("Pedal raw: APP D as decoded (about 19 % at rest on "
+                         f"this truck){why} — click to reset min/max capture")
+        return {"app": "pedal"} if normalized else {}
+
+    def _persist_pedal(self) -> None:
+        """GUI thread: store the GT's pedal calibration whenever it changed
+        (keyed by VIN, else UNKNOWN_VIN) and note the change in an active
+        recording's metadata (written at its next rewrite)."""
+        src = self.source
+        if not isinstance(src, GtDataSource):
+            return
+        ver = src.pedal.version
+        if ver == self._pedal_seen:
+            return
+        self._pedal_seen = ver
+        cal = src.pedal_calibration()
+        if cal.rest is None and cal.full is None:
+            return
+        try:
+            save_pedal_cal(self._pedal_key or UNKNOWN_VIN, cal)
+        except Exception as exc:       # settings store unavailable
+            self.status.setText(f"Could not store the pedal calibration: {exc}")
+        rec = self._recorder
+        if self.recording and rec is not None:
+            entry = {k: v for k, v in cal.to_dict().items() if k != "rules"}
+            entry["t"] = rec.recording_time(src.clock())
+            pc = rec.meta.setdefault("pedal_calibration", {})
+            pc.setdefault("changes", []).append(entry)
 
     # -- responsive toolbar + keyboard shortcuts for the live actions -------- #
     def _init_live_ui(self):
@@ -291,6 +414,7 @@ class Dashboard(QWidget):
             (self.btn_connect, "Ctrl+G", "Connect the OBDX Pro GT"),
             (self.btn_tm, "Ctrl+T", "Bind a truck-mcp drive-log session"),
             (self.btn_record, "Ctrl+R", "Start / stop recording a datalog"),
+            (self.btn_mark, "M", "Drop a marker into the recording"),
             (self.btn_start, "F5", "Start the bound source"),
             (self.btn_stop, "Shift+F5", "Stop the bound source"),
             (self.btn_pause, "P", "Pause / resume the replay"),
@@ -478,6 +602,12 @@ class Dashboard(QWidget):
             # The poll plan, once per connect: tiers, requests per cycle and
             # the predicted cycle time this link should reach.
             self._live_status += f" · {plan}"
+        cal = src.pedal_calibration() if hasattr(src, "pedal_calibration") \
+            else None
+        if cal is not None and not cal.ready:
+            self._live_status += " · pedal cal pending (Pedal gauge shows raw APP D)"
+        self._pedal_key = None
+        self._pedal_seen = -1
         self._source_alarm = False
         self.status.setText(self._live_status)
 
@@ -581,18 +711,136 @@ class Dashboard(QWidget):
                 # The final file, in a durable folder, from the first sample:
                 # there is no temp file to move and no save dialog to cancel.
                 self._recorder = DriveRecorder(
-                    keys, RECORD_LABELS, self._record_dirs())
+                    keys, RECORD_LABELS, self._record_dirs(),
+                    meta=self._recording_meta(keys))
             except Exception as e:
                 self.status.setText(f"Can't start recording: {e}")
                 return
             self.last_record_path = self._recorder.path
             self.source.drain()  # discard the pre-record backlog
             self.recording = True
+            self.btn_mark.setEnabled(True)
             self.btn_record.setText("⏺ REC 0 samples (click to stop)")
             self.btn_record.setToolTip(f"Recording to {self._recorder.path}")
             self.status.setText(f"Recording → {self._recorder.path}")
+            if isinstance(self.source, GtDataSource):
+                self._read_record_context(self.source, self._recorder)
         else:
             self._finalize_record(interactive=True)
+
+    #: Placeholder for vehicle facts while the recording-start read runs.
+    _CTX_PENDING = {"examined": False,
+                    "why": "being read at recording start (poll held)"}
+
+    def _recording_meta(self, keys: list[str]) -> dict:
+        """What is known synchronously at recording start. Vehicle facts
+        that need the bus (identity, DTCs) arrive from
+        _read_record_context and are rewritten into the file."""
+        src = self.source
+        notes = {k: v for k, v in CHANNEL_NOTES.items() if k in keys}
+        derived = {k: {"from": f, "label": RECORD_LABELS[k],
+                       "long_csv": "own line form: source reading's time, "
+                                   "Request 'derived:" + f + "'"}
+                   for k, f in getattr(src, "DERIVED", {}).items()
+                   if k in keys}
+        if isinstance(src, GtDataSource):
+            cal = src.pedal_calibration()
+            gt = src._gt
+            supported = (gt.supported_report()
+                         if hasattr(gt, "supported_report") else
+                         dict(self._CTX_PENDING))
+            return {
+                "source": {"kind": "gt", "device": src.device,
+                           "port": src.port_name,
+                           "plan": src.plan_summary(),
+                           "plan_text": src.plan_text,
+                           "poll_cost_model": poll_cost_model()},
+                "vehicle": dict(self._CTX_PENDING),
+                "supported_pids": supported,
+                "dtcs_at_start": dict(self._CTX_PENDING),
+                "pedal_calibration": {"at_start": cal.to_dict(),
+                                      "settings_key": self._pedal_key,
+                                      "changes": []},
+                "channel_notes": notes,
+                "derived_channels": derived,
+            }
+        kind = type(src).__name__
+        why = f"the source is a {kind}, not a vehicle link"
+        log = getattr(src, "log", None)
+        return {
+            "source": {"kind": kind,
+                       "log": getattr(log, "source", None) if log else None},
+            "vehicle": {"examined": False, "why": why},
+            "supported_pids": {"examined": False, "why": why},
+            "dtcs_at_start": {"examined": False, "why": why},
+            "pedal_calibration": {"at_start": None, "why": why},
+            "channel_notes": notes,
+            "derived_channels": derived,
+        }
+
+    def _read_record_context(self, src: GtDataSource,
+                             rec: DriveRecorder) -> None:
+        """Identity + DTCs at recording start, off the GUI thread (serial IO
+        can take seconds; the poll thread is held for it, so no samples are
+        produced meanwhile and none are lost)."""
+        def worker():
+            try:
+                ctx = src.read_recording_context()
+            except Exception as exc:
+                why = f"{type(exc).__name__}: {exc}"
+                ctx = {"identity": {"examined": False, "why": why},
+                       "dtcs_at_start": {"examined": False, "error": why}}
+            try:
+                self.record_ctx_ready.emit((src, rec, ctx))
+            except RuntimeError:
+                pass   # widget destroyed meanwhile; the file stays valid
+
+        threading.Thread(target=worker, name="gt-record-ctx",
+                         daemon=True).start()
+
+    def _on_record_context(self, payload) -> None:
+        src, rec, ctx = payload
+        ident = ctx.get("identity") or {}
+        vin = (ident.get("vin") or {}).get("value") if ident.get(
+            "vin", {}).get("examined") else None
+        if src is self.source and isinstance(src, GtDataSource):
+            self._pedal_key = vin or UNKNOWN_VIN
+            stored = load_pedal_cal(self._pedal_key)
+            if stored is not None:
+                src.seed_pedal_calibration(stored)
+        fields = {"vehicle": ident,
+                  "dtcs_at_start": ctx.get("dtcs_at_start")}
+        if ctx.get("supported"):
+            fields["supported_pids"] = ctx["supported"]
+        pc = dict(rec.meta.get("pedal_calibration") or {})
+        pc["settings_key"] = self._pedal_key
+        if src is self.source and isinstance(src, GtDataSource):
+            pc["after_identity"] = src.pedal_calibration().to_dict()
+        fields["pedal_calibration"] = pc
+        if rec.meta_path and os.path.exists(rec.meta_path):
+            rec.update_meta(**fields)
+        if rec is self._recorder:
+            who = (f"VIN {vin}" if vin else "VIN not read: "
+                   + str((ident.get("vin") or ident).get("why", "unknown")))
+            self.status.setText(f"Recording → {rec.path} · {who}")
+
+    def add_marker(self):
+        """Drop a marker at the current recording time (M). Only the
+        metadata changes; the CSVs are untouched."""
+        rec = self._recorder
+        if not self.recording or rec is None:
+            self.status.setText("Markers are added while recording.")
+            return
+        self._record_samples(self.source.drain())   # date it after them
+        clock = getattr(self.source, "clock", None)
+        mark = rec.add_marker(clock() if clock else None)
+        if mark is None:
+            self.status.setText("No sample recorded yet — marker not added.")
+            return
+        msg = f"📍 {mark['label']} at {mark['t']:.1f} s"
+        if rec.meta_error:
+            msg += f" (metadata write failed: {rec.meta_error})"
+        self.status.setText(msg)
 
     def _record_dirs(self) -> list[str]:
         """Where recordings go: Documents\\OpenOBD\\Logs, resolved through
@@ -609,9 +857,17 @@ class Dashboard(QWidget):
         teardown, rebind and app close must never block on a dialog."""
         self.recording = False
         self.btn_record.setText("⏺ Record")
+        self.btn_mark.setEnabled(False)
         rec, self._recorder = self._recorder, None
         if rec is None:
             return
+        for key in ("vehicle", "dtcs_at_start"):
+            if rec.meta.get(key) == self._CTX_PENDING:
+                # The late result still lands here if it arrives (it is
+                # rewritten into the file); until then, say why it is absent.
+                rec.meta[key] = {"examined": False,
+                                 "why": "recording stopped before the "
+                                        "recording-start read finished"}
         if self.source:  # flush anything produced since the last tick
             try:
                 rec.write(self.source.drain())
@@ -669,9 +925,11 @@ class Dashboard(QWidget):
         states = (self.source.channel_states()
                   if hasattr(self.source, "channel_states") else None)
         states = self._gauge_states(s, states)
+        feed = self._pedal_feed(s)
         if states is not None:
             for key, g in self.gauges.items():
-                g.set_state(states.get(key))
+                g.set_state(states.get(feed.get(key, key)))
+        self._persist_pedal()
         # A source that can say WHY it stopped (the GT poll loop) says so in
         # the status line; when it recovers, the live caption comes back.
         msg = (self.source.status_message()
@@ -698,7 +956,7 @@ class Dashboard(QWidget):
                         g.set_value(None)
             return
         for key, g in self.gauges.items():
-            g.set_value(self._gauge_value(key, s))
+            g.set_value(self._gauge_value(feed.get(key, key), s))
         if self.replay_ctl.isVisible() and not self.pos_slider.isSliderDown():
             pos = self.source.position()
             self.pos_slider.blockSignals(True)
@@ -1301,9 +1559,17 @@ class MainWindow(QMainWindow):
         bar.addWidget(b)
         self.events_chk = QCheckBox("Event markers")
         self.events_chk.setChecked(True)
-        self.events_chk.setToolTip("Knock events (red) and shifts (cyan)")
+        self.events_chk.setToolTip("Knock events (red), shifts (cyan) and "
+                                   "recording markers (amber, from the "
+                                   ".meta.json beside a recording)")
         self.events_chk.toggled.connect(self._rebuild_plots)
         bar.addWidget(self.events_chk)
+        self.btn_learn_pedal = QPushButton("Learn pedal calibration from this log")
+        self.btn_learn_pedal.setToolTip(
+            "Derive pedal rest / full from this log's idle and WOT samples "
+            "(same rules as the live learner) and store them for its VIN")
+        self.btn_learn_pedal.clicked.connect(self.learn_pedal_from_log)
+        bar.addWidget(self.btn_learn_pedal)
         self.cursor_label = QLabel("")
         self.cursor_label.setStyleSheet("color:#9aa0a6;")
         bar.addWidget(self.cursor_label, 1)
@@ -1315,6 +1581,7 @@ class MainWindow(QMainWindow):
         self._vlines: list = []
         self._knock_times: list[float] = []
         self._shift_times: list[float] = []
+        self._marker_times: list[tuple[float, str]] = []
 
         split = QSplitter(Qt.Vertical)
         top = QSplitter(Qt.Horizontal)
@@ -1397,6 +1664,14 @@ class MainWindow(QMainWindow):
                         pos=t_ev, angle=90,
                         pen=pg.mkPen((80, 200, 220, 130), width=1,
                                      style=Qt.DashLine)), ignoreBounds=True)
+                for t_ev, label in self._marker_times:
+                    p.addItem(pg.InfiniteLine(
+                        pos=t_ev, angle=90,
+                        pen=pg.mkPen((235, 170, 60, 200), width=1.5),
+                        label=label if i == 0 else None,
+                        labelOpts={"position": 0.92,
+                                   "color": (235, 170, 60)}),
+                        ignoreBounds=True)
             vline = pg.InfiniteLine(
                 angle=90, movable=False,
                 pen=pg.mkPen((235, 235, 235, 120), width=1))
@@ -1439,6 +1714,8 @@ class MainWindow(QMainWindow):
         L.append(f"Channels: {', '.join(rep.channels_present)}")
         L.append("")
         L.append("── Regime trims ──")
+        L.append(f"  WOT criterion: {rep.wot_criterion_text}")
+        L.append(f"  WOT/PE samples: {rep.wot_samples}")
         for rg in rep.regimes:
             s = f"  {rg.name:22s} n={rg.n:<6d}"
             if rg.combined_trim_mean is not None:
@@ -1485,6 +1762,12 @@ class MainWindow(QMainWindow):
             L.append("  (compare WOT shifts to the setpoint tables: target "
                      "1-2/2-3 ~5,400-5,500 RPM on 4.11/35s)")
         L.append("")
+        markers = (self.log.meta or {}).get("markers") or []
+        if markers:
+            L.append("── Recording markers ──")
+            for m in markers:
+                L.append(f"    t={m.get('t')}  {m.get('label')}")
+            L.append("")
         if rep.notes:
             L.append("── Notes ──")
             for n in rep.notes:
@@ -1574,6 +1857,81 @@ class MainWindow(QMainWindow):
                 self._log_sidecar = side
             except (OSError, ValueError):
                 self.log.timed = None     # unreadable sidecar: wide CSV only
+        # A Dashboard recording's metadata: markers for the chart, the VIN,
+        # and the pedal calibration the recording used.
+        self.log.meta = None
+        try:
+            self.log.meta = read_meta(p)
+        except (OSError, ValueError) as exc:
+            self.statusBar().showMessage(
+                f"Ignored unreadable {os.path.basename(meta_path(p))}: {exc}",
+                6000)
+        self.log.pedal_cal = self._known_pedal_cal(self.log)
+        self._analyze_loaded_log()
+        self.dashboard.bind_source(LogReplaySource(self.log, speed=4.0))
+        self.main_tabs.setCurrentIndex(1)   # Tuning workspace
+        self.tune_tabs.setCurrentIndex(2)   # Log Analysis
+        self.statusBar().showMessage(
+            f"Loaded log: {self.log.n_samples} samples, "
+            f"{len(self.log.canonical_keys())} mapped channels", 6000)
+
+    @staticmethod
+    def _log_vin(log: Log) -> Optional[str]:
+        vin = ((log.meta or {}).get("vehicle") or {}).get("vin") or {}
+        return vin.get("value") if vin.get("examined") else None
+
+    def _known_pedal_cal(self, log: Log) -> Optional[PedalCal]:
+        """A pedal calibration KNOWN for this log: the last one its
+        recording used, else the one stored for its VIN. A log without a
+        VIN gets none (the UNKNOWN_VIN entry is not known to be this
+        vehicle's); Learn pedal calibration sets one explicitly."""
+        pc = (log.meta or {}).get("pedal_calibration") or {}
+        for cand in reversed((pc.get("changes") or [])
+                             + [pc.get("after_identity"), pc.get("at_start")]):
+            cal = PedalCal.from_dict(cand)
+            if cal.ready:
+                return cal
+        vin = self._log_vin(log)
+        if vin:
+            stored = load_pedal_cal(vin)
+            if stored is not None and stored.ready:
+                return stored
+        return None
+
+    def learn_pedal_from_log(self):
+        """User action: derive the pedal calibration from the loaded log,
+        store it (keyed by the log's VIN, else UNKNOWN_VIN) and re-analyze
+        the log with it. Not a hidden constant: the values, their source and
+        the rules are shown, stored and written into later recordings."""
+        if not self.log:
+            self.statusBar().showMessage("Load a log first.", 4000)
+            return
+        cal = calibrate_pedal_from_log(self.log)
+        if not cal.ready:
+            msg = (f"No pedal calibration in {self.log.source}: "
+                   f"{cal.status()}. It needs a stopped idle of 2 s or more "
+                   "and a pull with load >= 98 % or MAP >= 95 kPa, with APP D "
+                   "logged.")
+            self.statusBar().showMessage(msg, 10000)
+            self.log_report.append("\n" + msg)
+            return
+        key = self._log_vin(self.log) or UNKNOWN_VIN
+        try:
+            save_pedal_cal(key, cal)
+        except Exception as exc:
+            self.statusBar().showMessage(f"Could not store it: {exc}", 8000)
+            return
+        self.log.pedal_cal = cal
+        src = self.dashboard.source
+        if (isinstance(src, GtDataSource)
+                and (self.dashboard._pedal_key or UNKNOWN_VIN) == key):
+            src.seed_pedal_calibration(cal)
+        self._analyze_loaded_log()
+        self.statusBar().showMessage(
+            f"Pedal calibration {cal.status()} stored for {key}", 8000)
+
+    def _analyze_loaded_log(self):
+        """Regime report, event markers and charts for self.log."""
         self._log_times = time_axis(self.log)
         rep = analyze_log(self.log)
         # Event marker positions. The chart axis is zero-based (time_axis
@@ -1592,16 +1950,19 @@ class MainWindow(QMainWindow):
         self._shift_times = [float(s.time_s) - t_base
                              for s in detect_shift_points(self.log)
                              if s.time_s is not None]
+        # Recording markers are on the recording's zero, which is the CSV's
+        # Time (s) zero: shift them by the same base as the shifts.
+        self._marker_times = []
+        for m in (self.log.meta or {}).get("markers") or []:
+            try:
+                self._marker_times.append((float(m["t"]) - t_base,
+                                           str(m.get("label", ""))))
+            except (KeyError, TypeError, ValueError):
+                continue
         self._render_report(rep)
         self._populate_channels()
         self._rebuild_plots()
         self._refresh_channel_combos()
-        self.dashboard.bind_source(LogReplaySource(self.log, speed=4.0))
-        self.main_tabs.setCurrentIndex(1)   # Tuning workspace
-        self.tune_tabs.setCurrentIndex(2)   # Log Analysis
-        self.statusBar().showMessage(
-            f"Loaded log: {self.log.n_samples} samples, "
-            f"{len(self.log.canonical_keys())} mapped channels", 6000)
 
 
 def load_default_cal() -> tuple[Calibration, Optional[str]]:

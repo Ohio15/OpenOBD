@@ -690,7 +690,8 @@ d.btn_record.setToolTip("Last recording: C:/x.csv")
 assert d.shortcut_tooltip(d.btn_record) == "Last recording: C:/x.csv (Ctrl+R)"
 d.btn_record.setToolTip("")
 assert d.shortcut_tooltip(d.btn_record).endswith("datalog (Ctrl+R)")
-assert len(d._shortcuts) == 6
+assert len(d._shortcuts) == 7
+assert "(M)" in d.shortcut_tooltip(d.btn_mark)
 print("gauge fluency OK: eased needle landed, held/stale/failed states, "
       "collapse + reflow, shortcuts")
 

@@ -67,7 +67,8 @@ BAR_SPECS = [
     ("voltage",      "Volts",   "V",   10,  15, None, 12),
     ("tft",          "Trans",   "°F",  80, 300, 240,  None),
     ("gear",         "Gear",    "",    0,    6, None, None),
-    ("ethanol",      "EtOH",    "%",   0,  100, None, None),
+    # PID 52 is the ECM's ethanol ESTIMATE, not a sensor reading.
+    ("ethanol",      "EtOH est", "%",  0,  100, None, None),
 ]
 
 # Dashboard visuals selectable in Settings → Preferences (key → menu label).
@@ -113,7 +114,7 @@ MODERN_RING_SPECS = [       # key, label, unit, min, max, red-above, red-below
     ("fuel_press",   "FUEL P",  "psi", 0,   75, None, 40),
     ("load",         "LOAD",    "%",   0,  100, None, None),
     ("app",          "PEDAL",   "%",   0,  100, None, None),
-    ("ethanol",      "ETOH",    "%",   0,  100, None, None),
+    ("ethanol",      "ETOH EST", "%",  0,  100, None, None),
 ]
 
 #: Same green Live Data uses for "fresh" (livedata.STATE_STYLE).
@@ -213,6 +214,7 @@ class GaugeBase(QWidget):
         super().__init__()
         self.key = key
         self.label = label
+        self.base_label = label
         self.unit = unit
         self.vmin = float(vmin)
         self.vmax = float(vmax)
@@ -275,6 +277,23 @@ class GaugeBase(QWidget):
         """Positive confirmation: fresh state AND a value on screen."""
         return (self.available and self.state == "fresh"
                 and self.value is not None)
+
+    def set_label_suffix(self, suffix: Optional[str]) -> None:
+        """Show what the gauge is reading: the base label, or the base plus
+        a qualifier ("raw" when the Pedal gauge falls back to APP D as
+        decoded). A different quantity starts a fresh min/max capture."""
+        base = self.base_label
+        if suffix:
+            suffix = suffix.upper() if base.isupper() else suffix
+            label = f"{base} {suffix}"
+        else:
+            label = base
+        if label == self.label:
+            return
+        self.label = label
+        self.min_seen = self.max_seen = None
+        self._static_key = None            # the label may be in the cache
+        self.update()
 
     def set_available(self, on: bool):
         if on != self.available:

@@ -34,17 +34,34 @@ GT dropping off USB, a save dialog being cancelled. So this writer:
     sampled; Log Analysis does not read it yet;
   * zeroes time at the first recorded sample (both files share the zero, so
     the first sweep's earliest requests sit slightly below 0 in the
-    sidecar), not at GT connect.
+    sidecar), not at GT connect;
+  * writes DERIVED values (Sample.derived, e.g. the normalized "pedal"
+    computed from APP D) in the wide CSV as their own column, and in the long
+    sidecar in their own line form: the time of the reading they were
+    computed from, and "derived:<source key>" in the Request column (never a
+    request number, so a reader can never take one for a module request);
+  * writes a metadata sidecar, <stem>.meta.json (META_SCHEMA): start times
+    (UTC and local), the file names, and whatever the caller knows about the
+    source and the vehicle (identity, supported PIDs, DTCs at start, pedal
+    calibration, channel notes), plus the user's markers. It is created with
+    the other two (exclusive, flushed, fsynced) and REWRITTEN ATOMICALLY
+    (temp file, fsync, os.replace) when markers or vehicle facts are added
+    and at close (end time, row count, error), so a crash mid-rewrite leaves
+    the previous complete file, never a torn one. A metadata write failure
+    is reported in meta_error and never stops the CSV.
 
 No Qt here, so the headless suite exercises it directly.
 """
 from __future__ import annotations
 
 import csv
+import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Iterable, Optional, Sequence
+
+from . import __version__
 
 #: Upper bound on how long written rows can sit in the OS cache before they
 #: are forced to disk. A flush happens on every write() regardless.
@@ -56,6 +73,12 @@ TIME_LABEL = "Time (s)"
 SIDECAR_SUFFIX = ".long.csv"
 SIDECAR_HEADER = ["Time (s)", "Channel", "Value", "Request",
                   "Sweep Start (s)", "Sweep End (s)"]
+
+#: The metadata sidecar: <stem>.meta.json beside <stem>.csv.
+META_SUFFIX = ".meta.json"
+META_SCHEMA = 1
+#: Prefix of the long sidecar's Request column on a derived value's line.
+DERIVED_REQUEST_PREFIX = "derived:"
 
 
 def default_log_dirs(documents: Optional[str], app_data: Optional[str]) -> list[str]:
@@ -81,20 +104,55 @@ def sidecar_path(csv_path: str) -> str:
     return stem + SIDECAR_SUFFIX
 
 
+def meta_path(csv_path: str) -> str:
+    """The metadata sidecar that belongs to a recording's CSV."""
+    stem, _ext = os.path.splitext(csv_path)
+    return stem + META_SUFFIX
+
+
+def read_meta(csv_path: str) -> Optional[dict]:
+    """The metadata beside a CSV, or None when there is none. Raises
+    ValueError for a file that is not an OpenOBD recording's metadata."""
+    p = meta_path(csv_path)
+    if not os.path.exists(p):
+        return None
+    with open(p, "r", encoding="utf-8") as fh:
+        meta = json.load(fh)
+    if not isinstance(meta, dict) or "schema" not in meta:
+        raise ValueError(f"{p} is not an OpenOBD recording metadata file")
+    return meta
+
+
 def _sidecar_lines(sample, zero: float) -> list[list[str]]:
     """The long-format lines for one sample: every value the source produced
     (including keys with no CSV column), at full float precision. A sample
     without readings (log replay, truck-mcp) has no request identity and no
-    sweep, so its values carry the sample time and blank request columns."""
+    sweep, so its values carry the sample time and blank request columns.
+    A derived value gets its source reading's time and "derived:<source>"."""
     readings = getattr(sample, "readings", None)
+    derived = getattr(sample, "derived", None) or {}
     if not readings:
         rel = f"{sample.t - zero:.6f}"
-        return [[rel, k, repr(float(v)), "", "", ""]
+        return [[rel, k, repr(float(v)),
+                 DERIVED_REQUEST_PREFIX + derived[k] if k in derived else "",
+                 "", ""]
                 for k, v in sample.values.items()]
     start = f"{sample.sweep_start() - zero:.6f}"
     end = f"{sample.sweep_end() - zero:.6f}"
-    return [[f"{r.t - zero:.6f}", r.key, repr(float(r.value)), str(r.request),
-             start, end] for r in readings]
+    lines = [[f"{r.t - zero:.6f}", r.key, repr(float(r.value)),
+              str(r.request), start, end] for r in readings]
+    by_key = {r.key: r for r in readings}
+    for key, src in derived.items():
+        r = by_key.get(src)
+        if r is None or key not in sample.values:
+            continue
+        lines.append([f"{r.t - zero:.6f}", key, repr(float(sample.values[key])),
+                      DERIVED_REQUEST_PREFIX + src, start, end])
+    return lines
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class DriveRecorder:
@@ -109,10 +167,18 @@ class DriveRecorder:
     def __init__(self, keys: Sequence[str], labels: dict, dirs: Iterable[str],
                  prefix: str = "gt_log",
                  now: Callable[[], datetime] = datetime.now,
-                 fsync_interval: float = FSYNC_INTERVAL_S):
+                 fsync_interval: float = FSYNC_INTERVAL_S,
+                 meta: Optional[dict] = None,
+                 utc_now: Callable[[], datetime] = _utc_now):
+        """meta: caller facts for the metadata sidecar (source, vehicle,
+        supported PIDs, DTCs at start, pedal calibration, channel notes);
+        merged under the recorder's own fields."""
         self.keys = list(keys)
         self.count = 0
         self.error: Optional[str] = None
+        self.meta_error: Optional[str] = None
+        self._utc_now = utc_now
+        self._now = now
         self.ignored_keys: set[str] = set()   # keys seen with no column
         self._fsync_interval = fsync_interval
         self._last_fsync = time.monotonic()
@@ -120,16 +186,22 @@ class DriveRecorder:
         self._writer = None
         self._long_fh = None
         self._long_writer = None
+        self.meta_path: Optional[str] = None
+        self.markers: list[dict] = []
+        self._last_t: Optional[float] = None
         # Source time of the first recorded sample; both files are relative
         # to it, so the recording starts at 0 rather than at GT connect.
         self._t_zero: Optional[float] = None
-        stamp = now().strftime("%Y%m%d_%H%M%S")
+        local_start = now()
+        utc_start = utc_now()
+        stamp = local_start.strftime("%Y%m%d_%H%M%S")
         failures = []
+        meta_fh = None
         for d in dirs:
             try:
                 os.makedirs(d, exist_ok=True)
-                (self._fh, self.path,
-                 self._long_fh, self.long_path) = self._create(d, f"{prefix}_{stamp}")
+                (self._fh, self.path, self._long_fh, self.long_path,
+                 meta_fh, self.meta_path) = self._create(d, f"{prefix}_{stamp}")
                 break
             except OSError as exc:
                 failures.append(f"{d}: {exc}")
@@ -138,13 +210,35 @@ class DriveRecorder:
                           + ("; ".join(failures) or "no folder configured"))
         self._writer = csv.writer(self._fh)
         self._long_writer = csv.writer(self._long_fh)
+        self.meta = dict(meta or {})
+        self.meta.update({
+            "schema": META_SCHEMA,
+            "openobd_version": __version__,
+            "utc_start": utc_start.isoformat(),
+            "local_start": local_start.isoformat(),
+            "files": {"csv": os.path.basename(self.path),
+                      "long": os.path.basename(self.long_path),
+                      "meta": os.path.basename(self.meta_path)},
+            "columns": {k: labels[k] for k in self.keys},
+            "markers": self.markers,
+            "time_zero": "the first recorded sample (both CSVs and the "
+                         "marker times share it)",
+        })
         try:
             self._writer.writerow([TIME_LABEL] + [labels[k] for k in self.keys])
             self._long_writer.writerow(SIDECAR_HEADER)
             self._sync(force=True)
-        except OSError:
+            meta_fh.write(self._meta_text())
+            meta_fh.flush()
+            os.fsync(meta_fh.fileno())
+            meta_fh.close()
+        except (OSError, TypeError, ValueError):
             self._close_quietly()
-            for p in (self.path, self.long_path):
+            try:
+                meta_fh.close()
+            except OSError:
+                pass
+            for p in (self.path, self.long_path, self.meta_path):
                 try:
                     os.unlink(p)
                 except OSError:
@@ -153,9 +247,10 @@ class DriveRecorder:
 
     @staticmethod
     def _create(folder: str, stem: str):
-        """Open a NEW csv and its sidecar exclusively ('x'): two recordings
-        started in the same second, or leftover files, must never be
-        overwritten, and a csv is never paired with another run's sidecar."""
+        """Open a NEW csv and its two sidecars exclusively ('x'): two
+        recordings started in the same second, or leftover files, must never
+        be overwritten, and a csv is never paired with another run's
+        sidecar or metadata."""
         for n in range(1000):
             name = f"{stem}.csv" if n == 0 else f"{stem}_{n}.csv"
             path = os.path.join(folder, name)
@@ -163,20 +258,87 @@ class DriveRecorder:
                 fh = open(path, "x", newline="", encoding="utf-8")
             except FileExistsError:
                 continue
-            long_path = sidecar_path(path)
+            opened = [(fh, path)]
             try:
-                long_fh = open(long_path, "x", newline="", encoding="utf-8")
+                for side in (sidecar_path(path), meta_path(path)):
+                    opened.append((open(side, "x", newline="",
+                                        encoding="utf-8"), side))
             except FileExistsError:
-                # A stray sidecar owns this stem: release the csv, try the next.
-                fh.close()
-                os.unlink(path)
+                # A stray sidecar owns this stem: release ours, try the next.
+                for h, p in opened:
+                    h.close()
+                    os.unlink(p)
                 continue
             except OSError:
-                fh.close()
-                os.unlink(path)
+                for h, p in opened:
+                    h.close()
+                    os.unlink(p)
                 raise
-            return fh, path, long_fh, long_path
+            (fh, path), (long_fh, long_path), (meta_fh, mpath) = opened
+            return fh, path, long_fh, long_path, meta_fh, mpath
         raise OSError(f"could not create a unique file for {stem} in {folder}")
+
+    # -- metadata sidecar ---------------------------------------------------- #
+    def _meta_text(self) -> str:
+        return json.dumps(self.meta, indent=2, sort_keys=False,
+                          default=str) + "\n"
+
+    def _write_meta(self) -> bool:
+        """Atomic rewrite: the whole document to <meta>.tmp, flushed and
+        fsynced, then os.replace over the old file. An interruption at any
+        point leaves either the old or the new complete document."""
+        if self.meta_path is None:
+            return False
+        tmp = self.meta_path + ".tmp"
+        try:
+            with open(tmp, "w", newline="", encoding="utf-8") as fh:
+                fh.write(self._meta_text())
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, self.meta_path)
+            return True
+        except (OSError, TypeError, ValueError) as exc:
+            self.meta_error = f"{type(exc).__name__}: {exc}"
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return False
+
+    def update_meta(self, **fields) -> bool:
+        """Merge facts learned after start (vehicle identity, DTCs, pedal
+        calibration changes) and rewrite the metadata atomically."""
+        self.meta.update(fields)
+        return self._write_meta()
+
+    @property
+    def t_zero(self) -> Optional[float]:
+        return self._t_zero
+
+    def recording_time(self, source_t: Optional[float] = None) -> Optional[float]:
+        """Seconds on the recording's zero for a source-clock time (or the
+        last recorded sample when the source has no clock), None before the
+        first sample."""
+        if self._t_zero is None:
+            return None
+        t = self._last_t if source_t is None else source_t
+        return None if t is None else t - self._t_zero
+
+    def add_marker(self, source_t: Optional[float] = None,
+                   label: Optional[str] = None) -> Optional[dict]:
+        """Append a marker at the current recording time and rewrite the
+        metadata. The CSVs are untouched. Returns the marker, or None when
+        there is no time yet (no sample recorded) or the recording closed."""
+        if self._fh is None:
+            return None
+        t = self.recording_time(source_t)
+        if t is None:
+            return None
+        marker = {"t": round(t, 3),
+                  "label": label or f"mark {len(self.markers) + 1}"}
+        self.markers.append(marker)
+        self._write_meta()
+        return marker
 
     @property
     def active(self) -> bool:
@@ -206,6 +368,7 @@ class DriveRecorder:
                     self.ignored_keys |= extra
                 if self._t_zero is None:
                     self._t_zero = s.t
+                self._last_t = s.t
                 self._writer.writerow(
                     [f"{s.t - self._t_zero:.3f}"]
                     + [_fmt(vals.get(k)) for k in self.keys])
@@ -238,19 +401,33 @@ class DriveRecorder:
                 pass
 
     def close(self) -> tuple[str, int]:
-        """Flush, fsync and close both files. An empty recording (header only)
-        is removed with its sidecar so aborted starts don't litter the folder.
-        Returns (path, rows)."""
-        if self._fh is not None:
+        """Flush, fsync and close the files and write the final metadata
+        (end time, rows, error). An empty recording (header only) is removed
+        with both sidecars so aborted starts don't litter the folder.
+        Idempotent. Returns (path, rows)."""
+        was_open = self._fh is not None
+        if was_open:
             try:
                 self._sync(force=True)
             except (OSError, ValueError) as exc:
                 self.error = self.error or f"{type(exc).__name__}: {exc}"
             self._close_quietly()
         if self.count == 0 and self.error is None:
-            for p in (self.path, self.long_path):
+            for p in (self.path, self.long_path, self.meta_path):
                 try:
                     os.unlink(p)
                 except OSError:
                     pass
+            return self.path, self.count
+        if was_open or "utc_end" not in self.meta:
+            self.meta.update({
+                "utc_end": self._utc_now().isoformat(),
+                "local_end": self._now().isoformat(),
+                "rows": self.count,
+                "duration_s": (None if self._last_t is None
+                               else round(self._last_t - self._t_zero, 3)),
+                "error": self.error,
+                "ignored_keys": sorted(self.ignored_keys),
+            })
+            self._write_meta()
         return self.path, self.count
