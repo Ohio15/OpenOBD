@@ -73,6 +73,10 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   differs from `__version__`), and `docs/RELEASE.md` covers test, build,
   version check, deploy with `_deploy.ps1`, post-deploy check and rollback.
 
+### Changed
+- Added `.pre-commit-tests` so the dev-standards pre-commit hook runs the pytest
+  suite and refuses a commit on red; it previously printed "TESTS DID NOT RUN".
+
 ## 0.31.0 — 2026-10-05
 
 ### Fixed
