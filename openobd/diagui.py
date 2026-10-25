@@ -262,6 +262,10 @@ class DiagnosticsPage(QWidget):
         bar.addWidget(self.scan_btn)
         self.map_status = QLabel("Not scanned. Connect the GT (or just hit "
                                  "Scan — it opens its own link).")
+        # Wrap, never widen: an unwrapped status sentence here sets the
+        # Diagnostics page's minimum width, and through QTabWidget the whole
+        # window's (the scan verdicts below are a full sentence each).
+        self.map_status.setWordWrap(True)
         bar.addWidget(self.map_status, 1)
         lay.addLayout(bar)
 

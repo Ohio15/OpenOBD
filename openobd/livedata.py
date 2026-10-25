@@ -79,6 +79,9 @@ STATE_CAPTION = {
 POLL_MS = 1000
 SESSION_RESCAN_MS = 5000
 CONTROL_POLL_MS = 3000
+# Character budget the session picker reserves (it elides beyond this when the
+# window is narrow; the full label stays in its tooltip and its popup).
+PICKER_MIN_CHARS = 28
 
 
 class ValueTile(QFrame):
@@ -196,12 +199,25 @@ class LiveDataPage(QWidget):
 
         root = QVBoxLayout(self)
 
+        # The bar must never set the page's minimum width: QTabWidget's minimum
+        # is the max over its pages, so a wide bar here pins the WHOLE window
+        # (it was 1522 px). The picker therefore sizes from a fixed character
+        # budget instead of its longest session label (the default
+        # AdjustToContentsOnFirstShow), grows into spare room, elides when
+        # narrow and carries the full label as a tooltip; its popup is widened
+        # to the full labels so nothing is hidden. The status line wraps rather
+        # than forcing its whole sentence onto one row.
         bar = QHBoxLayout()
         bar.addWidget(QLabel("Session:"))
         self._picker = QComboBox()
-        self._picker.setMinimumWidth(360)
+        self._picker.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self._picker.setMinimumContentsLength(PICKER_MIN_CHARS)
+        self._picker.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._picker.view().setTextElideMode(Qt.ElideNone)
+        self._picker.currentIndexChanged.connect(self._sync_picker_tooltip)
         self._picker.currentIndexChanged.connect(self._on_pick)
-        bar.addWidget(self._picker)
+        bar.addWidget(self._picker, 1)
         self._refresh_btn = QPushButton("↻ Rescan")
         self._refresh_btn.clicked.connect(self.rescan_sessions)
         bar.addWidget(self._refresh_btn)
@@ -211,10 +227,13 @@ class LiveDataPage(QWidget):
             "the same selection.")
         self._fields_btn.clicked.connect(self._show_fields_menu)
         bar.addWidget(self._fields_btn)
-        bar.addStretch(1)
         self._status = QLabel("")
         self._status.setStyleSheet("color:#9DA3AD;")
-        bar.addWidget(self._status)
+        self._status.setWordWrap(True)
+        self._status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._status.setSizePolicy(QSizePolicy.Expanding,
+                                   QSizePolicy.Preferred)
+        bar.addWidget(self._status, 1)
         root.addLayout(bar)
 
         # HP-Tuners-style combined view: the live tiles and the Chart vs. Time
@@ -300,6 +319,8 @@ class LiveDataPage(QWidget):
             self._picker.blockSignals(True)
             self._picker.clear()
             self._picker.blockSignals(False)
+            self._fit_picker_popup()
+            self._sync_picker_tooltip()
             self._set_empty(
                 "truck-mcp data root not found.\n\nSet the TRUCK_MCP_DATA "
                 "environment variable, or place truck-mcp at "
@@ -328,11 +349,16 @@ class LiveDataPage(QWidget):
             label = s.get("label") or s.get("name")
             started = (s.get("started_utc") or "")[:19].replace("T", " ")
             err = "  [unreadable]" if s.get("error") else ""
-            self._picker.addItem(f"{tag}{label}  ·  {started}  ·  "
-                                 f"{s.get('channel_count', 0)} ch{err}", s["path"])
+            text = (f"{tag}{label}  ·  {started}  ·  "
+                    f"{s.get('channel_count', 0)} ch{err}")
+            self._picker.addItem(text, s["path"])
+            self._picker.setItemData(self._picker.count() - 1, text,
+                                     Qt.ToolTipRole)
         idx = self._picker.findData(prev) if prev else 0
         self._picker.setCurrentIndex(max(0, idx))
         self._picker.blockSignals(False)
+        self._fit_picker_popup()
+        self._sync_picker_tooltip()
         if not sessions:
             self._set_empty(
                 "No drive-log sessions found.\n\nRun a truck-mcp "
@@ -343,6 +369,21 @@ class LiveDataPage(QWidget):
 
     def _maybe_rescan(self):
         self.rescan_sessions()
+
+    def _fit_picker_popup(self):
+        """Widen the picker's dropdown to its longest label. The closed box is
+        width-budgeted (and may elide), so the popup is where the full session
+        label must always be readable."""
+        view = self._picker.view()
+        if not self._picker.count():
+            view.setMinimumWidth(0)
+            return
+        view.setMinimumWidth(view.sizeHintForColumn(0)
+                             + view.frameWidth() * 2
+                             + view.verticalScrollBar().sizeHint().width())
+
+    def _sync_picker_tooltip(self, *_):
+        self._picker.setToolTip(self._picker.currentText())
 
     def _set_empty(self, text: str):
         self._empty.setText(text)

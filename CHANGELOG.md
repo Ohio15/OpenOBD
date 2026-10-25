@@ -106,6 +106,20 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
 - Added `.pre-commit-tests` so the dev-standards pre-commit hook runs the pytest
   suite and refuses a commit on red; it previously printed "TESTS DID NOT RUN".
 
+### Fixed (window width)
+- The main window could not be made narrower than about 1526 px once a drive
+  session was bound in Live Data. A tab widget is as wide as its widest page,
+  and the Live Data top bar put a session picker sized to its longest label
+  and a status line that never wrapped on one row (1522 px). The picker now
+  reserves a fixed character budget, grows into spare room, and elides when
+  narrow. Its tooltip and its dropdown, which is widened to fit, still show
+  the full session label. The status line wraps. Live Data now needs 936 px
+  (744 px with no session). The Diagnostics Module Map status line had the
+  same problem (1080 px) and now wraps too (464 px). A regression test holds
+  Live Data to 1000 px. The window is still held at about 1238 px by the
+  Dashboard source/status row and the Tuning editor toolbars (in `app.py`),
+  which are tracked separately.
+
 ## 0.31.0 — 2026-10-05
 
 ### Fixed
