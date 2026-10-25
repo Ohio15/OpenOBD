@@ -216,6 +216,8 @@ when the code it anchored on was rewritten.
 **Check.** For every new test, revert the behaviour AT THE REAL CALL SITE and
 confirm the test goes red. A skipped/missed mutation anchor is a FAILURE,
 never a kill. Batteries carry at least one deletion AND one retention mutant.
+A verifier or guard whose tests include no mutation battery (revert the
+guard, confirm the test fails) is NOT EXAMINED, not CLEAR.
 **Fix form.** Drive the real handler; anchor by enclosing function; re-anchor
 inherited mutations, never delete them.
 **Since.** 2026-09-02.
@@ -473,6 +475,228 @@ anything else; a monotonic version floor in the updater.
 **Since.** 2026-10-05.
 **Origin.** audit-openos-2026-10-05 (MEDIUM; approved by Ron 2026-10-05).
 
+### SC-32 · A privilege policy written as a deny-list of dangerous values
+**Shape.** A capability, syscall, device, or mount policy refuses a
+hand-picked set of "host-escape" values and admits everything else, so an
+omitted member passes (DAC_READ_SEARCH -> `open_by_handle_at`, the "shocker"
+container escape); and a drop-side field (`cap_drop`) is type-checked but not
+required, so omitting it silently restores the runtime's default set. The
+refusal message ("host-escape capability refused") asserts a completeness the
+list lacks (SC-13).
+**Check.** `grep -nE "in \((\"[A-Z_]+\", ?)+\"[A-Z_]+\"\)"` over policy code
+that handles `cap_add`, `capabilities`, `devices`, `sysctls` or `security_opt`;
+every hit on a privilege dimension is a finding unless it is an allow-list.
+`grep -n "cap_drop"`: the policy must require `cap_drop` to contain `ALL`, and
+the post-deploy audit must read `CapDrop` and the effective set, not only
+`CapAdd`. A test feeds every name in `capabilities(7)` that is not on the
+allow-list and asserts refusal, plus a document with `cap_drop` omitted.
+**Fix form.** Allow-list of known-safe values, each justified; require
+drop-ALL; audit the effective set at runtime.
+**Since.** 2026-10-08.
+**Origin.** audit-infra-2026-10-08 (HIGH; approved by Ron 2026-10-08).
+
+### SC-33 · An allow-list enforced only when the governed key is present
+**Shape.** A policy validates a key's value against an allow-list only inside
+`if key in doc` / `elif attr == ...`, while the consuming system gives the
+ABSENT key a broader default: a Traefik router with no `entrypoints` binds
+every entrypoint, one with no `rule` gets the default Host rule. Omission is
+the bypass, and the tests only ever feed present values.
+**Check.** For every allow-list predicate in policy code, find the consumer's
+default for the missing key in its documentation or source; if that default
+is broader than the allow-list, the policy must REQUIRE the key. One test per
+predicate feeds the document with the key omitted and asserts refusal.
+**Fix form.** Require the key wherever the consumer's default is wider than
+the allow-list; never validate only what is present.
+**Since.** 2026-10-08.
+**Origin.** audit-infra-2026-10-08 (MEDIUM; approved by Ron 2026-10-08).
+
+### SC-34 · Untrusted content written to GITHUB_ENV or GITHUB_OUTPUT with a
+fixed heredoc delimiter
+**Shape.** A workflow step appends `NAME<<EOF` ... `EOF` to `$GITHUB_ENV` or
+`$GITHUB_OUTPUT` with content fetched from outside the step (a gist, an API
+body, a PR title, a file the job did not write). A newline plus the fixed
+delimiter in that content ends the block early and sets arbitrary environment
+variables or outputs for every later step (`GH_REPO`, `BASH_ENV`, ...).
+**Check.** `grep -nE "<<-?['\"]?[A-Za-z_]*EOF" .github/workflows/*.yml` near
+`GITHUB_ENV|GITHUB_OUTPUT`; every hit whose body interpolates a value not
+computed in-step from trusted input is a finding unless the delimiter is
+random per run (`delim="ghadelim_$(openssl rand -hex 16)"` or equivalent).
+**Fix form.** Random per-run delimiter, or validate the content down to a
+fixed shape (a timestamp, a SHA) before writing it.
+**Since.** 2026-10-08.
+**Origin.** audit-infra-2026-10-08 (LOW; approved by Ron 2026-10-08).
+
+### SC-35 · Removal by unlinking one edge while persistence is
+reachability-based (replace-by-add)
+**Shape.** A "replace", "redact" or "remove" operation registers a NEW object
+(or deletes one inbound reference) and rewrites the consumer it was told
+about, but leaves the original bound through another name, index, resource
+dictionary, parent pointer, structure tree, calculation order or reply chain.
+Persistence is decided by a reachability walk (garbage collection,
+`removeUnreachableObjects`, `collectGarbage`), so the original is still
+reachable and is written out, while every verifier looks only at what is DRAWN
+or LISTED, not at what is PRESENT. pdfmanager 2026-10-08: redacted image/form
+XObjects kept under the original resource name (CRITICAL); removed annotations
+and widgets resurrected via `/OBJR`, `/IRT`, `/CO`, `/Parent`, XFA (HIGH);
+deleted pages written because pdf-lib writes every indirect object (HIGH).
+**Check.** Grep the add-only registration form (`addXObject(`, `.clone(`,
+`set(PDFName.of(...` on a resource dict, `push(` on a kids/fields array) and
+the single-edge removal form (`filter(` on one array, `delete` on one key) in
+any code that claims to remove content; for each, name every other inbound
+edge the object type can have in the format's object model. The diff must
+carry an OUTPUT-BOUNDARY test: serialise, re-parse, and assert the original
+object's bytes (or ref) are ABSENT from the saved file, not merely that the
+drawn result is correct.
+**Fix form.** Remove by object identity across every inbound reference, or
+rebuild the index from the names the rewritten consumer actually uses; make
+the verifier fail on any reachable-but-unreferenced object of the redacted
+kind.
+**Since.** 2026-10-09.
+**Origin.** audit-pdfmanager-2026-10-08, proposed there as SC-32
+(CRITICAL; approved by Ron 2026-10-09).
+
+### SC-36 · Index-space mismatch between where a position is computed and
+where it is applied
+**Shape.** Positions, offsets or lengths are computed in one unit (Unicode
+code points via `for..of`, graphemes, pre-case-fold characters, bytes) and
+consumed in another (`String.length`, `.slice`, `.substring`, `indexOf` on
+UTF-16 units, or on a case-folded string whose length changed). Every
+occurrence after the first astral character or length-changing fold is
+shifted. When the consumer is a redaction, a highlight, a patch or an access
+check, the shift lands the action on the wrong target and a fallback that
+re-rasterises or re-copies the original preserves the content the action was
+meant to remove. pdfmanager 2026-10-08 `textSearch.ts:61-78` (HIGH).
+**Check.** Grep `for (const .* of ` over a string paired with `.length`,
+`.slice(`, `.substring(` or `indexOf(` on the same or a derived string; grep
+`.toLowerCase()`/`.toUpperCase()`/`.normalize(` whose result is indexed with
+offsets from the un-folded string. The diff must carry a test using an astral
+character (`𝐀`, an emoji) and a length-changing fold (`İ`) BEFORE the target
+occurrence.
+**Fix form.** One index space end to end (build the map per UTF-16 unit on the
+already-folded string), and verify the OUTPUT (the term must be absent from
+the rendered or re-extracted result), never only the input positions.
+**Since.** 2026-10-09.
+**Origin.** audit-pdfmanager-2026-10-08, proposed there as SC-33
+(HIGH; approved by Ron 2026-10-09).
+
+### SC-37 · A pull_request-reachable job whose runner is chosen by a
+repository variable
+**Shape.** `runs-on: ${{ vars.X || 'ubuntu-latest' }}` (or any expression over
+`vars.`/`inputs.`) on a job reachable from `pull_request` in a public
+repository. The default is hosted, so the shape is inert until the variable is
+set; then every fork PR's install-time code runs on whatever the variable
+names. pdfmanager 2026-10-08: 7 sites across 3 workflows (MEDIUM, latent).
+**Check.** `grep -n "runs-on:.*\${{" .github/workflows/*.yml` intersected with
+workflows that declare `pull_request:` or `pull_request_target:`; for each
+hit, the repo visibility and the fork-approval policy are part of the finding.
+Any hit in a public repo is a finding regardless of the variable's current
+value.
+**Fix form.** Literal GitHub-hosted labels on every PR-reachable job;
+variables may select runners only for `schedule`, `workflow_dispatch` and
+`push` on protected branches.
+**Since.** 2026-10-09.
+**Origin.** audit-pdfmanager-2026-10-08, proposed there as SC-34
+(MEDIUM, latent; approved by Ron 2026-10-09).
+
+### SC-38 · A guard that passes vacuously for inputs below its own tolerance
+**Shape.** A geometric, range or threshold guard applies an inset, epsilon,
+rounding or minimum to its input and, for inputs smaller than that tolerance,
+produces an empty, inverted or degenerate test region. Every subsequent
+membership test is then false, and "nothing found" reads as "clean". The
+acceptance filter upstream admits inputs smaller than the guard's tolerance.
+pdfmanager 2026-10-08 `redactionVerifier.ts:66` (0.5 pt inset; marks over 0.01
+pt accepted) (LOW); the zero-size-text finding has the same degenerate shape
+at `contentRedactor.ts:302`.
+**Check.** For every guard that subtracts, insets or divides by a tolerance,
+grep the upstream acceptance filter's minimum and compare; the diff must carry
+a test at an input strictly between the acceptance minimum and the guard
+tolerance, asserting the guard REJECTS or reports NOT EXAMINED rather than
+passing.
+**Fix form.** Clamp the tolerance to a fraction of the input, or reject inputs
+below the tolerance at the acceptance filter.
+**Since.** 2026-10-09.
+**Origin.** audit-pdfmanager-2026-10-08, proposed there as SC-35
+(LOW; approved by Ron 2026-10-09).
+
+### SC-39 · Code fetched over an unauthenticated channel and executed
+**Shape.** A script or binary is downloaded over HTTP (or over HTTPS with
+verification disabled) and run without a pinned hash or signature check:
+`iex (irm http://...)`, `DownloadString('http://...')`,
+`[scriptblock]::Create($downloaded)`, `Invoke-Expression` of a web response.
+This is worst when the run is elevated, and when an elevated child re-downloads
+instead of running the bytes already obtained. patriot-provisioning 2026-10-10:
+`setup-bootstrap.ps1` and `triage-workstation.ps1` (HIGH).
+**Check.** `grep -rnE "(iex|Invoke-Expression|ScriptBlock\]::Create|DownloadString)\b.*"
+--include=*.ps1` intersected with `http://` or a variable assigned from
+`Invoke-RestMethod` / `Invoke-WebRequest`. Every hit must verify a pinned
+SHA-256 or an Authenticode signer of the exact bytes before execution. Docs
+that tell an operator to paste such a one-liner count as siblings.
+**Fix form.** HTTPS with a pinned certificate, plus a pinned hash or signature
+of the executed bytes; elevated children run the verified bytes and never
+re-fetch.
+**Since.** 2026-10-10.
+**Origin.** audit-patriot-provisioning-2026-10-10 (HIGH; approved by Ron 2026-10-10).
+
+### SC-40 · Secret material embedded in generated script text
+**Shape.** A secret (decrypted password, token, key) is interpolated into the
+source text of a script that is then written to disk or compiled
+(`Set-Content *.ps1`, `[scriptblock]::Create`, `-replace '__PLACEHOLDER__'`).
+The file is a readable copy. On Windows PowerShell 5.1, a script block that also
+contains `Add-Type`, `DllImport` or other "suspicious" terms is auto-logged as
+event 4104 even with logging disabled, so the secret lands in the event log.
+patriot-provisioning 2026-10-10: `chrome-cred-migrate.ps1` Restore (HIGH).
+**Check.** `grep -nE "(-replace|\.Replace\(|-f ).*(__[A-Z0-9_]+__|\{[0-9]\})"
+--include=*.ps1`, then follow each result into `Set-Content`, `Out-File`,
+`ScriptBlock]::Create` or an Invoke-AsUser-style writer. Any hit whose inserted
+value derives from a secret is a finding. A test asserts the generated script
+text contains no secret value.
+**Fix form.** Pass secrets over an in-memory channel (WinRM argument, stdin,
+named pipe) or as an encrypted blob decrypted in-process; never in script
+source.
+**Since.** 2026-10-10.
+**Origin.** audit-patriot-provisioning-2026-10-10 (HIGH; approved by Ron 2026-10-10).
+
+### SC-41 · Privileged file or ACL operation on a path a lower-privileged principal can create or replace
+**Shape.** Admin or SYSTEM code writes, deletes, re-ACLs or takes ownership of a
+path inside a folder a standard user can create, own or modify: ProgramData
+subfolders created with `New-Item -Force`, user-profile subfolders, `/tmp` with
+a fixed name, or paths replayed from a collected baseline. There is no
+reparse-point check, so junctions and symlinks redirect the privileged
+operation. patriot-provisioning 2026-10-10: `parity-restore-acl.ps1` (HIGH),
+`lib.ps1` PatriotPrep and `/tmp/.cc_job.sh`, `chrome-reimport.ps1` Stage (MEDIUM).
+**Check.**
+- `grep -nE "icacls .*(/setowner|/grant)"` without `/L`;
+- `grep -nE "New-Item .*(ProgramData|Users\\\\).*-Force"` in privileged code;
+- `grep -nE "/tmp/[A-Za-z._-]+\b"` with a fixed name;
+- `grep -nE "Remove-Item .*-Recurse|WriteAllText|Set-Acl"` in code run as admin over WinRM.
+
+Each hit must refuse a pre-existing or reparse-point target, or operate by
+handle with `FILE_FLAG_OPEN_REPARSE_POINT`. A test plants a junction and asserts
+refusal.
+**Fix form.** Per-run, randomly named folders created with an explicit owner and
+DACL; refuse if the path exists; `/L` or handle-based operations;
+`mktemp` / `sudo sh -s`.
+**Since.** 2026-10-10.
+**Origin.** audit-patriot-provisioning-2026-10-10 (HIGH; approved by Ron 2026-10-10).
+
+### SC-42 · Credential authentication to a peer that is never authenticated
+**Shape.** A credential is presented to an endpoint whose identity is not
+verified: Negotiate/NTLM to a bare IP literal (no Kerberos, no server
+authentication), `-SkipCertificateCheck`, `-AcceptKey` / paramiko
+`AutoAddPolicy`, `verify=False`, or an http URL that carries a password.
+"Pinning" the address is treated as pinning the host. patriot-provisioning
+2026-10-10: WinRM to `192.168.0.180` with the fleet-shared PatriotUSA password,
+and DSM/SSH to the NAS (HIGH).
+**Check.** `grep -rnE "SkipCertificateCheck|AcceptKey|AutoAddPolicy|verify\s*=\s*False|-ComputerName\s+['\"]?[0-9]+(\.[0-9]+){3}"`.
+Every hit that carries a credential must pin a certificate fingerprint or host
+key and fail closed on a mismatch. Where a strong form exists elsewhere in the
+repo, the weak form is also SC-16.
+**Fix form.** Pinned certificate or host key (WinRM HTTPS, known_hosts with a
+reject policy); per-device credentials so that one capture does not open the
+fleet.
+**Since.** 2026-10-10.
+**Origin.** audit-patriot-provisioning-2026-10-10 (HIGH; approved by Ron 2026-10-10).
+
 ---
 
 ## Proposed additions (from the routine audit; operator approval required)
@@ -482,5 +706,9 @@ _None pending._ Audits append proposals here in the format above with a
 proposal into the register and bumps its `Since` date. Graduated so far:
 SC-22..SC-24 (audit-cortex-hooks-2026-09-15, approved 2026-09-16), SC-29..SC-31
 (audit-openos-2026-10-05) and SC-25 (gate-openos-2026-09-16), approved
-2026-10-05. SC-26..SC-28 were numbered by audit-openos-2026-09-16 but never
+2026-10-05. SC-32..SC-34 (audit-infra-2026-10-08), approved 2026-10-08.
+SC-35..SC-38 (audit-pdfmanager-2026-10-08, proposed there as SC-32..SC-35
+and renumbered because those numbers were already graduated), approved
+2026-10-09. SC-39..SC-42 (audit-patriot-provisioning-2026-10-10), approved
+2026-10-10. SC-26..SC-28 were numbered by audit-openos-2026-09-16 but never
 written as proposals; the numbers stay reserved.

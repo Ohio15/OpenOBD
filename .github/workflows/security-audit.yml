@@ -20,6 +20,26 @@ name: Security Audit (Layer A)
 #   and it must not be empty.
 # - a failed detect job fails the summary.
 #
+# Runner and trust (audit-dev-standards-2026-10-10 HIGH 3; SC-37, SC-13):
+# - Trusted events are schedule, and push or workflow_dispatch ON THE DEFAULT
+#   BRANCH (github.ref == refs/heads/<default_branch>): code that is already
+#   merged. Every other event or ref, pull_request above all, is untrusted.
+# - A repository variable may choose the runner ONLY on a trusted event.
+#   Every job says
+#     runs-on: <trusted> && vars.CI_RUNNER || 'ubuntu-latest'
+#   so an untrusted event resolves to the GitHub-hosted literal whatever
+#   CI_RUNNER holds (`&&`/`||` return an operand: false && x is false, and
+#   false || 'ubuntu-latest' is the literal). A self-hosted label never runs
+#   pull_request code from here. That does not stop a fork PR that EDITS this
+#   file; for that, no self-hosted runner may serve a public repository.
+# - On an untrusted event no code the PR controls is executed. Lifecycle
+#   scripts, a .pnpmfile.cjs, a yarnPath, yarn plugins, a .corepack.env, a
+#   custom-URL packageManager and a Python build backend are all such code;
+#   each is shut off below where it would run. What cannot be audited
+#   without running it is reported NOT EXAMINED, which fails like a finding.
+#   On a trusted event the repo's own configuration is honoured.
+# - The token is contents: read and nothing else.
+#
 # Design ref: shared-brain decision 81b962de-3e94-4d67-9093-7dbb5644094d
 # Critique:   shared-brain knowledge 7b258d5c-dcf4-49e9-973a-5e92b951a019
 
@@ -31,7 +51,12 @@ on:
 
 permissions:
   contents: read
-  security-events: write
+
+env:
+  # 'true' on a trusted event, 'false' otherwise: the same predicate as every
+  # job's runs-on. Scripts treat anything but the exact string 'true' as
+  # untrusted.
+  TRUSTED_EVENT: ${{ (github.event_name == 'schedule' || (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
 
 concurrency:
   group: security-audit-${{ github.ref }}
@@ -40,7 +65,7 @@ concurrency:
 jobs:
   detect:
     name: Detect ecosystems
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name == 'schedule' || (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && vars.CI_RUNNER || 'ubuntu-latest' }}
     outputs:
       has_npm: ${{ steps.detect.outputs.has_npm }}
       has_go: ${{ steps.detect.outputs.has_go }}
@@ -65,7 +90,7 @@ jobs:
           # grep exits 1 and would kill this step for every repo that lacks
           # one of the ecosystems.
           dirs_of() {
-            git ls-files -z -- "$@" | python3 -c '
+            git ls-files -z -- "$@" | python3 -I -c '
           import json, posixpath, sys
           paths = [p for p in sys.stdin.buffer.read().decode().split("\0") if p]
           # A directory name is repo content a PR controls. A control character
@@ -81,7 +106,7 @@ jobs:
           npm_dirs=$(dirs_of 'package.json' '**/package.json')
           go_dirs=$(dirs_of 'go.mod' '**/go.mod')
           python_dirs=$(dirs_of 'pyproject.toml' '**/pyproject.toml' 'requirements*.txt' '**/requirements*.txt')
-          count() { python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$1"; }
+          count() { python3 -I -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$1"; }
           n_npm=$(count "$npm_dirs"); n_go=$(count "$go_dirs"); n_py=$(count "$python_dirs")
           has_npm=false; [ "$n_npm" -gt 0 ] && has_npm=true
           has_go=false; [ "$n_go" -gt 0 ] && has_go=true
@@ -105,7 +130,24 @@ jobs:
     name: npm audit (${{ matrix.dir }})
     needs: detect
     if: needs.detect.outputs.has_npm == 'true'
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name == 'schedule' || (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && vars.CI_RUNNER || 'ubuntu-latest' }}
+    env:
+      # A PR's .corepack.env can set COREPACK_ENABLE_UNSAFE_CUSTOM_URLS=1,
+      # after which a `packageManager` URL to a .js file runs as the package
+      # manager (verified on corepack 0.34, the line Node 20 bundles). Never
+      # read the file and never allow the URLs; process env beats the file.
+      COREPACK_ENV_FILE: '0'
+      COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: '0'
+      # Lifecycle scripts stay off in every npm process, including the nested
+      # `npm install` npm runs to prepare a git dependency, which does not get
+      # the --ignore-scripts flag. Env beats a project .npmrc.
+      npm_config_ignore_scripts: 'true'
+      # A project .npmrc can name the git binary npm spawns for a git
+      # dependency (`git=./evil.sh`) or the script shell; env beats it.
+      npm_config_git: git
+      npm_config_script_shell: /bin/sh
+      # Matrix value reaches scripts through env, never `${{ }}` in run:.
+      DIR: ${{ matrix.dir }}
     strategy:
       fail-fast: false
       matrix:
@@ -129,23 +171,73 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Lifecycle scripts are never run: on a pull_request they are code
-          # the PR controls, and the audit reads the resolved dependency graph
-          # (lockfile + installed tree), which scripts do not change.
+          # The audit reads the resolved dependency graph (lockfile + installed
+          # tree), so nothing the repo ships needs to run. Lifecycle scripts
+          # never run, on any event (--ignore-scripts, --mode=skip-build, and
+          # npm_config_ignore_scripts in the job env). On an untrusted event
+          # (TRUSTED_EVENT is not 'true': a pull_request) the other ways a
+          # package manager runs repo code are shut as well; see each branch.
           # Package-manager versions are pinned, never @latest/@stable: a
           # `packageManager` field in package.json still wins under corepack;
           # these are only the fallback. pnpm 10 is the newest line that runs
           # on the Node 20 set up above (pnpm 11 needs Node >= 22.13).
+          not_examined() {
+            echo "::error::not examined: $1"
+            printf -- '- npm (%s): **NOT EXAMINED**: %s\n' "$DIR" "$1" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 1
+          }
           if [ -f pnpm-lock.yaml ]; then
             corepack enable
             corepack prepare pnpm@10.34.6 --activate
-            pnpm install --frozen-lockfile --ignore-scripts
+            if [ "${TRUSTED_EVENT:-}" = "true" ]; then
+              pnpm install --frozen-lockfile --ignore-scripts
+            else
+              # install AND audit load .pnpmfile.cjs (or whatever `pnpmfile`
+              # names) unless told not to. A lockfile written with a pnpmfile
+              # records its checksum, and a frozen install will not go on
+              # without running it, so that check cannot be made here.
+              if grep -q '^pnpmfileChecksum:' pnpm-lock.yaml; then
+                not_examined "pnpm-lock.yaml was written with a pnpmfile; checking it against package.json means running that file, which the pull request controls"
+              fi
+              pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile
+            fi
           elif [ -f yarn.lock ]; then
             corepack enable
+            if [ "${TRUSTED_EVENT:-}" != "true" ]; then
+              # A yarnPath (berry .yarnrc.yml) or yarn-path (v1 .yarnrc) is a
+              # JS file yarn hands control to. Exported for the audit step too.
+              export YARN_IGNORE_PATH=1
+              echo "YARN_IGNORE_PATH=1" >> "${GITHUB_ENV:-/dev/null}"
+            fi
             # The lockfile says which yarn wrote it: berry (>= 2) carries a
             # `__metadata:` block, classic v1 a "yarn lockfile v1" header.
             if grep -q '^__metadata:' yarn.lock; then
               corepack prepare yarn@4.18.1 --activate
+              if [ "${TRUSTED_EVENT:-}" != "true" ]; then
+                # `plugins:` in .yarnrc.yml are JS files yarn loads on every
+                # command; YARN_IGNORE_PATH does not stop them. Yarn reads its
+                # rc files under the name in YARN_RC_FILENAME, from here up
+                # to /, so each .yarnrc.yml from the checkout root down to
+                # here is rewritten under a name the PR cannot predict,
+                # without yarnPath or plugins and with scripts off. yq (on
+                # every GitHub-hosted image, which is where an untrusted
+                # event runs) parses it, so quoting, anchors and merge keys
+                # cannot carry a key past the rewrite: yarn reads only yq's
+                # JSON output.
+                command -v yq > /dev/null || not_examined "yq is not on this runner, so the repo's .yarnrc.yml cannot be read without running the plugins it names"
+                rc_name=".yarnrc-audit-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n').yml"
+                top="$(cd "${GITHUB_WORKSPACE:-$PWD}" && pwd -P)"
+                d="$(pwd -P)"
+                while :; do
+                  if [ -f "$d/.yarnrc.yml" ]; then
+                    yq -o=json 'explode(.) | del(.yarnPath) | del(.plugins) | .enableScripts = false' "$d/.yarnrc.yml" > "$d/$rc_name"
+                  fi
+                  if [ "$d" = "$top" ] || [ "$d" = "/" ]; then break; fi
+                  d="$(dirname "$d")"
+                done
+                export YARN_RC_FILENAME="$rc_name"
+                echo "YARN_RC_FILENAME=$rc_name" >> "${GITHUB_ENV:-/dev/null}"
+              fi
               yarn install --immutable --mode=skip-build
             elif grep -q '^# yarn lockfile v1' yarn.lock; then
               corepack prepare yarn@1.22.22 --activate
@@ -185,7 +277,7 @@ jobs:
               flavour=classic
               yarn audit --json > audit-yarn.json || rc=$?
             fi
-            python3 - audit-yarn.json "$rc" "$flavour" <<'PY'
+            python3 -I - audit-yarn.json "$rc" "$flavour" <<'PY'
           import json, sys
           path, rc, flavour = sys.argv[1], int(sys.argv[2]), sys.argv[3]
           def not_examined(why):
@@ -228,8 +320,11 @@ jobs:
             exit 0
           fi
           # Run informational audit (everything) — never fails the build.
+          # pnpm audit loads the pnpmfile too, and a pnpm-workspace.yaml
+          # setting beats an env var, so the switch is on the command line
+          # (verified on pnpm 10.34.6). The audit reads only the lockfile.
           if [ -f pnpm-lock.yaml ]; then
-            pnpm audit --json > audit-info.json || true
+            pnpm audit --json --config.ignore-pnpmfile=true > audit-info.json || true
           else
             npm audit --json > audit-info.json || true
           fi
@@ -248,7 +343,7 @@ jobs:
           echo "----- gating audit (high+critical) -----"
           # Real gate.
           if [ -f pnpm-lock.yaml ]; then
-            pnpm audit --audit-level=high
+            pnpm audit --audit-level=high --config.ignore-pnpmfile=true
           else
             npm audit --audit-level=high
           fi
@@ -257,7 +352,7 @@ jobs:
     name: govulncheck (${{ matrix.dir }})
     needs: detect
     if: needs.detect.outputs.has_go == 'true'
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name == 'schedule' || (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && vars.CI_RUNNER || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -283,8 +378,27 @@ jobs:
         run: |
           set -euo pipefail
           if ! command -v govulncheck > /dev/null; then
-            # Pinned, never @latest: this job holds security-events: write.
-            go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+            # Pinned, never @latest: an unpinned tool is code nobody reviewed. The pin is
+            # chosen from the Go this job PROVISIONED (go.mod via setup-go, under
+            # GOTOOLCHAIN=local), because each x/vuln release raises its go directive:
+            # v1.8.0 needs 1.26, v1.2.0-v1.7.0 need 1.25, v1.1.4 needs 1.22 (verified
+            # from proxy.golang.org .mod files, 2026-10-08). A single pin failed the
+            # fleet twice in one day: v1.8.0 on every 1.25 repo (Sentinel #107), then
+            # v1.7.0 on a 1.24 module (openclaw-1 #12). The vuln DB is fetched live
+            # from vuln.go.dev, so an older binary does not weaken the scan. Add a row
+            # when the fleet's floor moves; never fall through to @latest.
+            gover="$(go env GOVERSION)"            # e.g. go1.25.14
+            minor="$(printf '%s' "$gover" | sed -E 's/^go1\.([0-9]+).*$/\1/')"
+            case "$minor" in
+              ''|*[!0-9]*) echo "::error::cannot parse Go version '$gover' for the govulncheck pin table"; exit 1 ;;
+            esac
+            if   [ "$minor" -ge 26 ]; then vuln_pin=v1.8.0
+            elif [ "$minor" -ge 25 ]; then vuln_pin=v1.7.0
+            elif [ "$minor" -ge 22 ]; then vuln_pin=v1.1.4
+            else echo "::error::no govulncheck pin for $gover (table floor is go1.22); raise the module's go directive"; exit 1
+            fi
+            echo "govulncheck pin for $gover: $vuln_pin"
+            go install "golang.org/x/vuln/cmd/govulncheck@$vuln_pin"
           fi
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
@@ -301,7 +415,7 @@ jobs:
     name: pip-audit (${{ matrix.dir }})
     needs: detect
     if: needs.detect.outputs.has_python == 'true'
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name == 'schedule' || (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && vars.CI_RUNNER || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -324,8 +438,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install pip==26.2.1
-          python -m pip install pip-audit==2.10.1
+          # -I everywhere python runs inside the checkout: without it the
+          # working directory is first on sys.path, so a PR-planted pip/,
+          # json.py, packaging/ or tomllib.py would be imported instead.
+          python -I -m pip install pip==26.2.1
+          python -I -m pip install pip-audit==2.10.1
 
       - name: Run pip-audit (--strict gates the workflow)
         shell: bash
@@ -336,32 +453,112 @@ jobs:
           DIR: ${{ matrix.dir }}
         run: |
           set -euo pipefail
-          # Prefer pyproject if both exist. The project PATH is required: a bare
-          # `pip-audit` audits the runner's own environment, not this project,
-          # and passes having examined none of its dependencies.
-          if [ -f pyproject.toml ]; then
-            pip-audit --strict .
-          else
-            # Audit every requirements*.txt in this manifest directory.
-            shopt -s nullglob
-            files=(requirements*.txt)
-            if [ ${#files[@]} -eq 0 ]; then
-              # detect chose this directory for a python manifest; finding none
-              # here means detect and audit disagree, which is never a pass.
-              echo "::error::python detected in '$DIR' but no requirements*.txt or pyproject.toml there; nothing was audited"
-              exit 1
+          shopt -s nullglob
+          reqs=(requirements*.txt)
+          locks=()
+          for f in pylock.toml pylock.*.toml; do [ -f "$f" ] && locks+=("$f"); done
+          not_examined() {
+            echo "::error::not examined: $1"
+            printf -- '- python (%s): **NOT EXAMINED**: %s\n' "$DIR" "$1" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 1
+          }
+          if [ ! -f pyproject.toml ] && [ ${#reqs[@]} -eq 0 ]; then
+            # detect chose this directory for a python manifest; finding none
+            # here means detect and audit disagree, which is never a pass.
+            echo "::error::python detected in '$DIR' but no requirements*.txt or pyproject.toml there; nothing was audited"
+            exit 1
+          fi
+          if [ "${TRUSTED_EVENT:-}" = "true" ]; then
+            # Trusted event: resolving the graph may build packages, which is
+            # acceptable for code already on a branch of this repo.
+            # Prefer pyproject if both exist. The project PATH is required: a
+            # bare `pip-audit` audits the runner's own environment, not this
+            # project, and passes having examined none of its dependencies.
+            if [ -f pyproject.toml ]; then
+              pip-audit --strict .
+            else
+              for f in "${reqs[@]}"; do
+                echo "----- pip-audit -r $f -----"
+                pip-audit --strict -r "$f"
+              done
             fi
-            for f in "${files[@]}"; do
-              echo "----- pip-audit -r $f -----"
-              pip-audit --strict -r "$f"
-            done
+            exit 0
+          fi
+          # Untrusted event (a pull_request): nothing is built. Resolving a
+          # requirements file or a pyproject.toml installs into a scratch venv,
+          # and pip builds any sdist, local path or URL the PR names there
+          # (setup.py / the build backend run; verified on pip-audit 2.10.1).
+          # So only what can be read without building is audited:
+          #   pylock.toml          --locked reads the lock, installs nothing.
+          #   requirements*.txt    --no-deps --disable-pip: every entry must
+          #                        be pinned (==); an unpinned, path or URL
+          #                        entry makes pip-audit fail, not guess.
+          #   pyproject.toml       its [project].dependencies are audited only
+          #                        through the files above; a declared
+          #                        dependency none of them pins is NOT
+          #                        EXAMINED, never clean.
+          if [ ${#locks[@]} -gt 0 ]; then
+            echo "----- pip-audit --locked (${locks[*]}) -----"
+            pip-audit --strict --locked .
+          fi
+          for f in "${reqs[@]}"; do
+            echo "----- pip-audit --no-deps --disable-pip -r $f -----"
+            pip-audit --strict --no-deps --disable-pip -r "$f"
+          done
+          if [ -f pyproject.toml ] && [ ${#locks[@]} -eq 0 ]; then
+            # Same interpreter as pip-audit, so its own parsers are present:
+            # packaging, and pip-requirements-parser (what pip-audit reads -r
+            # files with, nested -r included). -I: isolated mode, so the
+            # checkout (cwd) is not on sys.path and a PR-planted packaging/
+            # or tomllib.py is never imported.
+            if ! python -I - "${reqs[@]}" > pyproject-coverage.txt <<'PY'
+          import sys
+          import tomllib
+          from packaging.requirements import Requirement
+          from packaging.utils import canonicalize_name
+          from pip_requirements_parser import RequirementsFile
+
+          def fail(why):
+              print(why)
+              sys.exit(1)
+
+          with open("pyproject.toml", "rb") as fh:
+              project = tomllib.load(fh).get("project")
+          if not isinstance(project, dict):
+              fail("pyproject.toml has no [project] table, so its dependencies are known only by building it")
+          if "dependencies" in (project.get("dynamic") or []):
+              fail("pyproject.toml declares its dependencies dynamic, so they are known only by building it")
+          declared = set()
+          for spec in project.get("dependencies") or []:
+              req = Requirement(spec)
+              try:
+                  applies = req.marker is None or req.marker.evaluate()
+              except Exception:
+                  applies = True
+              if applies:
+                  declared.add(canonicalize_name(req.name))
+          pinned = set()
+          for path in sys.argv[1:]:
+              for r in RequirementsFile.from_file(path, include_nested=True).requirements:
+                  if r.name:
+                      pinned.add(canonicalize_name(r.name))
+          missing = sorted(declared - pinned)
+          if missing:
+              files = ", ".join(sys.argv[1:]) or "no requirements*.txt"
+              fail(f"pyproject.toml declares {', '.join(missing)}, which {files} does not pin and auditing would mean building; commit a pylock.toml or a pinned requirements file")
+          print(f"pyproject.toml: {len(declared)} declared dependencies, each audited through a pinned requirements entry")
+          PY
+            then
+              not_examined "$(cat pyproject-coverage.txt)"
+            fi
+            cat pyproject-coverage.txt
           fi
 
   summary:
     name: Audit summary (always runs)
     if: always()
     needs: [detect, npm-audit, go-vulncheck, pip-audit]
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name == 'schedule' || (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - shell: bash
         # Every value through env, never `${{ }}` inside run: the *_DIRS lists
