@@ -67,6 +67,12 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   The Dashboard and Live Data session pickers tag those `[SIMULATED]`, and
   the status line after binding one says SIMULATED.
 
+### Release tooling
+- Release path is now in the repo: `_build.bat` is committed (runs from any
+  checkout via its own `.venv`, and fails if the built exe's version resource
+  differs from `__version__`), and `docs/RELEASE.md` covers test, build,
+  version check, deploy with `_deploy.ps1`, post-deploy check and rollback.
+
 ## 0.31.0 — 2026-10-05
 
 ### Fixed

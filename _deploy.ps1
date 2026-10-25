@@ -10,7 +10,7 @@ $src = Join-Path $PSScriptRoot "dist\openobd.exe"
 $destDir = Join-Path $env:LOCALAPPDATA "Programs\OpenOBD"
 $dest = Join-Path $destDir "OpenOBD.exe"
 
-if (-not (Test-Path $src)) { throw "no build at $src — run _build.bat first" }
+if (-not (Test-Path $src)) { throw "no build at $src — run _build.bat first (see docs\RELEASE.md)" }
 if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Force $destDir | Out-Null }
 
 $running = @(Get-Process -ErrorAction SilentlyContinue |
