@@ -234,6 +234,8 @@ class TmReplaySource(LogReplaySource):
     vocabulary: every channel reports state 'archive', so the cluster badges
     the whole replay as an archived drive instead of styling it live."""
 
+    is_store_record = True   # the session file is already the record
+
     def __init__(self, log: Log, speed: float = 1.0):
         super().__init__(log, speed=speed)
         self._archive_states = {k: "archive" for k in self.channels()}
@@ -263,6 +265,8 @@ class TmLiveSource(DataSource):
     gauge key's tmstore display state so the cluster can say what is live,
     carried, stale, or failed instead of rendering everything as a live needle.
     """
+
+    is_store_record = True   # truck-mcp is writing the record itself
 
     # Short SQLite busy wait: this reader is polled from the GUI thread, so a
     # writer's WAL checkpoint must cost a failed read (rendered honestly as
