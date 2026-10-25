@@ -3,6 +3,25 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## Unreleased
+
+### Fixed (truck-mcp session provenance)
+- **A drive run against the truck-mcp simulator is no longer shown as a real
+  drive.** truck-mcp v0.11.0a9 writes an authoritative `session.source`
+  (`live` / `simulated` / `replay`) and `extra.simulated = true` on simulated
+  sessions. `source == "simulated"` and `extra.simulated is True` are now the
+  primary signals; the old `sweep_config.started_by == "seed_demo_data"` and
+  notes-prefix `SIMULATED` markers remain as fallbacks for older files.
+- **Provenance is three-valued (simulated / real / unknown), closing security
+  gate finding SC-07.** A corrupt `sweep_config` or `extra` column, or a
+  `session.source` value this reader does not recognise, can no longer render
+  as "real". It is tagged `[PROVENANCE UNKNOWN]` in the pickers, the Live Data
+  status line says "PROVENANCE UNKNOWN, may not be the truck", and the Record
+  refusal names it as an UNKNOWN-PROVENANCE session instead of calling it a
+  replay. `tmsource.record_refusal_message` now takes a provenance string, and
+  session sources expose `provenance` in place of the `simulated` bool;
+  `tmstore.list_sessions()` entries carry both `provenance` and `simulated`.
+
 ## 0.32.2 — 2026-10-25
 
 ### Fixed (recorded times say when each value was sampled)

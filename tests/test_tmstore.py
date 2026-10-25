@@ -123,16 +123,17 @@ CREATE TABLE event (id INTEGER PRIMARY KEY, ts_utc TEXT, kind TEXT, label TEXT D
 """
 
 
-def _make_session(path, uid="uid-1", ended=None, notes="", sweep_config="{}"):
+def _make_session(path, uid="uid-1", ended=None, notes="", sweep_config="{}",
+                  source="live", extra="{}"):
     conn = sqlite3.connect(str(path))
     conn.executescript(_SCHEMA)
     conn.execute("INSERT INTO schema_meta VALUES ('schema_version','1')")
     conn.execute("INSERT INTO session (id, session_uid, label, started_utc, "
                  "ended_utc, vin, truck_mcp_version, source, notes, "
-                 "sweep_config) VALUES "
+                 "sweep_config, extra) VALUES "
                  "(1, ?, 'drive', '2026-08-21T10:00:00Z', ?, "
-                 "'3GCRKTE35AG150432', '0.11.0a7', 'live', ?, ?)",
-                 (uid, ended, notes, sweep_config))
+                 "'3GCRKTE35AG150432', '0.11.0a7', ?, ?, ?, ?)",
+                 (uid, ended, source, notes, sweep_config, extra))
     for cid, name, unit in [(1, "rpm", "rpm"), (2, "ect", "F"),
                             (3, "tft", "F"), (4, "gear", "")]:
         conn.execute("INSERT INTO channel (id, name, unit) VALUES (?,?,?)",
@@ -290,6 +291,77 @@ def test_simulated_from_notes_alone_survives_corrupt_sweep_config():
     meta = {"sweep_config": {"_decode_error": True, "_raw": "{bad"},
             "notes": _SEED_NOTE}
     assert tmstore.session_simulated(meta)
+
+
+def test_simulated_from_source_alone():
+    # truck-mcp v0.11.0a9: session.source is authoritative; a simulator drive
+    # carries neither legacy marker.
+    meta = {"source": "simulated", "sweep_config": {"preset": "towing"},
+            "extra": {}, "notes": "a drive"}
+    assert tmstore.session_provenance(meta) == "simulated"
+    assert tmstore.session_simulated(meta)
+
+
+def test_simulated_from_extra_flag_alone():
+    meta = {"source": "live", "extra": {"simulated": True}, "sweep_config": {}}
+    assert tmstore.session_provenance(meta) == "simulated"
+    # only the boolean True counts
+    meta = {"source": "live", "extra": {"simulated": "yes"}, "sweep_config": {}}
+    assert tmstore.session_provenance(meta) == "real"
+
+
+def test_simulated_source_beats_corrupt_columns():
+    bad = {"_decode_error": True, "_raw": "{bad"}
+    assert tmstore.session_provenance(
+        {"source": "simulated", "sweep_config": bad, "extra": bad}) == "simulated"
+
+
+def test_real_sources_are_real():
+    for src in ("live", "import", "replay", None, ""):
+        assert tmstore.session_provenance(
+            {"source": src, "sweep_config": {}, "extra": {}}) == "real", src
+
+
+def test_unknown_when_sweep_config_or_extra_unreadable():
+    bad = {"_decode_error": True, "_raw": "{bad"}
+    assert tmstore.session_provenance(
+        {"source": "live", "sweep_config": bad, "notes": ""}) == "unknown"
+    assert tmstore.session_provenance(
+        {"source": "live", "sweep_config": {}, "extra": bad}) == "unknown"
+    assert not tmstore.session_simulated(
+        {"source": "live", "sweep_config": bad})
+
+
+def test_unknown_when_source_value_unrecognised():
+    for src in ("martian", 7, ["live"]):
+        assert tmstore.session_provenance(
+            {"source": src, "sweep_config": {}, "extra": {}}) == "unknown", src
+
+
+def test_list_sessions_carries_three_valued_provenance(tmp_path):
+    _make_session(tmp_path / "a.tmsession.db", uid="real")
+    _make_session(tmp_path / "b.tmsession.db", uid="sim", source="simulated",
+                  ended="2026-08-21T10:30:00Z")
+    _make_session(tmp_path / "c.tmsession.db", uid="flag",
+                  extra='{"simulated": true}', ended="2026-08-21T10:30:00Z")
+    _make_session(tmp_path / "d.tmsession.db", uid="corrupt",
+                  sweep_config="{bad", ended="2026-08-21T10:30:00Z")
+    _make_session(tmp_path / "e.tmsession.db", uid="oddsrc", source="martian",
+                  ended="2026-08-21T10:30:00Z")
+    by = {s["session_uid"]: s["provenance"]
+          for s in tmstore.list_sessions(tmp_path)}
+    assert by == {"real": "real", "sim": "simulated", "flag": "simulated",
+                  "corrupt": "unknown", "oddsrc": "unknown"}
+
+
+def test_session_tag_marks_unknown_provenance():
+    assert tmstore.session_tag({"live": False, "provenance": "unknown"}) == \
+        "[PROVENANCE UNKNOWN]  "
+    assert tmstore.session_tag({"live": True, "provenance": "unknown"}) == \
+        "● LIVE  [PROVENANCE UNKNOWN]  "
+    assert tmstore.session_tag({"live": False, "provenance": "simulated"}) == \
+        "[SIMULATED]  "
+    assert tmstore.session_tag({"live": False, "provenance": "real"}) == ""
 
 
 def test_not_simulated_without_a_marker():

@@ -229,26 +229,32 @@ def build_replay_log(path: str | Path) -> tuple[Log, ResolvedMap]:
     return log, resolved
 
 
-def record_refusal_message(live: bool, simulated: bool, connect_label: str) -> str:
+def record_refusal_message(live: bool, provenance: str, connect_label: str) -> str:
     """Why Record is refused for a bound truck-mcp session, and how to record
     the truck instead. `connect_label` is the GT connect button's own text so
-    the instruction names exactly what is on screen.
+    the instruction names exactly what is on screen. `provenance` is a
+    tmstore.PROVENANCE_* value.
 
     A truck-mcp session IS already a record — re-recording it would persist
     carried/archived values as measurements. An archived session (and every
     simulated one) is not the truck at all, so pointing the user at
     session_export there sends them to export data that is not their drive;
     that hint is kept only for a live session, where the store is the record
-    being written right now."""
-    sim = "SIMULATED " if simulated else ""
+    being written right now. A session of unknown provenance is never called
+    a replay or real data: the message says it could not be verified."""
     how = f'To record from the truck, press "{connect_label}", then Record.'
+    if provenance == tmstore.PROVENANCE_SIMULATED:
+        kind, what = "SIMULATED ", "demo data, not the truck"
+    elif provenance == tmstore.PROVENANCE_UNKNOWN:
+        kind, what = "UNKNOWN-PROVENANCE ", "provenance unreadable, may not be the truck"
+    else:
+        kind, what = "", "a replay, not the truck"
     if live:
-        return (f"Recording is disabled for this live {sim}truck-mcp session "
+        return (f"Recording is disabled for this live {kind}truck-mcp session "
                 "— its drive-log store is already the record (use truck-mcp "
                 f"session_export). {how}")
-    what = "demo data" if simulated else "a replay"
-    return (f"This is an archived {sim}truck-mcp session ({what}, not the "
-            f"truck) — Record is disabled for it. {how}")
+    return (f"This is an archived {kind}truck-mcp session ({what}) — Record "
+            f"is disabled for it. {how}")
 
 
 class TmReplaySource(LogReplaySource):
@@ -257,9 +263,9 @@ class TmReplaySource(LogReplaySource):
     the whole replay as an archived drive instead of styling it live."""
 
     is_store_record = True   # the session file is already the record
-    # True when the session's own provenance says it was fabricated
-    # (tmstore.session_simulated); set by whoever binds the session.
-    simulated: bool = False
+    # tmstore.PROVENANCE_* from the session's own metadata
+    # (tmstore.session_provenance); set by whoever binds the session.
+    provenance: str = tmstore.PROVENANCE_REAL
 
     def __init__(self, log: Log, speed: float = 1.0):
         super().__init__(log, speed=speed)
@@ -297,8 +303,8 @@ class TmLiveSource(DataSource):
     # writer's WAL checkpoint must cost a failed read (rendered honestly as
     # stale), never a multi-second UI freeze.
     BUSY_TIMEOUT_S = 0.5
-    # See TmReplaySource.simulated.
-    simulated: bool = False
+    # See TmReplaySource.provenance.
+    provenance: str = tmstore.PROVENANCE_REAL
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
