@@ -87,7 +87,10 @@ PID_TABLE: dict[str, PidDef] = {
     "3D": PidDef("cat_b2s1",     2, lambda b: _temp_f(_u16(b) / 10.0 - 40)),  # F
     "42": PidDef("voltage",      2, lambda b: _u16(b) / 1000.0),            # V
     "43": PidDef("abs_load",     2, lambda b: _u16(b) * 100.0 / 255.0),     # %
-    "44": PidDef("eq_ratio",     4, lambda b: _u16(b) * 2.0 / 65536.0),     # lambda
+    # 2 data bytes (SAE J1979; truck-mcp obd.py agrees). The 4-byte PIDs
+    # are 24-2B and 34-3B; a wrong length here misaligns every PID after 44
+    # in a batched reply.
+    "44": PidDef("eq_ratio",     2, lambda b: _u16(b) * 2.0 / 65536.0),     # lambda
     "45": PidDef("rel_tps",      1, lambda b: b[0] * 100.0 / 255.0),        # %
     "46": PidDef("ambient",      1, lambda b: _temp_f(b[0] - 40)),          # F
     # Pedal sensors: on this truck PID 49 is APP D (the "app" channel); 47
@@ -719,6 +722,11 @@ DTC_DESCRIPTIONS = {
 
 
 class ObdxGt:
+    #: Consecutive cycles in which a batch is refused (singles answer) before
+    #: batching is given up for the connection. One is not enough: a lost
+    #: frame or CAN ERROR looks the same and would cost ~6x throughput.
+    REFUSAL_CYCLES = 2
+
     def __init__(self, port: Optional[str] = None, baud: int = 115200,
                  timeout: float = 0.5):
         self.port_name = port
@@ -749,7 +757,8 @@ class ObdxGt:
         # Set when the ECM answered PIDs singly that it would not answer as
         # a batch: from then on (until the next open) every PID goes alone.
         self.batching_refused = False
-        self.batch_refusals = 0
+        self.batch_refusals = 0          # cycles with a batch refused
+        self._refusal_streak = 0         # consecutive such cycles
 
     @staticmethod
     def autodetect() -> Optional[str]:
@@ -808,6 +817,7 @@ class ObdxGt:
             # A new link may be a different truck/ECM: batching is tried
             # again and the plan is rebuilt from the new supported set.
             self.batching_refused = False
+            self._refusal_streak = 0
             self._plan = None
             self._set_header("7E0")  # physical ECM addr (Mode 01 batches, DIDs)
         except Exception:
@@ -1003,9 +1013,11 @@ class ObdxGt:
 
         A batch the ECM answers with nothing (NO DATA / negative response)
         is retried one PID per request in the same cycle. If the ECM answers
-        those, it refused BATCHING (batching_refused is set and the plan
-        drops to one PID per request until the next open); if it answers
-        none, the ECM is quiet and the rest of the cycle is not re-asked."""
+        those, the batch was refused; if it answers none, the ECM is quiet
+        and the rest of the cycle is not re-asked. One refused cycle can be a
+        lost frame or a CAN ERROR, so only REFUSAL_CYCLES consecutive
+        refusing cycles set batching_refused (one PID per request until the
+        next open); a cycle whose batches answer resets the count."""
         out: list = []
         if not self.ser:
             return out
@@ -1019,23 +1031,41 @@ class ObdxGt:
         plan = self.poll_plan()
         cycle = 0 if full else self._cycle
         ecm_quiet = False
+        refused: Optional[list] = None   # a batch refused in this cycle
+        batched_ok = False               # a multi-PID batch answered
         for batch in plan.batches_for_cycle(cycle):
             if self.batching_refused and len(batch) > 1:
                 for pid in batch:
                     self._request_pids(out, [pid])
                 continue
-            if self._request_pids(out, batch) or len(batch) == 1 or ecm_quiet:
+            if self._request_pids(out, batch):
+                batched_ok = batched_ok or len(batch) > 1
+                continue
+            if len(batch) == 1 or ecm_quiet:
                 continue
             answered = sum(self._request_pids(out, [pid]) for pid in batch)
             if answered:
-                self.batching_refused = True
-                self.batch_refusals += 1
-                _log.warning("GT %s: the ECM answered %s singly but not as "
-                             "one batched request; polling one PID per "
-                             "request until the next connect",
-                             self.port_name, "01" + "".join(batch))
+                refused = refused or batch
             else:
                 ecm_quiet = True
+        if refused is not None:
+            self.batch_refusals += 1
+            self._refusal_streak += 1
+            if self._refusal_streak >= self.REFUSAL_CYCLES:
+                self.batching_refused = True
+                _log.warning("GT %s: the ECM answered %s singly but not as "
+                             "one batched request on %d consecutive cycles "
+                             "(%d refusing cycles this connection); polling "
+                             "one PID per request until the next connect",
+                             self.port_name, "01" + "".join(refused),
+                             self._refusal_streak, self.batch_refusals)
+            else:
+                _log.info("GT %s: batch %s refused once (%d refusing cycles "
+                          "this connection); still batching",
+                          self.port_name, "01" + "".join(refused),
+                          self.batch_refusals)
+        elif batched_ok:
+            self._refusal_streak = 0
         # Module voltage from the GT's own ATRV when PID 42 gave none, on the
         # SLOW tier where voltage lives. Also on any cycle where nothing at
         # all decoded: a healthy GT always answers ATRV, so the transport can

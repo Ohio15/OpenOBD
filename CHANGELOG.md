@@ -30,11 +30,16 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   order the ECM answered. The old hex-strip `_extract` would have read the
   length line and the indices as data. A PID left out of the reply gets no
   reading; a headers-on reply (failed ATH0 restore) is reassembled per
-  responder. `PID_TABLE` entries are now `PidDef(key, nbytes, decode)`.
+  responder. `PID_TABLE` entries are now `PidDef(key, nbytes, decode)`
+  (PID 44 is 2 bytes per SAE J1979; the 4-byte PIDs are 24-2B and 34-3B).
+  A sidecar whose last line has no newline (cut off by a crash mid-write)
+  drops that line instead of reading a truncated value.
 - **A batch the ECM answers with nothing is re-asked one PID per request in
-  the same cycle.** If the singles answer, the ECM refused batching:
-  `ObdxGt.batching_refused` is set (logged) and the plan drops to one PID
-  per request until the next connect. If they do not, the ECM is quiet (key
+  the same cycle.** If the singles answer, that cycle refused the batch.
+  Only `ObdxGt.REFUSAL_CYCLES` (2) consecutive refusing cycles set
+  `ObdxGt.batching_refused` (logged with the count) and drop the plan to one
+  PID per request until the next connect; a single lost frame or CAN ERROR
+  does not cost the ~6x throughput, and an answered batch resets the count. If they do not, the ECM is quiet (key
   off) and the rest of the cycle is not re-asked.
 - **One Sample per cycle with only that cycle's readings.** A not-due
   channel is a blank cell in the recording and has no sidecar line; nothing

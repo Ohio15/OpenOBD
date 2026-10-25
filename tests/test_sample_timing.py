@@ -96,14 +96,18 @@ class TimedElm:
     values:         pid -> data bytes (default 0x40 repeated to its length)
     silent:         PIDs the ECM leaves out of every reply
     refuse_batches: a request with 2+ PIDs gets NO DATA (single PIDs answer)
+    refuse_first:   only the first N batched requests get NO DATA (a
+                    transient: lost frame / CAN ERROR)
     reverse:        answer a batch's PIDs in reverse order"""
 
     def __init__(self, clock, values=None, silent=(), refuse_batches=False,
+                 refuse_first=0,
                  reverse=False):
         self.clock = clock
         self.values = values or {}
         self.silent = set(silent)
         self.refuse_batches = refuse_batches
+        self.refuse_first = refuse_first
         self.reverse = reverse
         self.exchanges = []
         self.replies = []            # (command, reply text) per exchange
@@ -136,7 +140,11 @@ class TimedElm:
             answer = [p for p in pids if p not in self.silent]
             if self.reverse:
                 answer.reverse()
-            if not answer or (self.refuse_batches and len(pids) > 1):
+            transient = len(pids) > 1 and self.refuse_first > 0
+            if transient:
+                self.refuse_first -= 1
+            if not answer or transient or (self.refuse_batches
+                                           and len(pids) > 1):
                 text = "NO DATA\r"
             else:
                 msg = b"\x41" + b"".join(bytes([int(p, 16)]) + self._data(p)
@@ -274,17 +282,38 @@ def test_a_refused_batch_falls_back_to_one_pid_per_request(timed_gt):
     cmds = [e[0] for e in g.ser.exchanges if e[0].startswith("01")]
     assert cmds[0] == "010C0D0B101149"                 # the batch: NO DATA
     assert cmds[1:] == ["01" + p for p in ("0C", "0D", "0B", "10", "11", "49")]
-    assert g.batching_refused and g.batch_refusals == 1
+    # one refusing cycle is not enough: it could be a lost frame
+    assert not g.batching_refused and g.batch_refusals == 1
     keys = [r.key for r in first if r.key != "voltage"]
     assert keys == ["rpm", "vss", "map", "maf", "tps", "app"]
     # the refused batch consumed request 1; the singles are 2..7
     assert [r.request for r in first if r.key != "voltage"] == list(range(2, 8))
+    g.poll_timed()                                    # refused again: give up
+    assert g.batching_refused and g.batch_refusals == 2
     g.ser.exchanges.clear()
     g.poll_timed()
     cmds = [e[0] for e in g.ser.exchanges if e[0].startswith("01")]
     assert all(len(c) == 4 for c in cmds) and len(cmds) == 6   # no re-batch
     assert g.poll_plan().batch_size == 1
     assert "refused batching" in g.poll_plan().describe()
+
+
+def test_one_transient_batch_failure_does_not_end_batching(timed_gt):
+    pids = ("0C", "0D", "0B", "10", "11", "49")
+    g, _ = timed_gt(pids=pids, refuse_first=1)
+    first = g.poll_timed()            # batch lost once; singles answer
+    assert {r.key for r in first} >= {"rpm", "vss", "map", "maf", "tps", "app"}
+    assert g.batch_refusals == 1 and not g.batching_refused
+    g.ser.exchanges.clear()
+    second = g.poll_timed()
+    cmds = [e[0] for e in g.ser.exchanges if e[0].startswith("01")]
+    assert cmds == ["010C0D0B101149"]                  # batching resumed
+    assert {r.key for r in second} == {"rpm", "vss", "map", "maf", "tps", "app"}
+    assert g._refusal_streak == 0 and g.poll_plan().batch_size == 6
+    # a later single refusal starts a fresh count, still not enough
+    g.ser.refuse_first = 1
+    g.poll_timed()
+    assert not g.batching_refused and g.batch_refusals == 2
 
 
 def test_a_quiet_ecm_is_not_mistaken_for_a_batching_refusal(timed_gt):

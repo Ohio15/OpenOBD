@@ -29,7 +29,7 @@ def test_pid_lengths_are_the_j1979_lengths():
     want = {"03": 2, "04": 1, "05": 1, "06": 1, "07": 1, "08": 1, "09": 1,
             "0A": 1, "0B": 1, "0C": 2, "0D": 1, "0E": 1, "0F": 1, "10": 2,
             "11": 1, "14": 2, "15": 2, "18": 2, "19": 2, "1F": 2, "2F": 1,
-            "33": 1, "3C": 2, "3D": 2, "42": 2, "43": 2, "44": 4, "45": 1,
+            "33": 1, "3C": 2, "3D": 2, "42": 2, "43": 2, "44": 2, "45": 1,
             "46": 1, "47": 1, "49": 1, "4A": 1, "4C": 1, "52": 1}
     assert LENGTHS == want
 
@@ -103,6 +103,21 @@ def test_no_data_negative_response_and_frame_gap():
     gap = "00F 0:410C1AF80D32 2:01900000000000"
     assert parse_mode01_reply(gap, ["0C", "0D", "11"], LENGTHS) == {
         "0C": [0x1A, 0xF8], "0D": [0x32]}
+
+
+def test_pids_after_eq_ratio_stay_aligned():
+    # 44 is 2 bytes: rpm and app after it must decode, not be eaten as
+    # eq_ratio's "bytes 3-4" (a 4-byte 44 misaligned the whole batch).
+    got = parse_mode01_reply("41447FFF0C1AF84930", ["44", "0C", "49"], LENGTHS)
+    assert got == {"44": [0x7F, 0xFF], "0C": [0x1A, 0xF8], "49": [0x30]}
+    assert gtmod.PID_TABLE["0C"].decode(got["0C"]) == 0x1AF8 / 4
+    assert gtmod.PID_TABLE["49"].decode(got["49"]) == pytest.approx(0x30 * 100 / 255)
+    assert gtmod.PID_TABLE["44"].decode(got["44"]) == pytest.approx(
+        0x7FFF * 2 / 65536)
+    # single 0144 reply of exactly 2 data bytes
+    one = parse_mode01_reply("41448000", ["44"], LENGTHS)
+    assert one == {"44": [0x80, 0x00]}
+    assert gtmod.PID_TABLE["44"].decode(one["44"]) == pytest.approx(1.0)
 
 
 def test_walk_stops_at_padding_and_unrequested_pids():
@@ -184,6 +199,15 @@ def test_parse_long_csv_groups_and_sorts_per_channel():
     assert td == {"rpm": [(0.1, 800.0), (0.2, 900.0)], "ltft": [(0.15, 2.5)]}
     with pytest.raises(ValueError):
         parse_long_csv("Time (s),Engine Speed (RPM)\n0,800\n")
+
+
+def test_a_truncated_last_sidecar_line_is_dropped():
+    # crash mid-write: "0.2500,rpm,800,..." cut to "0.2500,rpm,80"
+    full = _long([(0.0, "rpm", 790), (0.25, "rpm", 800)])
+    cut = full[:full.rindex("0.25,rpm,800") + len("0.25,rpm,80")]
+    assert parse_long_csv(cut) == {"rpm": [(0.0, 790.0)]}
+    assert parse_long_csv(full)["rpm"][-1] == (0.25, 800.0)
+    assert parse_long_csv(full.replace("\n", "\r\n"))["rpm"][-1] == (0.25, 800.0)
 
 
 def test_regimes_use_each_trim_readings_own_time():

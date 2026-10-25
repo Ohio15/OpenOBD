@@ -124,6 +124,10 @@ RECORD_LABELS = {
     "cat_b1s1": "Catalyst Temp B1S1 (F)",
     "cat_b2s1": "Catalyst Temp B2S1 (F)",
 }
+# Column order. A recording only gets the keys in here that its source can
+# produce (Dashboard.toggle_record filters by recordable_channels()), so
+# "tft" holds its place for a future verified source but yields no column
+# on the GT today (tests/test_gt_did_table.py checks that).
 RECORD_ORDER = ["rpm", "vss", "map", "maf", "load", "abs_load", "tps",
                 "rel_tps", "app", "app_e", "app_f", "cmd_throttle", "spark",
                 "ect", "iat", "tft", "stft", "ltft", "stft_b2", "ltft_b2",

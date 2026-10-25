@@ -386,7 +386,13 @@ LONG_HEADER = ("Time (s)", "Channel", "Value")
 def parse_long_csv(text: str) -> dict[str, list[tuple[float, float]]]:
     """Sidecar text -> {canonical key: [(t, value), ...] sorted by t}.
     Lines that do not parse are skipped (never guessed); a file whose header
-    is not the sidecar's raises ValueError."""
+    is not the sidecar's raises ValueError. The recorder ends every line
+    with a newline, so a final line WITHOUT one was cut off mid-write (a
+    crash): '0.2500,rpm,80' from '0.2500,rpm,800' would parse as a valid
+    but wrong value, so that line is dropped."""
+    if text and not text.endswith(("\n", "\r")):
+        cut = max(text.rfind("\n"), text.rfind("\r"))
+        text = text[:cut + 1] if cut >= 0 else ""
     reader = csv.reader(io.StringIO(text))
     header = next(reader, None)
     if not header or tuple(h.strip() for h in header[:3]) != LONG_HEADER:
