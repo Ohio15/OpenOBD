@@ -102,8 +102,15 @@ class TimedElm:
 
     def __init__(self, clock, values=None, silent=(), refuse_batches=False,
                  refuse_first=0,
-                 reverse=False):
+                 reverse=False, info=None):
+        """info: Mode 09 info type ('02', '04', '06') -> the full response
+        message bytes (49 <type> <count> ...), answered in ELM ATH0 text;
+        an info type not in it gets NO DATA, like an ECM without it."""
         self.clock = clock
+        self.info = info or {}
+        # Adapter state the AT commands set: what a request would go out as.
+        self.header = "7E0"
+        self.headers_on = False
         self.values = values or {}
         self.silent = set(silent)
         self.refuse_batches = refuse_batches
@@ -153,7 +160,15 @@ class TimedElm:
         elif cmd == "ATRV":
             self.clock.now += ATRV_S
             text = "12.6V\r"
+        elif cmd.startswith("09") and len(cmd) == 4:
+            self.clock.now += cost(1)
+            msg = self.info.get(cmd[2:])
+            text = elm_reply(msg) if msg is not None else "NO DATA\r"
         else:
+            if cmd.startswith("ATSH"):
+                self.header = cmd[4:]
+            elif cmd in ("ATH0", "ATH1"):
+                self.headers_on = cmd == "ATH1"
             self.clock.now += ATRV_S
             text = "OK\r" if cmd.startswith("AT") else "NO DATA\r"
         self.exchanges.append((cmd, written, self.clock.now))
