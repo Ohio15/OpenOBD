@@ -3,6 +3,33 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.32.2 — 2026-10-25
+
+### Fixed (recorded times say when each value was sampled)
+- **GT recordings no longer misdate their values.** The poll loop stamped a
+  whole sequential sweep (21 Mode 01 PIDs + ATRV/DID, ~63 ms each, ~1.4 s)
+  once, AFTER it finished, so on the 2026-10-25 drive engine load was 1.33 s
+  older than its row time, RPM 0.95 s, MAF 0.70 s, and pedal was stamped
+  newer than throttle. Every request is now timed from just before it is
+  written to just after its reply is read (`ObdxGt.poll_timed()` returns
+  `transport.Reading`s carrying those times and a request number), and the
+  values keep those times through `Sample.readings`.
+- **The wide CSV keeps one row per sweep** (the regime report, table overlay
+  and shift detection read it unchanged; a channel that did not answer in a
+  sweep is a blank cell, read as missing). Its `Time (s)` is now the **sweep
+  midpoint**, a documented reference within half a sweep of every value in
+  the row, instead of the sweep end. Time is written to the millisecond.
+- **New lossless sidecar `<stem>.long.csv`** beside each recording: one line
+  per value with its own request midpoint, channel, full-precision value,
+  request number, and the sweep's start and end, so the row's skew can be
+  bounded. Written with the CSV's durability (flush every batch, fsync at
+  most every 2 s, finalized on stop/close/app exit, removed with an empty
+  recording, never paired with another run's file). Log Analysis does not
+  read it yet; that follows when PID batching / tiered polling land.
+- **`Time (s)` starts at 0 at the first recorded sample,** not at GT connect
+  (the 2026-10-25 log's first row read 8.39 s). The sidecar shares that
+  zero, so the first sweep's earliest requests sit slightly below 0.
+
 ## 0.32.1 — 2026-10-25
 
 ### Fixed

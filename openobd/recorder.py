@@ -17,7 +17,24 @@ GT dropping off USB, a save dialog being cancelled. So this writer:
     leaves blank cells rather than shifting columns;
   * never raises into the caller's paint loop: a write failure (disk full,
     folder removed) is captured in `error`, the file is closed, and the
-    samples written up to that point stay on disk.
+    samples written up to that point stay on disk;
+  * keeps ONE wide row per sample (one GT poll sweep), so every Log Analysis
+    joint feature (regimes, overlay, shift detection) reads it unchanged. A
+    channel that did not answer in that sweep is a blank cell, which
+    logbin._to_float reads as missing. For a source that supplies
+    Sample.readings (the GT) the row's "Time (s)" is the SWEEP MIDPOINT, a
+    documented reference: every value in the row was sampled within half a
+    sweep of it. The old stamp was the sweep END, which aged RPM by ~0.95 s
+    and load by ~1.33 s and put pedal after throttle (brain 8d92fae5);
+  * writes a lossless long-format sidecar next to the CSV, <stem>.long.csv,
+    one line per value: its own request's midpoint, channel, full-precision
+    value, request number, and the sweep's start and end (so a reader can
+    bound the wide row's skew). Same flush / fsync / finalize discipline as
+    the CSV. This sidecar is the precise record of when each value was
+    sampled; Log Analysis does not read it yet;
+  * zeroes time at the first recorded sample (both files share the zero, so
+    the first sweep's earliest requests sit slightly below 0 in the
+    sidecar), not at GT connect.
 
 No Qt here, so the headless suite exercises it directly.
 """
@@ -35,6 +52,11 @@ FSYNC_INTERVAL_S = 2.0
 
 TIME_LABEL = "Time (s)"
 
+#: The long-format sidecar: <stem>.long.csv beside <stem>.csv.
+SIDECAR_SUFFIX = ".long.csv"
+SIDECAR_HEADER = ["Time (s)", "Channel", "Value", "Request",
+                  "Sweep Start (s)", "Sweep End (s)"]
+
 
 def default_log_dirs(documents: Optional[str], app_data: Optional[str]) -> list[str]:
     """Candidate folders for recordings, most discoverable first: the user's
@@ -51,6 +73,28 @@ def default_log_dirs(documents: Optional[str], app_data: Optional[str]) -> list[
 
 def _fmt(v) -> str:
     return "" if v is None else f"{v:g}"
+
+
+def sidecar_path(csv_path: str) -> str:
+    """The long-format sidecar that belongs to a recording's CSV."""
+    stem, _ext = os.path.splitext(csv_path)
+    return stem + SIDECAR_SUFFIX
+
+
+def _sidecar_lines(sample, zero: float) -> list[list[str]]:
+    """The long-format lines for one sample: every value the source produced
+    (including keys with no CSV column), at full float precision. A sample
+    without readings (log replay, truck-mcp) has no request identity and no
+    sweep, so its values carry the sample time and blank request columns."""
+    readings = getattr(sample, "readings", None)
+    if not readings:
+        rel = f"{sample.t - zero:.6f}"
+        return [[rel, k, repr(float(v)), "", "", ""]
+                for k, v in sample.values.items()]
+    start = f"{sample.sweep_start() - zero:.6f}"
+    end = f"{sample.sweep_end() - zero:.6f}"
+    return [[f"{r.t - zero:.6f}", r.key, repr(float(r.value)), str(r.request),
+             start, end] for r in readings]
 
 
 class DriveRecorder:
@@ -74,12 +118,18 @@ class DriveRecorder:
         self._last_fsync = time.monotonic()
         self._fh = None
         self._writer = None
+        self._long_fh = None
+        self._long_writer = None
+        # Source time of the first recorded sample; both files are relative
+        # to it, so the recording starts at 0 rather than at GT connect.
+        self._t_zero: Optional[float] = None
         stamp = now().strftime("%Y%m%d_%H%M%S")
         failures = []
         for d in dirs:
             try:
                 os.makedirs(d, exist_ok=True)
-                self._fh, self.path = self._create(d, f"{prefix}_{stamp}")
+                (self._fh, self.path,
+                 self._long_fh, self.long_path) = self._create(d, f"{prefix}_{stamp}")
                 break
             except OSError as exc:
                 failures.append(f"{d}: {exc}")
@@ -87,20 +137,45 @@ class DriveRecorder:
             raise OSError("no writable folder for the recording — "
                           + ("; ".join(failures) or "no folder configured"))
         self._writer = csv.writer(self._fh)
-        self._writer.writerow([TIME_LABEL] + [labels[k] for k in self.keys])
-        self._sync(force=True)
+        self._long_writer = csv.writer(self._long_fh)
+        try:
+            self._writer.writerow([TIME_LABEL] + [labels[k] for k in self.keys])
+            self._long_writer.writerow(SIDECAR_HEADER)
+            self._sync(force=True)
+        except OSError:
+            self._close_quietly()
+            for p in (self.path, self.long_path):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+            raise
 
     @staticmethod
     def _create(folder: str, stem: str):
-        """Open a NEW file exclusively ('x'): two recordings started in the
-        same second, or a leftover file, must never be overwritten."""
+        """Open a NEW csv and its sidecar exclusively ('x'): two recordings
+        started in the same second, or leftover files, must never be
+        overwritten, and a csv is never paired with another run's sidecar."""
         for n in range(1000):
             name = f"{stem}.csv" if n == 0 else f"{stem}_{n}.csv"
             path = os.path.join(folder, name)
             try:
-                return open(path, "x", newline="", encoding="utf-8"), path
+                fh = open(path, "x", newline="", encoding="utf-8")
             except FileExistsError:
                 continue
+            long_path = sidecar_path(path)
+            try:
+                long_fh = open(long_path, "x", newline="", encoding="utf-8")
+            except FileExistsError:
+                # A stray sidecar owns this stem: release the csv, try the next.
+                fh.close()
+                os.unlink(path)
+                continue
+            except OSError:
+                fh.close()
+                os.unlink(path)
+                raise
+            return fh, path, long_fh, long_path
         raise OSError(f"could not create a unique file for {stem} in {folder}")
 
     @property
@@ -109,9 +184,11 @@ class DriveRecorder:
 
     def _sync(self, force: bool = False) -> None:
         self._fh.flush()
+        self._long_fh.flush()
         now = time.monotonic()
         if force or now - self._last_fsync >= self._fsync_interval:
             os.fsync(self._fh.fileno())
+            os.fsync(self._long_fh.fileno())
             self._last_fsync = now
 
     def write(self, samples) -> int:
@@ -127,8 +204,12 @@ class DriveRecorder:
                 extra = vals.keys() - set(self.keys)
                 if extra:
                     self.ignored_keys |= extra
+                if self._t_zero is None:
+                    self._t_zero = s.t
                 self._writer.writerow(
-                    [f"{s.t:.2f}"] + [_fmt(vals.get(k)) for k in self.keys])
+                    [f"{s.t - self._t_zero:.3f}"]
+                    + [_fmt(vals.get(k)) for k in self.keys])
+                self._long_writer.writerows(_sidecar_lines(s, self._t_zero))
                 n += 1
             self.count += n
             if n:
@@ -141,22 +222,25 @@ class DriveRecorder:
         return n
 
     def _close_quietly(self) -> None:
-        fh, self._fh, self._writer = self._fh, None, None
-        if fh is None:
-            return
-        try:
-            fh.flush()
-            os.fsync(fh.fileno())
-        except (OSError, ValueError):
-            pass
-        try:
-            fh.close()
-        except OSError:
-            pass
+        handles = (self._fh, self._long_fh)
+        self._fh = self._writer = self._long_fh = self._long_writer = None
+        for fh in handles:
+            if fh is None:
+                continue
+            try:
+                fh.flush()
+                os.fsync(fh.fileno())
+            except (OSError, ValueError):
+                pass
+            try:
+                fh.close()
+            except OSError:
+                pass
 
     def close(self) -> tuple[str, int]:
-        """Flush, fsync and close. An empty recording (header only) is removed
-        so aborted starts don't litter the folder. Returns (path, rows)."""
+        """Flush, fsync and close both files. An empty recording (header only)
+        is removed with its sidecar so aborted starts don't litter the folder.
+        Returns (path, rows)."""
         if self._fh is not None:
             try:
                 self._sync(force=True)
@@ -164,8 +248,9 @@ class DriveRecorder:
                 self.error = self.error or f"{type(exc).__name__}: {exc}"
             self._close_quietly()
         if self.count == 0 and self.error is None:
-            try:
-                os.unlink(self.path)
-            except OSError:
-                pass
+            for p in (self.path, self.long_path):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
         return self.path, self.count

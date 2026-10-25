@@ -7,9 +7,11 @@ seam the dashboard's GtDataSource wraps:
 
     open() / close() / command(cmd) / request_raw(mode_pid)
 
-plus poll_once() which reads the supported mode-01 PIDs and decodes them into
+plus poll_timed() which reads the supported mode-01 PIDs and decodes them into
 OpenOBD canonical channel keys (see logbin.CANONICAL) with GAUGE_SPECS units
-(vss in mph, temps in F, fuel pressure in psi).
+(vss in mph, temps in F, fuel pressure in psi), each carrying the send and
+reply times of its own request; poll_once() is the same sweep as a plain
+{key: value} dict.
 
 Read-only: only ELM AT config + OBD mode-01 requests are issued. No ECU writes.
 """
@@ -18,6 +20,8 @@ from __future__ import annotations
 import re
 import time
 from typing import Optional
+
+from .transport import Reading
 
 try:
     import serial
@@ -591,6 +595,11 @@ class ObdxGt:
         # read in that state runs to this deadline.
         self.read_deadline_s = 1.2
         self.last_raw = b""
+        # time.monotonic() just before the last command() was written and
+        # just after its reply was read: the exchange that dates its value.
+        self.last_exchange: Optional[tuple[float, float]] = None
+        # Sequence number of the data requests issued by poll_timed().
+        self._request_seq = 0
 
     @staticmethod
     def autodetect() -> Optional[str]:
@@ -679,10 +688,13 @@ class ObdxGt:
             self.ser.reset_input_buffer()
         except Exception:
             pass
+        sent = time.monotonic()
         self.ser.write((cmd + "\r").encode())
         if wait:
             time.sleep(wait)
-        return self._read_to_prompt(deadline_s=deadline)
+        reply = self._read_to_prompt(deadline_s=deadline)
+        self.last_exchange = (sent, time.monotonic())
+        return reply
 
     def request_raw(self, mode_pid: str) -> str:
         return self.command(mode_pid, wait=0.0)
@@ -765,7 +777,29 @@ class ObdxGt:
         return sorted(keys)
 
     def poll_once(self) -> dict:
-        out: dict[str, float] = {}
+        """One sweep as {key: value} (CLI, diagnostics). Recording uses
+        poll_timed(), which keeps each value's own request time."""
+        return {r.key: r.value for r in self.poll_timed()}
+
+    def _reading(self, out: list, key: str, fn, data: list) -> None:
+        """Decode `data` (the reply to the request just made) into a Reading
+        carrying that request's send/reply times. A decode failure drops the
+        value; the request number is still consumed, so gaps stay visible."""
+        self._request_seq += 1
+        try:
+            value = float(fn(data))
+        except Exception:
+            return
+        sent, received = self.last_exchange
+        out.append(Reading(key, value, sent, received, self._request_seq))
+
+    def poll_timed(self) -> list:
+        """One sequential sweep as a list of Readings, in request order. Each
+        carries the exchange of the request that returned it: a sweep is ~22
+        requests at ~63 ms each, so stamping the whole sweep once at its end
+        (as before) aged RPM by ~0.95 s and engine load by ~1.33 s at their
+        stamp (2026-10-25, brain 8d92fae5)."""
+        out: list = []
         if not self.ser:
             return out
         # Physical ECM addressing is what makes these values ECM values. If a
@@ -783,12 +817,10 @@ class ObdxGt:
                 raise GtNoResponse(
                     f"no reply from the GT on {self.port_name} for 01{pid}")
             if not data:
+                self._request_seq += 1
                 continue
-            try:
-                out[key] = float(fn(data))
-            except Exception:
-                pass
-        if "voltage" not in out:
+            self._reading(out, key, fn, data)
+        if not any(r.key == "voltage" for r in out):
             # Strict parse, as the Module Map does: a binary or garbled reply
             # is UNREADABLE and leaves the gauge empty, never a made-up value
             # pulled out of noise by a loose regex.
@@ -796,15 +828,17 @@ class ObdxGt:
             if not is_binary_reply(self.last_raw):
                 volts = parse_atrv(rv)
                 if volts is not None:
-                    out["voltage"] = volts
+                    self._reading(out, "voltage", lambda b: b[0], [volts])
+                else:
+                    self._request_seq += 1
+            else:
+                self._request_seq += 1
         for (module, did), (key, fn) in DID_TABLE.items():
             data = self.request_did(did, module=module)
             if not data:
+                self._request_seq += 1
                 continue
-            try:
-                out[key] = float(fn(data))
-            except Exception:
-                pass
+            self._reading(out, key, fn, data)
         return out
 
     # -- diagnostics -------------------------------------------------------- #
@@ -1243,11 +1277,15 @@ class ObdxGt:
             if target != "7E0":
                 self._set_header("7E0")
             return None
+        exchange = None
         try:
             data = self._extract_did(self.command("22" + did, wait=0.0), did)
+            exchange = self.last_exchange
         finally:
             if target != "7E0":
                 self._set_header("7E0")
+                # last_exchange must date the DID reply, not the restore.
+                self.last_exchange = exchange
         return data
 
     @staticmethod

@@ -30,7 +30,7 @@ from openobd.gt import GtNoResponse, ObdxGt  # noqa: E402
 from openobd.logbin import map_channel, parse_csv  # noqa: E402
 from openobd.recorder import DriveRecorder, default_log_dirs  # noqa: E402
 from openobd.transport import (  # noqa: E402
-    DataSource, GtDataSource, LogReplaySource, Sample)
+    DataSource, GtDataSource, LogReplaySource, Reading, Sample)
 from openobd import tmsource  # noqa: E402
 
 from test_module_map_truck import FakeTruckGt  # noqa: E402
@@ -55,7 +55,7 @@ def test_recording_is_on_disk_in_its_final_place_before_it_is_closed(tmp_path):
                                 "Vehicle Speed (mph)"]]
     rec.write([Sample(1.0, {"rpm": 700.0}), Sample(1.5, {"rpm": 710.0, "vss": 3.0})])
     # Readable by another handle WITHOUT close(): a crash right now keeps it.
-    assert _read(rec.path)[1:] == [["1.00", "700", ""], ["1.50", "710", "3"]]
+    assert _read(rec.path)[1:] == [["0.000", "700", ""], ["0.500", "710", "3"]]
     path, n = rec.close()
     assert (path, n) == (rec.path, 2) and os.path.exists(path)
 
@@ -69,8 +69,8 @@ def test_columns_hold_when_a_channel_appears_or_disappears(tmp_path):
     rec.close()
     rows = _read(rec.path)
     assert all(len(r) == 3 for r in rows)
-    assert rows[1:] == [["0.00", "650", ""], ["1.00", "900", "150"],
-                        ["2.00", "", "151"], ["3.00", "905", ""]]
+    assert rows[1:] == [["0.000", "650", ""], ["1.000", "900", "150"],
+                        ["2.000", "", "151"], ["3.000", "905", ""]]
     assert rec.ignored_keys == {"bogus"}
 
 
@@ -105,7 +105,7 @@ def test_a_write_failure_stops_cleanly_and_keeps_earlier_rows(tmp_path):
     assert rec.write([Sample(1.0, {"rpm": 800.0})]) == 0
     assert rec.error and not rec.active
     path, n = rec.close()
-    assert n == 1 and _read(path)[1:] == [["0.00", "700"]]
+    assert n == 1 and _read(path)[1:] == [["0.000", "700"]]
 
 
 def test_default_log_dirs_prefers_documents_then_app_data():
@@ -168,7 +168,8 @@ def test_possible_keys_before_the_probe_is_the_whole_table():
 # GT link loss and recovery
 # --------------------------------------------------------------------------- #
 class ScriptedGt:
-    """ObdxGt stand-in: poll_once follows a script; open/close are counted."""
+    """ObdxGt stand-in: poll_timed follows a script of {key: value} sweeps
+    (or exceptions); open/close are counted."""
 
     def __init__(self, src, polls, opens=None, port="COM5"):
         self.src, self.polls, self.opens = src, list(polls), list(opens or [])
@@ -176,13 +177,13 @@ class ScriptedGt:
         self.open_calls, self.close_calls, self.opened_on = 0, 0, []
         self.supported = set()
 
-    def poll_once(self):
+    def poll_timed(self):
         step = self.polls.pop(0)
         if not self.polls:
             self.src._stop.set()
         if isinstance(step, Exception):
             raise step
-        return step
+        return [Reading(k, v, float(i), float(i) + 0.05, i) for i, (k, v) in enumerate(step.items())]
 
     def open(self):
         self.open_calls += 1
@@ -272,7 +273,7 @@ def test_a_failed_first_poll_releases_the_port():
     closed = []
     src._gt = SimpleNamespace(
         open=lambda: None, close=lambda: closed.append(1),
-        poll_once=lambda: (_ for _ in ()).throw(GtNoResponse("silent")),
+        poll_timed=lambda: (_ for _ in ()).throw(GtNoResponse("silent")),
         device="OBDX Pro GT", port_name="COM5")
     with pytest.raises(GtNoResponse):
         src.start()
@@ -443,7 +444,7 @@ def test_record_works_for_the_gt_and_survives_link_loss(dash):
     d._tick()
     d._finalize_record()
     rows = _read(path)
-    assert [r[0] for r in rows[1:]] == ["1.00", "1.50", "2.00", "9.00"]
+    assert [r[0] for r in rows[1:]] == ["0.000", "0.500", "1.000", "8.000"]
     assert "Saved 4 samples" in d.status.text()
 
 
