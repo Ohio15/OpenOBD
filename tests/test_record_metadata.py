@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 import sys
 from types import SimpleNamespace
 
@@ -735,7 +736,9 @@ def test_without_a_vin_nothing_is_persisted_or_seeded(dash, tmp_path):
     d._tick()
     assert src.pedal_calibration().ready                 # live learning works
     assert _settings_groups() == {"1GCEK19J78Z123456"}   # nothing new stored
-    pc = read_meta(rec.path)["pedal_calibration"]        # written at once
+    assert d._meta_timer.isActive()                      # rewrite coalesced
+    d._flush_meta()                                      # what 250 ms does
+    pc = read_meta(rec.path)["pedal_calibration"]
     assert pc["persistence"].startswith("session-only")
     assert pc["changes"] and pc["changes"][-1]["ready"]
     assert pc["vin"] is None
@@ -795,6 +798,7 @@ def test_reconnect_to_another_truck_resets_and_never_cross_applies(
              map=99.0)
     d._tick()
     assert load_pedal_cal(VIN).full == 61.2              # never saved to A
+    d._flush_meta()
     events = read_meta(rec.path)["link_events"]
     assert events[-1]["vin"]["value"] == vin_b
     d._finalize_record()
@@ -856,18 +860,27 @@ def test_known_pedal_cal_order_and_vin_gate(dash):
         "identity"
     pc3 = {"at_start": _cal(19.0, 60.0, "start")}
     assert known(_log_with_meta({"pedal_calibration": pc3})).source == "start"
-    # stored calibrations apply ONLY through an examined VIN
+    # a stored calibration is NEVER loaded on a file's say-so (SC-05): the
+    # VIN in a .meta.json is unverified
     save_pedal_cal(VIN, PedalCal(18.0, 65.0, "stored"))
     assert known(_log_with_meta(None)) is None
     assert known(_log_with_meta({"vehicle": {"vin": {
         "examined": False, "why": "NO DATA"}}})) is None
-    assert known(_log_with_meta({"vehicle": vin})).source == "stored"
-    # a VIN log still prefers what its own recording measured
+    assert known(_log_with_meta({"vehicle": vin})) is None
+    # a log uses what its own recording measured, VIN claimed or not
     assert known(_log_with_meta({"vehicle": vin,
                                  "pedal_calibration": pc})).source == "c2"
 
 
-def _learn_window(log, dashboard_key=None):
+def _live(vin):
+    """A dashboard bound to a GT connection whose VIN read as `vin`."""
+    src = FakeGt()
+    src.link = (1, {"examined": True, "value": vin} if vin else None)
+    return SimpleNamespace(source=src, _pedal_key=vin,
+                           _pedal_store_error=None)
+
+
+def _learn_window(log, dashboard=None):
     from openobd.app import MainWindow
     msgs = []
     ns = SimpleNamespace(
@@ -876,7 +889,7 @@ def _learn_window(log, dashboard_key=None):
             showMessage=lambda m, *_a: msgs.append(m)),
         log_report=SimpleNamespace(append=lambda m: msgs.append(m)),
         _analyze_loaded_log=lambda: None,
-        dashboard=SimpleNamespace(source=None, _pedal_key=dashboard_key))
+        dashboard=dashboard or SimpleNamespace(source=None, _pedal_key=None))
     MainWindow.learn_pedal_from_log(ns)
     return msgs
 
@@ -886,15 +899,129 @@ def test_learn_merges_and_never_loosens_a_stored_calibration(dash):
     log = _drive_log()
     log.meta = {"vehicle": {"vin": {"examined": True, "value": VIN}}}
     save_pedal_cal(VIN, PedalCal(18.0, 65.0, "stored"))
-    msgs = _learn_window(log)
+    msgs = _learn_window(log, _live(VIN))
     stored = load_pedal_cal(VIN)
     assert (stored.rest, stored.full) == (18.0, 65.0)    # not loosened
     assert "was rest 18.0 % / full 65.0 %" in msgs[0]
     assert "learned rest 19.2 % / full 61.2 %" in msgs[0]
     save_pedal_cal(VIN, PedalCal(20.0, 55.0, "stored"))
-    _learn_window(log)
+    _learn_window(log, _live(VIN))
     stored = load_pedal_cal(VIN)
     assert (round(stored.rest, 1), round(stored.full, 1)) == (19.2, 61.2)
+
+
+def test_a_doctored_meta_vin_neither_loads_nor_writes_that_vins_settings(
+        dash, tmp_path):
+    """SC-05: a .meta.json naming another VIN must not pull that VIN's
+    stored calibration into the analysis, and Learn must not widen it."""
+    from openobd.app import MainWindow, load_pedal_cal, save_pedal_cal
+    victim = "1GCEK19J78Z123456"
+    save_pedal_cal(victim, PedalCal(30.0, 50.0, "victim's own"))
+    log = _drive_log()
+    log.meta = {"schema": 1,
+                "vehicle": {"vin": {"examined": True, "value": victim}}}
+    assert MainWindow._known_pedal_cal(MainWindow, log) is None
+    for live in (None, _live(VIN)):        # not connected / another truck
+        msgs = _learn_window(log, live)
+        assert "applies to this log's analysis only" in msgs[0]
+        assert "from file, unverified" in msgs[0]
+        assert log.pedal_cal.ready         # the analysis still gets it
+        stored = load_pedal_cal(victim)
+        assert (stored.rest, stored.full) == (30.0, 50.0)
+    assert _settings_groups() == {victim}
+
+
+def test_an_unreadable_settings_store_is_never_written_over(dash, timed_gt,
+                                                            monkeypatch):
+    import openobd.app as appmod
+    from openobd.app import save_pedal_cal
+    d, _old = dash
+    save_pedal_cal(VIN, PedalCal(18.0, 65.0, "real stored value"))
+    saved = []
+    monkeypatch.setattr(appmod, "load_pedal_cal",
+                        lambda vin: (_ for _ in ()).throw(OSError("hive locked")))
+    monkeypatch.setattr(appmod, "save_pedal_cal",
+                        lambda vin, cal: saved.append((vin, cal)))
+    g, _clock = timed_gt(pids=TRUCK_PIDS, info=INFO)
+    src = FakeGt(ctx_gt=g)
+    src._new_link()
+    d.bind_source(src)
+    d._on_gt_ready(src)
+    d.timer.stop()
+    assert "unreadable" in d.status.text() and "hive locked" in d.status.text()
+    assert src.pedal_calibration().rest is None          # nothing seeded
+    d.toggle_record()
+    rec = d._recorder
+    _calibrate_live(src)
+    d._tick()
+    assert src.pedal_calibration().ready and saved == []  # never saved over
+    d._flush_meta()
+    pc = read_meta(rec.path)["pedal_calibration"]
+    assert "UNREADABLE" in pc["persistence"] and "hive locked" in pc["persistence"]
+    # Learn for the same live VIN refuses to store too
+    log = _drive_log()
+    log.meta = {"vehicle": {"vin": {"examined": True, "value": VIN}}}
+    msgs = _learn_window(log, d)
+    assert "unreadable" in msgs[0] and saved == []
+    d._finalize_record()
+
+
+@pytest.mark.parametrize("doc, why", [
+    ({"schema": 1, "vehicle": ["3GCRKTE35AG150432"]}, "vehicle is not an object"),
+    ({"schema": 1, "markers": [{"t": "12.5", "label": "x"}]},
+     "a marker is not {t: number, label: text}"),
+    ({"schema": 1, "vehicle": {"vin": {"examined": "yes", "value": VIN}}},
+     "vehicle.vin.examined"),
+    ({"schema": 1, "pedal_calibration": {"changes": "lots"}},
+     "pedal_calibration.changes"),
+    ([1, 2], "not a JSON object"),
+])
+def test_hostile_meta_shapes_are_reported_not_crashes(tmp_path, doc, why):
+    csv_path = tmp_path / "x.csv"
+    csv_path.write_text("Time (s),Engine Speed (RPM)\n0,800\n")
+    (tmp_path / "x.meta.json").write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match=re.escape(why)):
+        read_meta(str(csv_path))
+
+
+def test_a_hostile_meta_still_lets_the_log_load(qapp, tmp_path):
+    from openobd.app import MainWindow, load_default_cal
+    csv_path = tmp_path / "x.csv"
+    csv_path.write_text("Time (s),Engine Speed (RPM),Accelerator Pedal (%)\n"
+                        "0,800,19.2\n0.5,900,19.2\n")
+    (tmp_path / "x.meta.json").write_text(json.dumps(
+        {"schema": 1, "vehicle": [], "pedal_calibration": [],
+         "markers": [{"t": "soon"}]}))
+    cal, path = load_default_cal()
+    win = MainWindow(cal, path)
+    try:
+        win.load_log_path(str(csv_path))
+        assert win.log is not None and win.log.n_samples == 2
+        assert win.log.meta is None and win._marker_times == []
+        assert "metadata unreadable: vehicle is not an object" in \
+            win.log_report.toPlainText()
+    finally:
+        win.dashboard.shutdown()
+        win.close()
+
+
+def test_held_m_coalesces_marker_rewrites(dash, monkeypatch):
+    d, src = dash
+    d.toggle_record()
+    rec = d._recorder
+    src.feed(1.0, 1, rpm=700.0, vss=0.0, app=19.2)
+    d._tick()
+    writes = []
+    real = rec._write_meta
+    monkeypatch.setattr(rec, "_write_meta", lambda: writes.append(1) or real())
+    for i in range(20):                                  # auto-repeat
+        src.now = 2.0 + i * 0.03
+        d.add_marker()
+    assert writes == [] and d._meta_timer.isActive()
+    d._flush_meta()
+    assert len(writes) == 1 and len(read_meta(rec.path)["markers"]) == 20
+    d._finalize_record()
+    assert len(read_meta(rec.path)["markers"]) == 20
 
 
 def test_learn_on_a_vin_less_log_is_analysis_only(dash):

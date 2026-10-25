@@ -181,6 +181,16 @@ def load_pedal_cal(vin: str) -> Optional[PedalCal]:
     return None if cal.rest is None and cal.full is None else cal
 
 
+def try_load_pedal_cal(vin: str) -> tuple[Optional[PedalCal], Optional[str]]:
+    """(calibration or None, error or None). A read FAILURE is not "none
+    stored": the caller must then neither seed nor save for that VIN, or a
+    live/learned value would overwrite the real stored one."""
+    try:
+        return load_pedal_cal(vin), None
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+
+
 def save_pedal_cal(vin: str, cal: PedalCal) -> None:
     st = app_settings()
     st.beginGroup(_pedal_settings_group(vin))
@@ -232,6 +242,17 @@ class Dashboard(QWidget):
         self._pedal_key: Optional[str] = None
         self._pedal_seen = -1
         self._link_seen = None
+        # Why the stored calibration for _pedal_key could not be READ on
+        # this connection; while set, nothing is seeded or saved for it.
+        self._pedal_store_error: Optional[str] = None
+        # Metadata rewrites (markers, calibration changes, link events) are
+        # coalesced: one atomic rewrite at most every 250 ms, so a held M
+        # key or a run of calibration updates cannot stall the GUI thread
+        # on fsync. close() always writes the final document.
+        self._meta_timer = QTimer(self)
+        self._meta_timer.setSingleShot(True)
+        self._meta_timer.setInterval(250)
+        self._meta_timer.timeout.connect(self._flush_meta)
 
         root = QVBoxLayout(self)
         bar = QHBoxLayout()
@@ -386,13 +407,9 @@ class Dashboard(QWidget):
         self._link_seen = link[0]
         self._pedal_key = src.vin()
         self._pedal_seen = src.pedal.version
+        self._pedal_store_error = None
         if self._pedal_key:
-            try:
-                stored = load_pedal_cal(self._pedal_key)
-            except Exception:
-                stored = None
-            if stored is not None:
-                src.seed_pedal_calibration(stored)
+            self._seed_from_settings(src, self._pedal_key)
         rec = self._recorder
         if not first and self.recording and rec is not None:
             events = rec.meta.setdefault("link_events", [])
@@ -402,11 +419,41 @@ class Dashboard(QWidget):
                            "vin": link[1]})
             pc = rec.meta.setdefault("pedal_calibration", {})
             pc["persistence"] = self._persistence()
-            rec.update_meta()
+            self._schedule_meta()
+
+    def _seed_from_settings(self, src: GtDataSource, vin: str) -> None:
+        stored, err = try_load_pedal_cal(vin)
+        if err is not None:
+            self._pedal_store_error = err
+            self.status.setText(
+                f"Stored pedal calibration for VIN {vin} is unreadable "
+                f"({err}): not applied, and nothing will be saved over it "
+                f"this session.")
+            return
+        if stored is not None:
+            src.seed_pedal_calibration(stored)
 
     def _persistence(self) -> str:
+        if self._pedal_key and self._pedal_store_error:
+            return (f"settings pedal_cal/{self._pedal_key} UNREADABLE "
+                    f"({self._pedal_store_error}): not seeded, not saved "
+                    f"this session")
         return (f"settings pedal_cal/{self._pedal_key}" if self._pedal_key
                 else "session-only (VIN not examined on this connection)")
+
+    def _schedule_meta(self) -> None:
+        if self._recorder is not None and not self._meta_timer.isActive():
+            self._meta_timer.start()
+
+    def _flush_meta(self) -> None:
+        """The coalesced metadata rewrite (atomic, recorder._write_meta)."""
+        rec = self._recorder
+        if rec is None:
+            return
+        if not rec.flush_meta() and rec.meta_error:
+            self.status.setText(
+                f"Recording metadata write failed: {rec.meta_error} — the "
+                f"CSVs are unaffected")
 
     def _persist_pedal(self) -> None:
         """GUI thread: when the GT's calibration changed, store it under the
@@ -423,7 +470,7 @@ class Dashboard(QWidget):
         cal = src.pedal_calibration()
         if cal.rest is None and cal.full is None:
             return
-        if self._pedal_key:
+        if self._pedal_key and not self._pedal_store_error:
             try:
                 save_pedal_cal(self._pedal_key, cal)
             except Exception as exc:       # settings store unavailable
@@ -436,7 +483,7 @@ class Dashboard(QWidget):
             pc = rec.meta.setdefault("pedal_calibration", {})
             pc.setdefault("changes", []).append(entry)
             pc["persistence"] = self._persistence()
-            rec.update_meta()
+            self._schedule_meta()
 
     # -- responsive toolbar + keyboard shortcuts for the live actions -------- #
     def _init_live_ui(self):
@@ -659,6 +706,10 @@ class Dashboard(QWidget):
             self._live_status += (f" · VIN {vin}" if vin else
                                   " · VIN not read (pedal calibration is "
                                   "session-only)")
+            if self._pedal_store_error:
+                self._live_status += (" · stored pedal calibration unreadable"
+                                      f" ({self._pedal_store_error}): not "
+                                      "applied or saved this session")
             cal = src.pedal_calibration()
             if not cal.ready:
                 self._live_status += (" · pedal cal pending (Pedal gauge "
@@ -865,12 +916,8 @@ class Dashboard(QWidget):
             # The VIN did not read at connect but did now, on the SAME link:
             # this connection is identified from here on.
             self._pedal_key = vin
-            try:
-                stored = load_pedal_cal(vin)
-            except Exception:
-                stored = None
-            if stored is not None:
-                src.seed_pedal_calibration(stored)
+            self._pedal_store_error = None
+            self._seed_from_settings(src, vin)
         fields = {"vehicle": ident,
                   "dtcs_at_start": ctx.get("dtcs_at_start")}
         if ctx.get("supported"):
@@ -897,14 +944,12 @@ class Dashboard(QWidget):
             return
         self._record_samples(self.source.drain())   # date it after them
         clock = getattr(self.source, "clock", None)
-        mark = rec.add_marker(clock() if clock else None)
+        mark = rec.add_marker(clock() if clock else None, write=False)
         if mark is None:
             self.status.setText("No sample recorded yet — marker not added.")
             return
-        msg = f"📍 {mark['label']} at {mark['t']:.1f} s"
-        if rec.meta_error:
-            msg += f" (metadata write failed: {rec.meta_error})"
-        self.status.setText(msg)
+        self._schedule_meta()
+        self.status.setText(f"📍 {mark['label']} at {mark['t']:.1f} s")
 
     def _record_dirs(self) -> list[str]:
         """Where recordings go: Documents\\OpenOBD\\Logs, resolved through
@@ -922,6 +967,7 @@ class Dashboard(QWidget):
         self.recording = False
         self.btn_record.setText("⏺ Record")
         self.btn_mark.setEnabled(False)
+        self._meta_timer.stop()          # close() writes the final document
         rec, self._recorder = self._recorder, None
         if rec is None:
             return
@@ -1776,6 +1822,12 @@ class MainWindow(QMainWindow):
                  + (f"  ·  Duration: {rep.duration_s:.1f}s"
                     if rep.duration_s else ""))
         L.append(f"Channels: {', '.join(rep.channels_present)}")
+        claimed = self._log_vin(self.log)
+        if claimed:
+            L.append(f"Vehicle: VIN {claimed} (from file, unverified)")
+        problem = getattr(self, "_meta_problem", None)
+        if problem:
+            L.append(f"Metadata: {problem}")
         L.append("")
         L.append("── Regime trims ──")
         L.append(f"  WOT criterion: {rep.wot_criterion_text}")
@@ -1924,12 +1976,14 @@ class MainWindow(QMainWindow):
         # A Dashboard recording's metadata: markers for the chart, the VIN,
         # and the pedal calibration the recording used.
         self.log.meta = None
+        self._meta_problem = None
         try:
             self.log.meta = read_meta(p)
         except (OSError, ValueError) as exc:
-            self.statusBar().showMessage(
-                f"Ignored unreadable {os.path.basename(meta_path(p))}: {exc}",
-                6000)
+            # The log still loads, without its metadata.
+            self._meta_problem = (f"{os.path.basename(meta_path(p))}: "
+                                  f"metadata unreadable: {exc}")
+            self.statusBar().showMessage(self._meta_problem, 8000)
         self.log.pedal_cal = self._known_pedal_cal(self.log)
         self._analyze_loaded_log()
         self.dashboard.bind_source(LogReplaySource(self.log, speed=4.0))
@@ -1941,6 +1995,10 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _log_vin(log: Log) -> Optional[str]:
+        """The VIN the log's .meta.json CLAIMS. A file on disk can say
+        anything: this is for display ("from file, unverified") and for the
+        comparison in learn_pedal_from_log, never a key that loads stored
+        settings on its own."""
         vin = ((log.meta or {}).get("vehicle") or {}).get("vin") or {}
         return vin.get("value") if vin.get("examined") else None
 
@@ -1958,21 +2016,13 @@ class MainWindow(QMainWindow):
         return None
 
     def _known_pedal_cal(self, log: Log) -> Optional[PedalCal]:
-        """A pedal calibration KNOWN for this log. The VIN gate comes first:
-        a stored calibration applies only to a log whose metadata carries an
-        examined VIN. A VIN-less log gets only what its own recording
-        measured (that was this drive); a log with neither gets none."""
-        recorded = self._recorded_pedal_cal(log)
-        vin = self._log_vin(log)
-        if not vin:
-            return recorded
-        if recorded is not None:
-            return recorded
-        try:
-            stored = load_pedal_cal(vin)
-        except Exception:
-            stored = None
-        return stored if stored is not None and stored.ready else None
+        """A pedal calibration KNOWN for this log: only what its own
+        recording measured (recorded in its .meta.json; it was measured on
+        that drive and applies to that drive's analysis). A stored
+        pedal_cal/<VIN> is NEVER loaded on the file's say-so: the VIN in a
+        file is unverified, so a doctored file cannot pull another
+        vehicle's settings into the analysis (security gate SC-05)."""
+        return self._recorded_pedal_cal(log)
 
     def learn_pedal_from_log(self):
         """User action: derive the pedal calibration from the loaded log and
@@ -1993,19 +2043,34 @@ class MainWindow(QMainWindow):
             self.log_report.append("\n" + msg)
             return
         vin = self._log_vin(self.log)
+        src = self.dashboard.source
+        live = src.vin() if isinstance(src, GtDataSource) else None
+        why = None
         if not vin:
+            why = "No VIN in this log"
+        elif live is None:
+            why = (f"The log's VIN {vin} (from file, unverified) cannot be "
+                   "confirmed: no identified GT connection")
+        elif live != vin:
+            why = (f"The log's VIN {vin} (from file, unverified) is not the "
+                   f"connected vehicle's VIN {live}")
+        elif getattr(self.dashboard, "_pedal_store_error", None):
+            why = (f"The stored calibration for VIN {vin} is unreadable "
+                   f"({self.dashboard._pedal_store_error})")
+        stored = None
+        if why is None:
+            stored, err = try_load_pedal_cal(vin)
+            if err is not None:
+                why = f"The stored calibration for VIN {vin} is unreadable ({err})"
+        if why is not None:
             self.log.pedal_cal = cal
             self._analyze_loaded_log()
-            msg = (f"Pedal calibration {cal.status()} learned. No VIN in this "
-                   "log; calibration applies to this log's analysis only "
+            msg = (f"Pedal calibration {cal.status()} learned. {why}; "
+                   "calibration applies to this log's analysis only "
                    "(not stored).")
             self.statusBar().showMessage(msg, 10000)
             self.log_report.append("\n" + msg)
             return
-        try:
-            stored = load_pedal_cal(vin)
-        except Exception:
-            stored = None
         merged = cal
         if stored is not None:
             rests = [v for v in (stored.rest, cal.rest) if v is not None]
@@ -2019,7 +2084,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Could not store it: {exc}", 8000)
             return
         self.log.pedal_cal = merged
-        src = self.dashboard.source
         if isinstance(src, GtDataSource) and self.dashboard._pedal_key == vin:
             src.seed_pedal_calibration(merged)
         self._analyze_loaded_log()

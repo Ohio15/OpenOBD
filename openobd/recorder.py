@@ -110,16 +110,69 @@ def meta_path(csv_path: str) -> str:
     return stem + META_SUFFIX
 
 
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def meta_shape_problem(meta) -> Optional[str]:
+    """Why a parsed .meta.json cannot be used, or None. The file is on disk
+    and anyone can edit it, so every part Log Analysis consumes is checked
+    for shape before use: a hostile or damaged file is reported, never
+    crashes the loader, and the log loads without it."""
+    if not isinstance(meta, dict):
+        return "not a JSON object"
+    if "schema" not in meta:
+        return "no schema field (not an OpenOBD recording metadata file)"
+    vehicle = meta.get("vehicle")
+    if vehicle is not None:
+        if not isinstance(vehicle, dict):
+            return "vehicle is not an object"
+        vin = vehicle.get("vin")
+        if vin is not None:
+            if not isinstance(vin, dict):
+                return "vehicle.vin is not an object"
+            if not isinstance(vin.get("examined"), bool):
+                return "vehicle.vin.examined is not true/false"
+            if "value" in vin and not isinstance(vin["value"], str):
+                return "vehicle.vin.value is not a string"
+    pc = meta.get("pedal_calibration")
+    if pc is not None:
+        if not isinstance(pc, dict):
+            return "pedal_calibration is not an object"
+        for key in ("at_start", "after_identity"):
+            if pc.get(key) is not None and not isinstance(pc[key], dict):
+                return f"pedal_calibration.{key} is not an object"
+        changes = pc.get("changes")
+        if changes is not None and not (
+                isinstance(changes, list)
+                and all(c is None or isinstance(c, dict) for c in changes)):
+            return "pedal_calibration.changes is not a list of objects"
+    markers = meta.get("markers")
+    if markers is not None:
+        if not isinstance(markers, list):
+            return "markers is not a list"
+        for m in markers:
+            if not (isinstance(m, dict) and _is_num(m.get("t"))
+                    and isinstance(m.get("label"), str)):
+                return "a marker is not {t: number, label: text}"
+    return None
+
+
 def read_meta(csv_path: str) -> Optional[dict]:
     """The metadata beside a CSV, or None when there is none. Raises
-    ValueError for a file that is not an OpenOBD recording's metadata."""
+    ValueError (with the reason) for a file that is not usable OpenOBD
+    recording metadata: bad JSON or a shape meta_shape_problem rejects."""
     p = meta_path(csv_path)
     if not os.path.exists(p):
         return None
     with open(p, "r", encoding="utf-8") as fh:
-        meta = json.load(fh)
-    if not isinstance(meta, dict) or "schema" not in meta:
-        raise ValueError(f"{p} is not an OpenOBD recording metadata file")
+        try:
+            meta = json.load(fh)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"not valid JSON ({exc})") from exc
+    problem = meta_shape_problem(meta)
+    if problem:
+        raise ValueError(problem)
     return meta
 
 
@@ -306,6 +359,10 @@ class DriveRecorder:
                 pass
             return False
 
+    def flush_meta(self) -> bool:
+        """Rewrite the metadata now (callers that batch changes)."""
+        return self._write_meta()
+
     def update_meta(self, **fields) -> bool:
         """Merge facts learned after start (vehicle identity, DTCs, pedal
         calibration changes) and rewrite the metadata atomically."""
@@ -326,8 +383,10 @@ class DriveRecorder:
         return None if t is None else t - self._t_zero
 
     def add_marker(self, source_t: Optional[float] = None,
-                   label: Optional[str] = None) -> Optional[dict]:
-        """Append a marker at the current recording time and rewrite the
+                   label: Optional[str] = None,
+                   write: bool = True) -> Optional[dict]:
+        """Append a marker at the current recording time and (unless the
+        caller batches rewrites, write=False, then flush_meta) rewrite the
         metadata. The CSVs are untouched. Returns the marker, or None when
         there is no time yet (no sample recorded) or the recording closed."""
         if self._fh is None:
@@ -338,7 +397,8 @@ class DriveRecorder:
         marker = {"t": round(t, 3),
                   "label": label or f"mark {len(self.markers) + 1}"}
         self.markers.append(marker)
-        self._write_meta()
+        if write:
+            self._write_meta()
         return marker
 
     @property

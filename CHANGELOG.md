@@ -70,17 +70,27 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   another; the connection's own VIN then seeds its stored calibration, so
   the live gauge is normalized before any recording. Without a VIN the
   calibration is session-only (live learning still works) and the metadata
-  says so. Calibration changes are written into an active recording's
-  metadata at once; a link re-open is logged there (`link_events`).
+  says so. If the stored calibration cannot be READ, that is not "none
+  stored": nothing is seeded and nothing is saved over it that session, and
+  the status line and metadata say so. Calibration changes, markers and
+  link re-opens (`link_events`) are written into an active recording's
+  metadata within 250 ms (rewrites are coalesced so a held M key cannot
+  stall the GUI on fsync); close always writes the final document.
 - **Log Analysis → "Learn pedal calibration from this log"** derives it
   from a loaded log with the same rules (`logbin.calibrate_pedal_from_log`;
   the 2026-10-25 log gives rest 19.2 / full 61.2). For a log with a VIN it
-  is merged into the stored one (rest = min, full = max: never loosened)
-  and the status line shows old and new; a VIN-less log's calibration
-  applies to that log's analysis only. A loaded log uses the calibration
-  its own recording measured (latest change, then after-identity, then
-  at-start), else the stored one for its VIN; a VIN-less log never gets a
-  stored one.
+  is stored only when the log's VIN equals the VIN examined on the current
+  live GT connection, merged into the stored one (rest = min, full = max:
+  never loosened), and the status line shows old and new. Otherwise (no
+  VIN, no connection, another vehicle, unreadable store) it applies to that
+  log's analysis only. A loaded log uses only the calibration its own
+  recording measured (latest change, then after-identity, then at-start).
+  A VIN in a .meta.json is shown as "from file, unverified" and never
+  loads stored settings: the file is editable on disk (security gate
+  SC-05).
+- `.meta.json` shapes are validated before use (vehicle, VIN, pedal
+  calibration, markers); a hostile or damaged file is reported as
+  "metadata unreadable: <why>" and the log loads without it.
 - The **Pedal gauge** shows the normalized value when available, else raw
   APP D labelled "Pedal raw" with "pedal cal pending" in its tooltip.
 
