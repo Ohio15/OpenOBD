@@ -9,8 +9,10 @@ The invariants under test are the honesty contracts:
     flips to an explicit failed state when the read itself fails.
 """
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
+from vclock import Clock
 
 from openobd import tmsource, tmstore
 from openobd.tmsource import (
@@ -163,16 +165,23 @@ def _fresh_latest(now_iso):
     ]
 
 
-def _now_iso():
-    from datetime import datetime, timezone
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+# Live-session freshness runs on a virtual wall clock (tests/vclock.py): the
+# newest store stamp ages only when a test says, never with how busy the machine
+# is (brain 7379e172). _LIVE_TS is what truck-mcp wrote; _live_clock(age) is the
+# wall clock that many seconds after it.
+_LIVE_TS = _ts(5)
+_LIVE_EPOCH = datetime(2026, 8, 21, 10, 0, 5, tzinfo=timezone.utc).timestamp()
+
+
+def _live_clock(age_s=0.0):
+    return Clock(start=_LIVE_EPOCH + age_s)
 
 
 def test_live_source_converts_and_states(tmp_path):
     db = tmp_path / "l.tmsession.db"
-    now = _now_iso()
-    _make_session(db, latest=_fresh_latest(now))
-    src = TmLiveSource(db)
+    _make_session(db, latest=_fresh_latest(_LIVE_TS))
+    clock = _live_clock()
+    src = TmLiveSource(db, wall_clock=clock)
     try:
         assert set(src.channels()) == {"rpm", "vss", "ect", "iat", "tps",
                                        "voltage", "load"}
@@ -186,15 +195,24 @@ def test_live_source_converts_and_states(tmp_path):
         assert states["rpm"] == "fresh"
         assert states["ect"] == "carried"     # carried must not claim fresh
         assert states["iat"] == "notread"     # no channel_latest row
+        # The session-stale rule itself, 1 ms either side of the limit.
+        clock.now = _LIVE_EPOCH + tmstore.STALE_SESSION_LIMIT_S - 0.001
+        src._read()
+        assert src.channel_states()["rpm"] == "fresh"
+        clock.now = _LIVE_EPOCH + tmstore.STALE_SESSION_LIMIT_S + 0.001
+        src._read()
+        states = src.channel_states()
+        assert states["rpm"] == "stale"       # logger stopped: not live
+        assert states["ect"] == "carried"     # carried is already honest
+        assert src.latest().values["rpm"] == 1100.0   # value kept, badge not
     finally:
         src.stop()
 
 
 def test_live_source_archived_never_fresh(tmp_path):
     db = tmp_path / "a.tmsession.db"
-    now = _now_iso()
-    _make_session(db, ended=_ts(30), latest=_fresh_latest(now))
-    src = TmLiveSource(db)
+    _make_session(db, ended=_ts(30), latest=_fresh_latest(_LIVE_TS))
+    src = TmLiveSource(db, wall_clock=_live_clock())
     try:
         src.start()
         states = src.channel_states()
@@ -205,8 +223,8 @@ def test_live_source_archived_never_fresh(tmp_path):
 
 def test_live_source_stale_session_never_fresh(tmp_path):
     db = tmp_path / "s.tmsession.db"
-    _make_session(db, latest=_fresh_latest("2026-08-21T10:00:05Z"))  # old
-    src = TmLiveSource(db)
+    _make_session(db, latest=_fresh_latest(_LIVE_TS))
+    src = TmLiveSource(db, wall_clock=_live_clock(age_s=60.0))   # old
     try:
         src.start()
         assert src.channel_states()["rpm"] == "stale"
@@ -216,8 +234,8 @@ def test_live_source_stale_session_never_fresh(tmp_path):
 
 def test_live_source_read_failure_flips_to_failed(tmp_path):
     db = tmp_path / "f.tmsession.db"
-    _make_session(db, latest=_fresh_latest(_now_iso()))
-    src = TmLiveSource(db)
+    _make_session(db, latest=_fresh_latest(_LIVE_TS))
+    src = TmLiveSource(db, wall_clock=_live_clock())
     src.start()
     src._reader.close()                       # simulate the file going away
     src._read()                               # failure 1
@@ -242,8 +260,8 @@ def test_live_source_refuses_unmappable_session(tmp_path):
 
 def test_live_source_single_failure_demotes_fresh_immediately(tmp_path):
     db = tmp_path / "f1.tmsession.db"
-    _make_session(db, latest=_fresh_latest(_now_iso()))
-    src = TmLiveSource(db)
+    _make_session(db, latest=_fresh_latest(_LIVE_TS))
+    src = TmLiveSource(db, wall_clock=_live_clock())
     src.start()
     assert src.channel_states()["rpm"] == "fresh"
     src._reader.close()
@@ -256,8 +274,8 @@ def test_live_source_single_failure_demotes_fresh_immediately(tmp_path):
 
 def test_live_source_stop_start_reopens_reader(tmp_path):
     db = tmp_path / "r.tmsession.db"
-    _make_session(db, latest=_fresh_latest(_now_iso()))
-    src = TmLiveSource(db)
+    _make_session(db, latest=_fresh_latest(_LIVE_TS))
+    src = TmLiveSource(db, wall_clock=_live_clock())
     src.start()
     src.stop()
     src.start()                               # must reopen, not serve a corpse
@@ -366,8 +384,8 @@ def test_replay_wraps_sqlite_errors(tmp_path):
 
 def test_live_source_start_failure_reports_all_stale(tmp_path, monkeypatch):
     db = tmp_path / "sf.tmsession.db"
-    _make_session(db, latest=_fresh_latest(_now_iso()))
-    src = TmLiveSource(db)
+    _make_session(db, latest=_fresh_latest(_LIVE_TS))
+    src = TmLiveSource(db, wall_clock=_live_clock())
     # First-ever read fails: states must be non-empty and non-live.
     monkeypatch.setattr(src._reader, "latest",
                         lambda *_a, **_k: (_ for _ in ()).throw(
@@ -380,8 +398,8 @@ def test_live_source_start_failure_reports_all_stale(tmp_path, monkeypatch):
 
 def test_live_source_drain_dedups_by_store_timestamp(tmp_path):
     db = tmp_path / "q.tmsession.db"
-    _make_session(db, latest=_fresh_latest(_now_iso()))
-    src = TmLiveSource(db)
+    _make_session(db, latest=_fresh_latest(_LIVE_TS))
+    src = TmLiveSource(db, wall_clock=_live_clock())
     src.start()
     src.drain()
     src._read()                               # same newest_ts — no new sample

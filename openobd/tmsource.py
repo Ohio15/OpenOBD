@@ -33,6 +33,7 @@ import sqlite3
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -306,8 +307,15 @@ class TmLiveSource(DataSource):
     # See TmReplaySource.provenance.
     provenance: str = tmstore.PROVENANCE_REAL
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path,
+                 wall_clock: Callable[[], float] = time.time):
+        """wall_clock: epoch seconds (UTC) the session's newest store timestamp
+        is aged against for the STALE_SESSION_LIMIT_S rule. truck-mcp stamps
+        ts_utc on the wall clock, so the app never passes it; tests inject a
+        virtual clock so freshness doesn't depend on how fast the machine runs.
+        Read cadence and Sample.t stay on time.monotonic."""
         self.path = Path(path)
+        self._wall_clock = wall_clock
         self._reader = tmstore.TmSessionReader(self.path,
                                                timeout=self.BUSY_TIMEOUT_S)
         try:
@@ -418,7 +426,9 @@ class TmLiveSource(DataSource):
 
         session_stale = False
         if not self._archived and newest_ts:
-            age = tmstore.sample_age_s({"ts_utc": newest_ts})
+            age = tmstore.sample_age_s(
+                {"ts_utc": newest_ts},
+                now=datetime.fromtimestamp(self._wall_clock(), timezone.utc))
             session_stale = (age is not None
                              and age > tmstore.STALE_SESSION_LIMIT_S)
 
