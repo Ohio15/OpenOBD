@@ -91,19 +91,10 @@ and confirm it opens on the 2010 Silverado calibration.
 
 ## 6. Back up the installed copy
 
-`_deploy.ps1` overwrites the installed exe and keeps no copy. Save the
-current one first so step 9 has something to restore:
-
-```powershell
-$dir = Join-Path $env:LOCALAPPDATA "Programs\OpenOBD"
-$cur = Join-Path $dir "OpenOBD.exe"
-if (Test-Path $cur) {
-    $v = (Get-Item $cur).VersionInfo.ProductVersion
-    if (-not $v) { $v = "unknown-" + (Get-Item $cur).LastWriteTime.ToString("yyyyMMdd-HHmmss") }
-    New-Item -ItemType Directory -Force (Join-Path $dir "backup") | Out-Null
-    Copy-Item $cur (Join-Path $dir "backup\OpenOBD-$v.exe") -Force
-}
-```
+Automatic: `_deploy.ps1` copies the outgoing exe to
+`%LOCALAPPDATA%\Programs\OpenOBD\backup\OpenOBD-<version>.exe` before it
+overwrites it (an exe with no version resource is named
+`OpenOBD-unknown-<file time>.exe`). Nothing to do here.
 
 ## 7. Deploy
 
@@ -122,7 +113,12 @@ What it does:
   "deploy ABORTED" and copies nothing. It never force-kills the app and
   never installs beside a running copy. Answer the prompt (or close the app)
   and run it again.
-- Copies `dist\openobd.exe` over `OpenOBD.exe` and prints the file time.
+- Backs up the installed exe (step 6), copies `dist\openobd.exe` over
+  `OpenOBD.exe`, and fails with "deploy VERIFY FAILED" if the installed
+  version resource differs from the built one.
+- Creates or repoints the `OpenOBD` shortcut in the Start menu and on the
+  Desktop at the installed exe, so either launches exactly what was just
+  deployed.
 
 ## 8. Check the installed copy
 
@@ -131,7 +127,7 @@ What it does:
 ```
 
 This must match the version from step 5. Then start OpenOBD from the Start
-menu (the shortcut points at this file) and confirm it opens.
+menu or Desktop shortcut and confirm it opens.
 
 ## 9. Roll back
 

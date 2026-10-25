@@ -3,7 +3,7 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
-## Unreleased
+## 0.32.0 — 2026-10-25
 
 ### Fixed (drive logging from the OBDX GT)
 - **Record was refused for the GT itself.** The truck-mcp guard in
@@ -80,6 +80,9 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   P pause/resume replay.
 
 ### Release tooling
+- `_deploy.ps1` backs up the outgoing exe, verifies the installed version
+  resource, and creates/repoints the Start menu and Desktop `OpenOBD`
+  shortcuts at the installed exe.
 - Release path is now in the repo: `_build.bat` is committed (runs from any
   checkout via its own `.venv`, and fails if the built exe's version resource
   differs from `__version__`), and `docs/RELEASE.md` covers test, build,
