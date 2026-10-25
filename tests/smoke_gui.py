@@ -532,6 +532,73 @@ if g.value is not None:
 print("charting + transport OK:",
       len(win._plots), "plots,", len(win._knock_times), "knock markers")
 
+# gauge fluency: eased motion, per-channel GT freshness, collapse, reflow,
+# shortcuts — real widgets, real GtDataSource (no thread, no port)
+from openobd.transport import Sample  # noqa: E402
+from openobd.gaugemotion import fmt_reading  # noqa: E402
+d = win.dashboard
+win.main_tabs.setCurrentWidget(d)
+win.resize(1400, 900)
+app.processEvents()
+gsrc = GtDataSource()
+gsrc._keys = ["rpm", "vss", "maf", "voltage"]
+gsrc._latest = Sample(t=0.0, values={"rpm": 3000.0, "vss": 40.0,
+                                     "maf": 12.34, "voltage": 13.81})
+d._on_gt_ready(gsrc)
+d.timer.stop()                      # tick by hand; the frame animator runs
+d._tick()
+rpm = d.gauges["rpm"]
+assert rpm.value == 3000.0 and rpm.state == "fresh"
+# the readout is the true sample; only the needle eases
+assert rpm.shown < 3000.0, "needle jumped instead of easing"
+t_end = _time.monotonic() + 1.0
+while rpm.motion.moving and _time.monotonic() < t_end:
+    app.processEvents()
+    _time.sleep(0.005)
+assert rpm.shown == 3000.0, f"needle never landed: {rpm.shown}"
+assert fmt_reading(d.gauges["voltage"].value, d.gauges["voltage"].decimals) == "13.8"
+# a PID missing from the next poll round is carried, not blanked
+gsrc._latest = Sample(t=1.0, values={"rpm": 3100.0, "vss": 41.0,
+                                     "voltage": 13.8})
+d._tick()
+assert d.gauges["maf"].state == "carried" and d.gauges["maf"].value == 12.34
+assert d.gauges["rpm"].state == "fresh" and d.gauges["rpm"].value == 3100.0
+# channels the GT can't feed collapse; the RPM/Speed anchors stay put
+assert d.gauges["ect"].isHidden() and d.gauges["tps"].isHidden()
+assert not d.gauges["rpm"].isHidden() and not d.gauges["maf"].isHidden()
+# GT failure still wins over the derived states
+gsrc.fail_streak, gsrc.last_error = 2, "OSError: port gone"
+d._tick()
+assert d.gauges["maf"].state == "failed" and d.gauges["maf"].value is None
+gsrc.fail_streak = 0
+d.stop()
+# bar strip reflows: the grid lays the strip out from the width it is given
+# (driven directly — the window's own minimum width belongs to other tabs)
+from PySide6.QtCore import QRect  # noqa: E402
+from openobd.gauges import GaugeGridLayout  # noqa: E402
+d.bind_source(LogReplaySource(win.log, speed=1.0))
+strip = ("knock_retard", "spark", "tps", "app", "load", "stft", "ltft",
+         "fuel_press", "voltage", "tft", "gear", "ethanol")
+for k in strip:
+    d.gauges[k].set_available(True)       # show the full strip for the test
+grid = next(g for g in d._cluster.findChildren(GaugeGridLayout))
+grid.setGeometry(QRect(0, 0, 1600, 200))
+assert len({d.gauges[k].geometry().y() for k in strip}) == 1, "wide: not 1 row"
+grid.setGeometry(QRect(0, 0, 520, 400))
+rows = {d.gauges[k].geometry().y() for k in strip}
+assert len(rows) == 2, f"narrow strip did not reflow into 2 rows: {rows}"
+assert grid.heightForWidth(520) > grid.heightForWidth(1600)
+d.gauges["ethanol"].set_available(False)  # collapsed gauges take no cell
+assert d.gauges["ethanol"].isHidden()
+# was 1150 px (unwrapped status line); the toolbar buttons are now the floor
+assert d.minimumSizeHint().width() < 1000, d.minimumSizeHint().width()
+# shortcuts exist and are advertised in the tooltips
+assert "Ctrl+G" in d.btn_connect.toolTip() and "Ctrl+R" in d.btn_record.toolTip()
+assert "F5" in d.btn_start.toolTip() and "Shift+F5" in d.btn_stop.toolTip()
+assert len(d._shortcuts) == 6
+print("gauge fluency OK: eased needle landed, carried/failed states, "
+      "collapse + reflow, shortcuts")
+
 # save round trip
 out = "/tmp/smoke_out.cal.json"
 win.path = out
