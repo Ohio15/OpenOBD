@@ -256,6 +256,10 @@ class TmReplaySource(LogReplaySource):
     vocabulary: every channel reports state 'archive', so the cluster badges
     the whole replay as an archived drive instead of styling it live."""
 
+    # True when the session's own provenance says it was fabricated
+    # (tmstore.session_simulated); set by whoever binds the session.
+    simulated: bool = False
+
     def __init__(self, log: Log, speed: float = 1.0):
         super().__init__(log, speed=speed)
         self._archive_states = {k: "archive" for k in self.channels()}
@@ -290,6 +294,8 @@ class TmLiveSource(DataSource):
     # writer's WAL checkpoint must cost a failed read (rendered honestly as
     # stale), never a multi-second UI freeze.
     BUSY_TIMEOUT_S = 0.5
+    # See TmReplaySource.simulated.
+    simulated: bool = False
 
     def __init__(self, path: str | Path):
         self.path = Path(path)

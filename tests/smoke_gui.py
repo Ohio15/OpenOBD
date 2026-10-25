@@ -413,7 +413,7 @@ assert "archived SIMULATED" in _refusal and d.btn_connect.text() in _refusal, _r
 assert "session_export" not in _refusal, _refusal
 d.stop()
 d.bind_source(LogReplaySource(win.log, speed=1.0))
-assert d._tm_simulated is False, "provenance must clear on rebind"
+assert not getattr(d.source, "simulated", False), "provenance must not outlive its source"
 print("record refusal OK: archived SIMULATED named, GT path given, no export hint")
 
 # scalar edit path + dirty tracking + invalid-input restore

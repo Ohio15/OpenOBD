@@ -422,3 +422,10 @@ def test_refusal_live_simulated_session_flags_both():
 def test_refusal_names_the_button_it_is_given():
     msg = tmsource.record_refusal_message(False, False, "Connect")
     assert 'press "Connect", then Record' in msg
+
+
+def test_session_sources_default_to_not_simulated():
+    # The binder sets simulated per instance from tmstore provenance; an
+    # unset source must read as not simulated, never inherit another's flag.
+    assert tmsource.TmLiveSource.simulated is False
+    assert tmsource.TmReplaySource.simulated is False

@@ -3,7 +3,7 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
-## 0.31.1 — 2026-10-25
+## Unreleased
 
 ### Fixed
 - Record on a bound truck-mcp session said "use truck-mcp session_export"
