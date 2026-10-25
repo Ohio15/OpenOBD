@@ -16,7 +16,7 @@ import time
 import threading
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from .logbin import Log, time_axis
 from .pedal import PedalCal, PedalLearner
@@ -273,8 +273,15 @@ class GtDataSource(DataSource):
     #: Smoothing for the measured cycle period (seconds between Samples).
     CYCLE_EMA_ALPHA = 0.3
 
-    def __init__(self, port=None, poll_interval=0.0):
+    def __init__(self, port=None, poll_interval=0.0,
+                 now: Callable[[], float] = time.monotonic):
+        """now: the monotonic clock this source keeps time on (connect time,
+        reading ages, freshness). It must be the clock the GT stamps its
+        readings on (ObdxGt uses time.monotonic), so the app never passes it;
+        tests inject a virtual clock so freshness doesn't depend on how fast
+        the machine runs."""
         from . import gt as _gt  # local import: pyserial only needed on this path
+        self._monotonic = now
         self._gt = _gt.ObdxGt(port=port)
         self._keys = list(_gt.CANONICAL_KEYS)
         self._interval = poll_interval
@@ -419,7 +426,7 @@ class GtDataSource(DataSource):
         return None if self.failing() else self._latest
 
     def _now(self) -> float:
-        return time.monotonic() - (self._t0 or 0.0)
+        return self._monotonic() - (self._t0 or 0.0)
 
     def channel_values(self) -> dict[str, float]:
         """Each channel's LAST READING (display only; it may be several
@@ -535,7 +542,7 @@ class GtDataSource(DataSource):
         try:
             self.device = getattr(self._gt, "device", "OBDX Pro GT")
             self.port_name = getattr(self._gt, "port_name", None)
-            self._t0 = time.monotonic()
+            self._t0 = self._monotonic()
             with self._io_lock:          # no poll thread yet; keep the rule
                 self._new_link()
             first = self._sample(self._gt.poll_timed())
