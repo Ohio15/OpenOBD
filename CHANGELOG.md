@@ -3,9 +3,23 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
-## Unreleased
+## 0.32.1 — 2026-10-25
 
 ### Fixed
+- **The GT no longer shows a constant as live trans fluid temperature.**
+  ECM DID 1644 byte1, polled as `tft` ("Trans Fluid Temp (F)") since
+  commit ee0189f (2026-08-18) on the strength of one match to the DIC, read raw
+  0x83 (195.8 F) on all 1463 rows of the 2026-10-25 drive while coolant rose
+  127 -> 203 F, and 0x0083 in every `tools/snap_*.tsv` snapshot. It is moved
+  from `gt.DID_TABLE` to `gt.REJECTED_DIDS` (never polled, evidence
+  recorded). On the GT path the Trans gauge is now dimmed and new recordings
+  have no "Trans Fluid Temp (F)" column. Logs replayed from HP Tuners and
+  truck-mcp sessions still feed the gauge from their own sources. Note:
+  "Trans Fluid Temp (F)" in OpenOBD GT recordings made before this version is
+  that constant, not a measurement.
+- The candidate source, TCM (7E2 -> 7EA) DID 1940, is unproven and is NOT a
+  channel; `gt.py` documents the drive test that must pass before it is
+  added to `DID_TABLE`.
 - `_deploy.ps1` failed to parse under Windows PowerShell 5.1 (the runbook's
   `powershell -File` path): the BOM-less UTF-8 em dashes were read as ANSI.
   The script is now ASCII; `tools/extract.ps1` (which needs degree signs)

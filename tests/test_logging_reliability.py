@@ -153,8 +153,10 @@ def test_gt_recordable_channels_cover_what_the_ecm_supports():
     src._gt.supported = {"0C", "0D", "05"}
     src._keys = ["voltage"]            # only ATRV answered the first poll
     keys = set(src.recordable_channels())
-    assert {"rpm", "vss", "ect", "voltage", "tft"} <= keys
+    assert {"rpm", "vss", "ect", "voltage"} <= keys
     assert "maf" not in keys           # not supported by this ECM
+    # no verified trans temp source: no column for a constant (v0.32.1)
+    assert "tft" not in keys
 
 
 def test_possible_keys_before_the_probe_is_the_whole_table():
