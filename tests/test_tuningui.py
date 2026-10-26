@@ -862,6 +862,18 @@ def test_no_stock_table_is_a_distinct_state(win, qapp, tmp_path):
     assert nav.changed_state("Table 00") == Navigator.UNCHANGED
     assert not nav.has_dot("Table 02")
     assert "No stock baseline" in nav._leaves["Table 02"][0].toolTip(0)
+    # The icon itself is three-valued, not only the tooltip.
+    assert nav.leaf_state("Table 02") == Navigator.NO_STOCK
+    assert nav.leaf_state("Table 01") == Navigator.CHANGED
+    assert nav.leaf_state("Table 00") == Navigator.UNCHANGED
+    key = {n: nav._leaves[n][0].icon(0).cacheKey()
+           for n in ("Table 00", "Table 01", "Table 02")}
+    assert len(set(key.values())) == 3
+    assert key["Table 02"] == nav._no_stock.cacheKey()
+    nav.refresh_changed("Table 02")   # refresh uses the same mapping
+    assert (nav._leaves["Table 02"][0].icon(0).cacheKey()
+            == nav._no_stock.cacheKey())
+    assert nav.leaf_state("Table 02") == Navigator.NO_STOCK
     # Breadcrumb chip and the diff text in the window.
     show_editor(win)
     t = open_table(win, first_2d_table(win).name)
@@ -882,3 +894,124 @@ def test_no_stock_table_is_a_distinct_state(win, qapp, tmp_path):
         win._update_table_info()
     assert any(text.endswith("changed") for text, _ in
                win.editor_crumb.chips())
+
+
+# --------------------------------------------------------------------------- #
+# Review round 2: finite chokepoint, no-stock readouts, interior blank rows
+# --------------------------------------------------------------------------- #
+def test_math_overflow_refused_at_chokepoint(win):
+    import math
+    show_editor(win)
+    t = open_table(win, first_2d_table(win).name)
+    restore_stock(win, t)
+    t.values[0][0] = 1.0 if t.values[0][0] == 0 else t.values[0][0]
+    win.current_model.refresh_all()
+    select_rect(win, 0, 0, 0, 0)
+    win.amount_spin.setValue(1e9)
+    refused = False
+    for _ in range(40):          # 1e9 ** 40 overflows a double
+        idx, n, v0 = (win.undo_stack.index(), win.undo_stack.count(),
+                      t.values[0][0])
+        win._math_op("mul")
+        assert all(math.isfinite(v) for row in t.values for v in row)
+        if "edit refused: non-finite result" in \
+                win.statusBar().currentMessage():
+            refused = True
+            assert win.undo_stack.index() == idx
+            assert win.undo_stack.count() == n
+            assert t.values[0][0] == v0
+            break
+    assert refused
+    while win.undo_stack.canUndo() and win.undo_stack.undoText() == "multiply":
+        win.undo_stack.undo()
+    win.amount_spin.setValue(0.0)
+    restore_stock(win, t)
+
+
+def test_smooth_overflow_refused_at_chokepoint(win):
+    import math
+    show_editor(win)
+    t = open_table(win, first_2d_table(win).name)
+    restore_stock(win, t)
+    for r in range(3):
+        for c in range(3):
+            t.values[r][c] = 1.7e308   # neighbour sum overflows to inf
+    win.current_model.refresh_all()
+    snapshot = [row[:] for row in t.values]
+    select_rect(win, 1, 1, 1, 1)
+    n = win.undo_stack.count()
+    win._smooth()
+    assert win.undo_stack.count() == n
+    assert t.values == snapshot
+    assert all(math.isfinite(v) for row in t.values for v in row)
+    assert "non-finite" in win.statusBar().currentMessage()
+    restore_stock(win, t)
+
+
+def test_bulk_and_scalar_commands_refuse_non_finite(win):
+    from openobd.app import BulkEditCommand, ScalarEditCommand
+    t = make_table()
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        with pytest.raises(ValueError):
+            BulkEditCommand(win, t, {(0, 0): (0.0, bad)}, "x")
+        with pytest.raises(ValueError):
+            ScalarEditCommand(win, 0, 0.0, bad)
+
+
+def test_scalar_edit_1e999_refused(win):
+    i = next(k for k, s in enumerate(win.cal.scalars)
+             if s.stock_value is not None)
+    s = win.cal.scalars[i]
+    before = s.value
+    n = win.undo_stack.count()
+    win._on_scalar_edit(i, "1e999")
+    assert win.undo_stack.count() == n and s.value == before
+
+
+def test_selection_stats_no_stock_baseline():
+    from openobd.tuningui import format_selection_stats
+    t = make_table()
+    t.stock_values = None
+    st = editops.selection_stats(t, [(0, 0), (0, 1)])
+    assert st["changed"] is None and st["n"] == 2
+    assert editops.selection_stats(t, [])["changed"] is None
+    text = format_selection_stats(st, "deg")
+    assert "no stock baseline" in text and "changed" not in text
+    assert "1 changed" in format_selection_stats(
+        {"n": 1, "min": 1.0, "max": 1.0, "mean": 1.0, "changed": 1})
+
+
+def test_scalars_crumb_no_stock_baseline(win):
+    saved = [s.stock_value for s in win.cal.scalars]
+    try:
+        for s in win.cal.scalars:
+            s.stock_value = None
+        win._update_scalars_crumb()
+        chips = win.scalars_crumb.chips()
+        assert ("no stock baseline", "muted") in chips
+        assert not any(text.endswith("changed") for text, _ in chips)
+    finally:
+        for s, v in zip(win.cal.scalars, saved):
+            s.stock_value = v
+        win._update_scalars_crumb()
+    assert any(text.endswith("changed") for text, _ in
+               win.scalars_crumb.chips())
+
+
+def test_parse_tsv_keeps_interior_blank_rows(win, qapp):
+    from PySide6.QtWidgets import QApplication
+    assert editops.parse_tsv("1\n\n3") == [[1.0], [None], [3.0]]
+    assert editops.parse_tsv("1\n\n3\n\n\n") == [[1.0], [None], [3.0]]
+    grid, rejects = editops.parse_tsv_checked("1\n\n3")
+    assert rejects == [] and grid == [[1.0], [None], [3.0]]
+    show_editor(win)
+    t = open_table(win, first_2d_table(win).name)
+    restore_stock(win, t)
+    mid = t.values[1][0]
+    QApplication.clipboard().setText("1\n\n3")
+    select_rect(win, 0, 0, 0, 0)
+    win.paste_selection()
+    assert t.values[0][0] == 1.0 and t.values[2][0] == 3.0
+    assert t.values[1][0] == mid
+    win.undo_stack.undo()
+    restore_stock(win, t)

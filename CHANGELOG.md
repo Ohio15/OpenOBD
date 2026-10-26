@@ -67,6 +67,20 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
 - Diff colour scale tolerates a stock grid whose shape differs from the
   values grid. Dead `CalTableModel.revert_cell` (bypassed undo) removed.
 
+### Fixed (review round 2 + security gate pass 2)
+- Non-finite RESULTS are refused too: every table write (cell edit, math,
+  smooth, interpolate, paste, revert) passes through `BulkEditCommand`, which
+  rejects any non-finite new value before it becomes an undoable edit
+  (repeated x1e9 overflowing to inf now reports "edit refused: non-finite
+  result"); `ScalarEditCommand` applies the same `editops.parse_number`
+  gate, and the scalar editor parses with it instead of its own check.
+- The selection readout and the Scalars breadcrumb say "no stock baseline"
+  instead of "0 changed" when there is nothing to compare against.
+- The navigator icon is three-valued: changed dot, blank for unchanged, and
+  a hollow muted ring for a table with no stock baseline.
+- Pasting a TSV with an interior blank line (Excel's empty cell in a
+  one-column range) keeps that row as blanks; rows below no longer shift up.
+
 ## 0.34.1 — 2026-10-26
 
 ### Fixed (release tooling, discovery 455efc83)

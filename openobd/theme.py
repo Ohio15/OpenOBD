@@ -580,6 +580,22 @@ def changed_dot_icon(size: int = 10):
     return QIcon(px)
 
 
+def no_stock_icon(size: int = 10):
+    """The navigator's no-stock-baseline marker: a hollow muted ring, so a
+    table whose changes cannot be tracked never looks verified-unchanged."""
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QIcon, QPainter, QPen, QPixmap
+    px = QPixmap(size * 2, size * 2)
+    px.fill(Qt.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(QPen(qcolor("text-muted"), max(1.5, size * 0.18)))
+    p.setBrush(Qt.NoBrush)
+    p.drawEllipse(QPointF(size, size), size * 0.45, size * 0.45)
+    p.end()
+    return QIcon(px)
+
+
 def blank_icon(size: int = 10):
     """Same footprint as changed_dot_icon, nothing drawn: keeps the
     navigator's rows aligned whether or not a table carries the dot."""

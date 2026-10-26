@@ -77,7 +77,8 @@ def fmt_num(v: Optional[float]) -> str:
 
 def format_selection_stats(stats: dict, unit: str = "") -> str:
     """The editor's selection readout: 'n cells · min · max · mean · Δ vs
-    stock n changed' (editops.selection_stats input)."""
+    stock n changed' (editops.selection_stats input); 'no stock baseline'
+    in place of the Δ count when changed is None (nothing to compare to)."""
     n = stats.get("n", 0)
     if not n:
         return "No selection"
@@ -85,8 +86,9 @@ def format_selection_stats(stats: dict, unit: str = "") -> str:
     sfx = f" {u}" if u else ""
     return (f"{n} cell{'s' if n != 1 else ''}  ·  min {fmt_num(stats['min'])}"
             f"{sfx}  ·  max {fmt_num(stats['max'])}{sfx}  ·  mean "
-            f"{fmt_num(stats['mean'])}{sfx}  ·  Δ vs stock "
-            f"{stats['changed']} changed")
+            f"{fmt_num(stats['mean'])}{sfx}  ·  "
+            + ("no stock baseline" if stats.get("changed") is None
+               else f"Δ vs stock {stats['changed']} changed"))
 
 
 # --------------------------------------------------------------------------- #
@@ -200,6 +202,7 @@ class Navigator(QWidget):
         self._settings = settings
         self._dot = theme.changed_dot_icon()
         self._blank = theme.blank_icon()
+        self._no_stock = theme.no_stock_icon()
         self._needle = ""
 
         lay = QVBoxLayout(self)
@@ -268,9 +271,7 @@ class Navigator(QWidget):
         if self.changed_state(t.name) == self.NO_STOCK:
             tip += "\nNo stock baseline: changes cannot be tracked"
         leaf.setToolTip(0, tip)
-        changed = self.is_changed(t.name)
-        leaf.setIcon(0, self._dot if changed else self._blank)
-        leaf.setData(0, Qt.UserRole + 2, changed)
+        self._apply_state(leaf, self.changed_state(t.name))
         self._leaves.setdefault(t.name, []).append(leaf)
         return leaf
 
@@ -394,17 +395,29 @@ class Navigator(QWidget):
         from .editops import changed_cells
         return bool(changed_cells(t))
 
-    def has_dot(self, name: str) -> bool:
+    STATE_ROLE = Qt.UserRole + 2
+
+    def _apply_state(self, leaf: QTreeWidgetItem, state: str) -> None:
+        """One mapping from changed_state to the leaf icon, used by both
+        _make_leaf and refresh_changed: dot / blank / hollow muted ring."""
+        icon = {self.CHANGED: self._dot, self.UNCHANGED: self._blank,
+                self.NO_STOCK: self._no_stock}[state]
+        leaf.setIcon(0, icon)
+        leaf.setData(0, self.STATE_ROLE, state)
+
+    def leaf_state(self, name: str) -> Optional[str]:
         leaves = self._leaves.get(name) or []
-        return bool(leaves) and leaves[0].data(0, Qt.UserRole + 2) is True
+        return leaves[0].data(0, self.STATE_ROLE) if leaves else None
+
+    def has_dot(self, name: str) -> bool:
+        return self.leaf_state(name) == self.CHANGED
 
     def refresh_changed(self, name: Optional[str] = None) -> None:
         names = [name] if name else list(self._leaves)
         for n in names:
-            changed = self.is_changed(n)
+            state = self.changed_state(n)
             for leaf in self._leaves.get(n, []):
-                leaf.setIcon(0, self._dot if changed else self._blank)
-                leaf.setData(0, Qt.UserRole + 2, changed)
+                self._apply_state(leaf, state)
 
     # -- selection / activation -------------------------------------------- #
     def select_name(self, name: str) -> None:

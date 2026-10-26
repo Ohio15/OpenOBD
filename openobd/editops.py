@@ -156,17 +156,21 @@ def pct_delta(value: float, stock: float) -> Optional[float]:
 
 def selection_stats(table: Table, cells: Cells) -> dict:
     """Statistics of the selected cells: n, min, max, mean (None for an
-    empty selection) and how many of them differ from stock."""
+    empty selection) and how many of them differ from stock. changed is
+    None when the table has no stock baseline: unknown, never 0."""
     uniq = sorted(set(cells))
     vals = [table.values[r][c] for r, c in uniq]
+    no_stock = table.stock_values is None
     if not vals:
-        return {"n": 0, "min": None, "max": None, "mean": None, "changed": 0}
+        return {"n": 0, "min": None, "max": None, "mean": None,
+                "changed": None if no_stock else 0}
     return {
         "n": len(vals),
         "min": min(vals),
         "max": max(vals),
         "mean": sum(vals) / len(vals),
-        "changed": sum(1 for r, c in uniq if table.cell_changed(r, c)),
+        "changed": None if no_stock else sum(
+            1 for r, c in uniq if table.cell_changed(r, c)),
     }
 
 
@@ -227,11 +231,12 @@ def parse_number(value) -> Optional[float]:
 
 def parse_tsv(text: str) -> list[list[Optional[float]]]:
     """Clipboard TSV -> grid of floats (None for blanks, non-numeric and
-    non-finite fields). Accepts trailing newline; tolerates CRLF."""
+    non-finite fields). Accepts trailing newline; tolerates CRLF. An
+    interior blank line is a row of blanks (Excel writes a bare newline for
+    an empty cell in a one-column range), so rows below keep their place;
+    only trailing all-blank rows are dropped."""
     grid: list[list[Optional[float]]] = []
     for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        if line == "" and grid:  # trailing blank line
-            continue
         row: list[Optional[float]] = []
         for cell in line.split("\t"):
             cell = cell.strip()

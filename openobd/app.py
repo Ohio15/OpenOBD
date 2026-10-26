@@ -31,7 +31,6 @@ Run:  python -m openobd.app  [optional path to a .cal.json]
 from __future__ import annotations
 
 import csv
-import math
 import os
 import sys
 import threading
@@ -1560,6 +1559,13 @@ class BulkEditCommand(QUndoCommand):
     tables and back."""
 
     def __init__(self, win: "MainWindow", table, changes, text: str):
+        # The single chokepoint every table write passes through (cell edit,
+        # math, smooth, interpolate, paste, revert): a non-finite result
+        # (e.g. repeated x1e9 overflowing to inf) is refused before it can
+        # become an undoable edit.
+        for _rc, (_old, new) in changes.items():
+            if editops.parse_number(new) is None:
+                raise ValueError(f"non-finite result: {new!r}")
         super().__init__(text)
         self.win = win
         self.table = table
@@ -1581,6 +1587,8 @@ class ScalarEditCommand(QUndoCommand):
     stack. Holds the scalar's index into Calibration.scalars."""
 
     def __init__(self, win: "MainWindow", index: int, old: float, new: float):
+        if editops.parse_number(new) is None:  # same gate as BulkEditCommand
+            raise ValueError(f"non-finite result: {new!r}")
         super().__init__(f"edit {win.cal.scalars[index].name}")
         self.win = win
         self.index = index
@@ -2132,8 +2140,7 @@ class MainWindow(QMainWindow):
 
     # -- editing: undo plumbing --------------------------------------------- #
     def _on_cell_edit(self, r, c, old, new):
-        self.undo_stack.push(BulkEditCommand(
-            self, self.current_model.table, {(r, c): (old, new)}, "edit cell"))
+        self._push_changes({(r, c): (old, new)}, "edit cell", quiet=True)
 
     def _table_touched(self, table):
         """Called by undo commands after writing to a Table."""
@@ -2144,13 +2151,22 @@ class MainWindow(QMainWindow):
             self._update_table_info()
             self._update_selection_readout()
 
-    def _push_changes(self, changes, text):
+    def _push_changes(self, changes, text, quiet: bool = False):
         if not changes:
             self.statusBar().showMessage(f"{text}: no cells affected", 3000)
-            return
-        self.undo_stack.push(BulkEditCommand(
-            self, self.current_model.table, changes, text))
-        self.statusBar().showMessage(f"{text}: {len(changes)} cell(s)", 3000)
+            return False
+        try:
+            cmd = BulkEditCommand(self, self.current_model.table, changes, text)
+        except ValueError:
+            self.current_model.refresh_all()
+            self.statusBar().showMessage(
+                f"{text}: edit refused: non-finite result", 5000)
+            return False
+        self.undo_stack.push(cmd)
+        if not quiet:
+            self.statusBar().showMessage(
+                f"{text}: {len(changes)} cell(s)", 3000)
+        return True
 
     def _selected_cells(self):
         if not self.current_model:
@@ -2257,8 +2273,7 @@ class MainWindow(QMainWindow):
         t = self.current_model.table
         clipped = editops.paste_clipped(t, r0, c0, grid)
         changes = editops.paste_grid(t, r0, c0, grid)
-        self._push_changes(changes, "paste")
-        if clipped:
+        if self._push_changes(changes, "paste") and clipped:
             self.statusBar().showMessage(
                 f"paste: {len(changes)} cell(s); {clipped} outside the "
                 "table clipped", 5000)
@@ -2396,12 +2411,18 @@ class MainWindow(QMainWindow):
         self.scalars_crumb.set_path(["Scalars",
                                      cat or "All categories"])
         shown = self.scalars_view.visible_scalar_count()
-        changed = sum(1 for s in self.cal.scalars
-                      if s.changed and (not cat or
-                                        (s.category or "Uncategorized") == cat))
+        in_cat = [s for s in self.cal.scalars
+                  if not cat or (s.category or "Uncategorized") == cat]
+        changed = sum(1 for s in in_cat if s.changed)
+        if any(s.stock_value is not None for s in in_cat):
+            delta_chip = (f"{changed} changed",
+                          "danger" if changed else "neutral")
+        else:
+            # No baseline to compare with: unknown, never "0 changed".
+            delta_chip = ("no stock baseline", "muted")
         self.scalars_crumb.set_chips([
             (f"{shown} parameter{'' if shown == 1 else 's'}", "neutral"),
-            (f"{changed} changed", "danger" if changed else "neutral"),
+            delta_chip,
         ])
         self.scalars_crumb.set_note(
             "Double-click a value to edit (Ctrl+Z undoes). Δ is the "
@@ -2409,11 +2430,8 @@ class MainWindow(QMainWindow):
 
     def _on_scalar_edit(self, i: int, text: str):
         s = self.cal.scalars[i]
-        try:
-            v = float(text)
-            if not math.isfinite(v):
-                raise ValueError(text)
-        except ValueError:
+        v = editops.parse_number(text)
+        if v is None:
             # Restore the display so the cell never shows a value the model
             # doesn't hold.
             self.scalars_view.refresh(i)
@@ -2423,7 +2441,17 @@ class MainWindow(QMainWindow):
         if v == s.value:
             self.scalars_view.refresh(i)
             return
-        self.undo_stack.push(ScalarEditCommand(self, i, s.value, v))
+        self._push_scalar(i, s.value, v)
+
+    def _push_scalar(self, i: int, old: float, new: float):
+        try:
+            cmd = ScalarEditCommand(self, i, old, new)
+        except ValueError:
+            self.scalars_view.refresh(i)
+            self.statusBar().showMessage(
+                "edit refused: non-finite result", 5000)
+            return
+        self.undo_stack.push(cmd)
 
     def _revert_scalar(self):
         idx = self.scalars_view.view.currentIndex()
@@ -2438,8 +2466,7 @@ class MainWindow(QMainWindow):
         if s.stock_value is None or s.value == s.stock_value:
             self.statusBar().showMessage(f"{s.name}: already stock", 3000)
             return
-        self.undo_stack.push(ScalarEditCommand(self, int(i), s.value,
-                                               s.stock_value))
+        self._push_scalar(int(i), s.value, s.stock_value)
 
     def _scalar_touched(self, i: int):
         """Called by ScalarEditCommand after writing a Scalar."""
