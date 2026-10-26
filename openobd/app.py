@@ -84,7 +84,7 @@ from .recorder import (
 from PySide6.QtCore import QStandardPaths
 from .recorder import (  # noqa: E402  (log folder setting, v0.39.0)
     LOG_DIR_KEY, log_dir, log_dir_unavailable, probe_log_dir,
-    used_configured_dir,
+    resolve_log_dir, used_configured_dir,
 )
 
 # Gauge widgets, cluster layouts and the dashboard style registry live in
@@ -1921,13 +1921,24 @@ class MainWindow(QMainWindow):
 
     # -- log folder (Settings → Log folder…) -------------------------------- #
     def log_folder_text(self) -> str:
-        """The folder recordings go to, as shown in Settings."""
-        configured = configured_log_dir()
-        if configured:
-            return configured
+        """The folder recordings go to, as shown in Settings: the configured
+        folder as it resolves (variables and ~ expanded), or the default
+        marked "(default)". A configured value that cannot resolve shows the
+        default it falls back to plus why, never the raw setting as if it
+        were where recordings land."""
         defaults = self.dashboard._record_dirs()
-        return (f"{defaults[0]} (default)" if defaults
-                else "default (no Documents folder found)")
+        default_text = (f"{defaults[0]} (default)" if defaults
+                        else "default (no Documents folder found)")
+        folder, problem = resolve_log_dir(configured_log_dir())
+        if folder:
+            return folder
+        return f"{default_text} — {problem}" if problem else default_text
+
+    def _resolved_log_folder(self) -> str:
+        """The configured log folder as it resolves, or "" when unset or
+        unusable (callers then use a default)."""
+        folder, _problem = resolve_log_dir(configured_log_dir())
+        return folder or ""
 
     def _log_folder_row(self) -> QWidget:
         """Preferences row: the current log folder (elided, plain text, full
@@ -1961,7 +1972,7 @@ class MainWindow(QMainWindow):
         """Pick the folder new recordings go to. Cancel changes nothing. The
         folder is created if missing and must pass a real write probe (a
         OneDrive placeholder can look writable and still refuse a file)."""
-        start = configured_log_dir() or next(
+        start = self._resolved_log_folder() or next(
             iter(self.dashboard._record_dirs()), "")
         chosen = QFileDialog.getExistingDirectory(self, "Log folder", start)
         if not chosen:
@@ -2978,7 +2989,7 @@ class MainWindow(QMainWindow):
     def _log_browse_dir(self) -> str:
         """Load log opens in the folder recordings go to (the configured log
         folder, else the default), or Qt's default when none exists yet."""
-        for d in [configured_log_dir()] + self.dashboard._record_dirs():
+        for d in [self._resolved_log_folder()] + self.dashboard._record_dirs():
             if d and os.path.isdir(d):
                 return d
         return ""

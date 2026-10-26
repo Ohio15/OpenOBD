@@ -187,6 +187,41 @@ def test_relative_or_unexpanded_setting_is_refused(tmp_path, monkeypatch):
     assert os.listdir(tmp_path) == []            # nothing created under CWD
 
 
+# Round 2: an empty variable leaves a rooted-but-driveless path ("\\Logs"),
+# which Python <= 3.12 calls absolute on Windows; it must be refused too.
+def test_empty_env_var_leaving_a_driveless_path_is_refused(tmp_path,
+                                                           monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENOBD_TEST_EMPTY", "")
+    raw = (os.path.join("%OPENOBD_TEST_EMPTY%", "Logs")
+           if sys.platform == "win32" else "$OPENOBD_TEST_EMPTY/Logs")
+    defaults = [str(tmp_path / "d")]
+    if sys.platform == "win32":
+        folder, problem = resolve_log_dir(raw)
+        assert folder is None
+        assert problem == (f"Log folder must be an absolute path: {raw} "
+                           "(using default)")
+        dirs, problem = log_dir(raw, defaults)
+        assert dirs == defaults and problem is not None
+        assert not used_configured_dir(raw, os.path.join("\\Logs", "x.csv"))
+        # Python 3.13 already calls "\Logs" relative; emulate the <= 3.12
+        # ntpath.isabs (rooted == absolute) so the drive guard itself is
+        # exercised on every interpreter.
+        import ntpath
+        monkeypatch.setattr(ntpath, "isabs",
+                            lambda p: ntpath.splitroot(p)[1] != "")
+        assert os.path.isabs("\\Logs")
+        assert resolve_log_dir(raw)[0] is None
+        assert resolve_log_dir("C:\\Logs") == ("C:\\Logs", None)
+        monkeypatch.undo()
+        # A UNC prefix still counts as a drive.
+        assert resolve_log_dir(r"\\server\share\Logs") == (
+            r"\\server\share\Logs", None)
+    else:
+        # POSIX: "/Logs" is genuinely absolute; isabs is sufficient there.
+        assert resolve_log_dir(raw) == ("/Logs", None)
+
+
 def test_relative_setting_is_reported_on_record(dash, tmp_path, monkeypatch):
     d, _src = dash
     monkeypatch.chdir(tmp_path)
@@ -398,3 +433,51 @@ def test_preferences_row_shows_the_folder_as_plain_text(win, tmp_path):
     assert label.full_text() == cfg
     assert label.textFormat() == Qt.PlainText
     assert "<i>" not in label.toolTip()
+
+
+# Round 2: Settings shows (and the chooser starts in) the folder the setting
+# resolves to, never the raw value; an unusable value shows the default plus
+# why.
+def test_settings_text_and_chooser_use_the_resolved_folder(win, monkeypatch,
+                                                           tmp_path):
+    from openobd.app import QFileDialog
+    monkeypatch.setenv("OPENOBD_TEST_LOGROOT2", str(tmp_path / "root"))
+    raw = (os.path.join("%OPENOBD_TEST_LOGROOT2%", "Logs")
+           if sys.platform == "win32" else "$OPENOBD_TEST_LOGROOT2/Logs")
+    want = str(tmp_path / "root" / "Logs")
+    os.makedirs(want)
+    _set_dir(raw)
+    assert win.log_folder_text() == want
+    assert "(default)" not in win.log_folder_text()
+    assert win._log_browse_dir() == want
+    seen = {}
+
+    def pick(parent, title, start):
+        seen["start"] = start
+        return ""
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(pick))
+    assert not win.choose_log_folder()
+    assert seen["start"] == want
+
+
+def test_settings_text_for_an_unusable_setting_shows_default_and_why(
+        win, monkeypatch, tmp_path):
+    from openobd.app import QFileDialog
+    monkeypatch.chdir(tmp_path)
+    _set_dir("Logs")
+    defaults = win.dashboard._record_dirs()
+    text = win.log_folder_text()
+    assert text.startswith(f"{defaults[0]} (default)")
+    assert ("Log folder must be an absolute path: Logs (using default)"
+            in text)
+    seen = {}
+
+    def pick(parent, title, start):
+        seen["start"] = start
+        return ""
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(pick))
+    assert not win.choose_log_folder()
+    assert seen["start"] == defaults[0]
+    assert not (tmp_path / "Logs").exists()

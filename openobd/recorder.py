@@ -184,12 +184,18 @@ def resolve_log_dir(configured: Optional[str]
     the user's folder, not a literal "%USERPROFILE%" folder under the
     working directory). A value that is still not absolute afterwards is
     refused with a problem — a relative folder would land wherever the
-    process happened to start. Unset -> (None, None)."""
+    process happened to start. On Windows it must also carry a drive or UNC
+    prefix: "\\Logs" (e.g. "%FOO%\\Logs" with FOO empty) is rooted on
+    whatever drive is current, and Python <= 3.12 calls it absolute.
+    Unset -> (None, None)."""
     raw = (configured or "").strip()
     if not raw:
         return None, None
     folder = os.path.normpath(os.path.expanduser(os.path.expandvars(raw)))
-    if not os.path.isabs(folder):
+    absolute = os.path.isabs(folder)
+    if absolute and os.name == "nt":
+        absolute = bool(os.path.splitdrive(folder)[0])
+    if not absolute:
         return None, f"Log folder must be an absolute path: {raw} (using default)"
     return folder, None
 

@@ -1003,6 +1003,31 @@ def test_as_of_says_no_samples_yet(env):
     assert pg._as_of == "no samples yet"
     assert pg.crumb.note.full_text().endswith("no samples yet")
     assert "as of" not in pg.crumb.note.full_text()
+    # Round 2: nothing has advanced, so it never reads "live" on no evidence.
+    # Hold follows the existing rule (disabled only for archived drives).
+    assert pg.crumb.chips()[0] == ("not advancing", "warning")
+    assert pg._chart.chart.caption == "not advancing"
+    assert pg.act_hold.isEnabled() == (not pg._archived)
+    assert pg._tiles["rpm"].state != "fresh"
+
+
+def test_opened_file_with_no_samples_reads_not_advancing(env):
+    from openobd.livedata import OPENED_FILE_CHIP
+    outside = _outside(env, "empty")
+    conn = sqlite3.connect(str(outside))
+    conn.execute("UPDATE channel_latest SET ts_utc=NULL, sample_id=NULL "
+                 "WHERE channel_id > 0")
+    conn.execute("DELETE FROM sample WHERE id > 0")
+    conn.commit()
+    conn.close()
+    pg = env.make()
+    assert pg.open_session_file(str(outside))
+    chips = pg.crumb.chips()
+    assert chips[0] == ("not advancing", "warning")
+    assert OPENED_FILE_CHIP in chips
+    pg._tick()
+    assert pg.crumb.chips()[0] == ("not advancing", "warning")
+    assert pg._as_of == "no samples yet"
 
 
 def test_as_of_text_formats():
@@ -1039,6 +1064,33 @@ def test_opened_file_later_discovered_drops_the_opened_chip(env):
     assert OPENED_FILE_CHIP not in pg.crumb.chips()
 
 
+# Round 2: opening a second file must not drop the first from the picker.
+def test_two_opened_files_survive_a_rescan_and_stay_bound(env):
+    from openobd.livedata import OPENED_FILE_CHIP, OPENED_ROLE
+    _session(env)
+    pg = env.make()
+    a = _outside(env, "alpha")
+    b = _outside(env, "bravo")
+    assert pg.open_session_file(str(a))
+    assert pg.open_session_file(str(b))
+    assert len(pg._opened) == 2
+    _pick(pg, a)
+    assert os.path.samefile(pg._reader_path, a)
+    _session(env, "another")                     # the session set changes
+    pg.rescan_sessions()
+    opened = [pg._picker.itemData(i) for i in range(pg._picker.count())
+              if pg._picker.itemData(i, OPENED_ROLE)]
+    assert len(opened) == 2
+    assert any(os.path.samefile(p, a) for p in opened)
+    assert any(os.path.samefile(p, b) for p in opened)
+    # Opened entries stay at the top of the picker.
+    assert all(pg._picker.itemData(i, OPENED_ROLE) for i in range(2))
+    # A is still the bound session, and the picker agrees with the reader.
+    assert os.path.samefile(pg._reader_path, a)
+    assert os.path.samefile(pg._picker.currentData(), pg._reader_path)
+    assert pg._bound_opened and OPENED_FILE_CHIP in pg.crumb.chips()
+
+
 # R4: same-file matching survives junctions, symlinks and relative paths.
 def test_same_file_relative_vs_absolute(tmp_path, monkeypatch):
     from openobd.livedata import _same_file
@@ -1046,7 +1098,8 @@ def test_same_file_relative_vs_absolute(tmp_path, monkeypatch):
     f.write_bytes(b"x")
     monkeypatch.chdir(tmp_path)
     assert _same_file("x.tmsession.db", str(f))
-    assert _same_file(str(f).upper(), str(f))
+    if sys.platform == "win32":  # case-insensitive filesystem only
+        assert _same_file(str(f).upper(), str(f))
     assert not _same_file(str(tmp_path / "missing.db"), str(f))
 
 

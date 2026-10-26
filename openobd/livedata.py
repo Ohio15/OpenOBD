@@ -627,13 +627,25 @@ class LiveDataPage(QWidget):
                 return i
         return -1
 
+    def _discovered_index_of(self, path: str) -> int:
+        """Index of the scan-discovered entry (no OPENED_ROLE) for path."""
+        for i in range(self._picker.count()):
+            data = self._picker.itemData(i)
+            opened = self._picker.itemData(i, OPENED_ROLE)
+            if isinstance(data, str) and not opened and _same_file(data, path):
+                return i
+        return -1
+
     def _add_opened_items(self):
-        """Put the opened files at the top of the picker (newest first),
-        skipping any a scan now discovers itself (that entry, with live
-        semantics, wins)."""
+        """Put the opened files at the top of the picker (newest first).
+        An opened file a scan now discovers itself is dropped (the discovered
+        entry wins); an opened entry already present is kept as it is — it
+        must never be dropped because of its own "file · " entry."""
         for path in reversed(list(self._opened)):
-            if self._picker_index_of(path) >= 0:
+            if self._discovered_index_of(path) >= 0:
                 self._opened.remove(path)
+                continue
+            if self._picker_index_of(path) >= 0:
                 continue
             text = f"file · {Path(path).name}"
             self._picker.insertItem(0, text, path)
@@ -1366,10 +1378,13 @@ class LiveDataPage(QWidget):
 
         # Is a LIVE session actually advancing? If its newest committed sample is
         # old in wall-clock, the logger stopped — nothing may render as live.
+        # A session with no samples yet (or an unparseable newest stamp) has
+        # nothing advancing either: it reads "not advancing" until a sample
+        # arrives, never "live" on no evidence.
         session_stale = False
         if not self._archived:
             age = tmstore.sample_age_s({"ts_utc": newest_ts}) if newest_ts else None
-            session_stale = age is not None and age > tmstore.STALE_SESSION_LIMIT_S
+            session_stale = age is None or age > tmstore.STALE_SESSION_LIMIT_S
 
         self._last_latest = latest
         self._last_stale = session_stale

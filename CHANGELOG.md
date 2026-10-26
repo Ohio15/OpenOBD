@@ -39,6 +39,19 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   default)". The write check gives up after 3 s (a cloud-only OneDrive
   folder or a stalled share) and reports "timed out", using the default.
 
+### Fixed (review round 2)
+- Opening a second session file no longer drops the first from the picker:
+  both stay across Rescan, and the one you picked stays bound with the
+  picker showing it.
+- A session with no samples yet (opened or discovered) reads "not
+  advancing", never "live", until a sample arrives.
+- On Windows a log folder without a drive or \\server\share prefix (e.g.
+  "%FOO%\Logs" with FOO empty, which becomes "\Logs") is refused as not
+  absolute instead of landing on whatever drive is current.
+- Settings shows the log folder as it resolves (variables expanded), and an
+  unusable setting shows the default folder plus why; Log folder… starts in
+  the resolved folder.
+
 ## 0.38.1 — 2026-10-26
 
 ### Fixed
