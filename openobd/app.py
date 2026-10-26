@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import csv
 import html
+import logging
 import os
 import sys
 import threading
@@ -56,8 +57,9 @@ from PySide6.QtWidgets import (
 import numpy as np
 import pyqtgraph as pg
 
-from . import __version__, editops, theme
-from .appsettings import (app_settings, read_settings, save_pref,
+from . import __version__, appsettings, editops, theme
+from .appsettings import (SettingsError, app_settings, read_settings,
+                          save_pref, set_on_pref_write_failed,
                           write_settings)
 from .calspec import Calibration
 from .diagui import DiagnosticsPage
@@ -89,6 +91,8 @@ from PySide6.QtCore import QStandardPaths
 from .gauges import (  # noqa: E402
     DASHBOARD_STYLES, GaugeBase, build_classic_cluster, build_modern_cluster,
 )
+
+_log = logging.getLogger(__name__)
 
 
 # Column labels for recorded datalogs. Chosen so logbin.map_channel maps them
@@ -614,6 +618,32 @@ class Dashboard(QWidget):
         return (f"settings pedal_cal/{self._pedal_key}" if self._pedal_key
                 else "session-only (VIN not examined on this connection)")
 
+    def _store_pedal_cal(self, vin: str, cal: PedalCal) -> Optional[str]:
+        """The ONE save path for a pedal calibration (the live GT's and
+        Learn's from a log): store it under `vin`, or report it NOT saved on
+        the status line and in the log, and -- when `vin` is this
+        connection's -- in _pedal_save_error, so the recording's
+        pedal_calibration.persistence never claims "settings pedal_cal/<VIN>"
+        for a value that is not there. Returns None when stored, else the
+        error. Only a SettingsError is a save failure; anything else is a
+        defect and propagates."""
+        try:
+            save_pedal_cal(vin, cal)
+            err = None
+        except SettingsError as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            _log.warning("pedal calibration NOT saved: %s", exc)
+            self.status.setText(
+                f"Could not store the pedal calibration for VIN {vin}: {exc}")
+        if vin == self._pedal_key and err != self._pedal_save_error:
+            self._pedal_save_error = err
+            rec = self._recorder
+            if self.recording and rec is not None:
+                pc = rec.meta.setdefault("pedal_calibration", {})
+                pc["persistence"] = self._persistence()
+                self._schedule_meta()
+        return err
+
     def _schedule_meta(self) -> None:
         if self._recorder is not None and not self._meta_timer.isActive():
             self._meta_timer.start()
@@ -644,13 +674,7 @@ class Dashboard(QWidget):
         if cal.rest is None and cal.full is None:
             return
         if self._pedal_key and not self._pedal_store_error:
-            try:
-                save_pedal_cal(self._pedal_key, cal)
-                self._pedal_save_error = None
-            except Exception as exc:       # settings store unavailable
-                self._pedal_save_error = f"{type(exc).__name__}: {exc}"
-                self.status.setText(
-                    f"Could not store the pedal calibration: {exc}")
+            self._store_pedal_cal(self._pedal_key, cal)
         rec = self._recorder
         if self.recording and rec is not None:
             entry = {k: v for k, v in cal.to_dict().items() if k != "rules"}
@@ -1673,6 +1697,11 @@ class MainWindow(QMainWindow):
         # Top level: Dashboard opens first; Tuning holds the monitor/scan/tune
         # workflow; Diagnostics holds troubleshooting/active tests/codes.
         self.settings = app_settings()
+        # Every save_pref call site (splitters, recent list, collapsed
+        # groups, layout, ...) surfaces a preference that was NOT saved
+        # through this one rate-limited notice.
+        self._pref_failed_hook = self._on_pref_write_failed
+        set_on_pref_write_failed(self._pref_failed_hook)
         self.dashboard = Dashboard(
             style=str(self.settings.value("dashboard/style", "classic")))
         self.main_tabs = QTabWidget()
@@ -1772,7 +1801,14 @@ class MainWindow(QMainWindow):
         if not self._resolve_unsaved():
             return event.ignore()
         self._shutdown_pages()
+        if appsettings.on_pref_write_failed == self._pref_failed_hook:
+            set_on_pref_write_failed(None)
         super().closeEvent(event)
+
+    def _on_pref_write_failed(self, key: str, reason: str) -> None:
+        """appsettings' notice that a UI preference was NOT saved."""
+        self.statusBar().showMessage(
+            f"Preference not saved: {key} \u2014 {reason}", 10000)
 
     def _shutdown_pages(self):
         # A child inside a QTabWidget never gets its own closeEvent, so stop the
@@ -1885,9 +1921,14 @@ class MainWindow(QMainWindow):
             return
         style = combo.currentData()
         self.dashboard.set_style(style)
-        save_pref(self.settings, "dashboard/style", style)
-        self.statusBar().showMessage(
-            f"Dashboard visual: {DASHBOARD_STYLES[style]}", 4000)
+        if save_pref(self.settings, "dashboard/style", style):
+            self.statusBar().showMessage(
+                f"Dashboard visual: {DASHBOARD_STYLES[style]}", 4000)
+        else:
+            self.statusBar().showMessage(
+                f"Dashboard visual: {DASHBOARD_STYLES[style]} applied for "
+                f"this session, NOT SAVED (preference dashboard/style could "
+                f"not be written; see the log)", 10000)
 
     def _about(self):
         md = self.cal.metadata
@@ -3001,11 +3042,10 @@ class MainWindow(QMainWindow):
             merged = PedalCal(min(rests), max(fulls),
                               f"{stored.source} + {cal.source}"
                               if stored.source else cal.source)
-        try:
-            save_pedal_cal(vin, merged)
-        except Exception as exc:
+        err = self.dashboard._store_pedal_cal(vin, merged)
+        if err is not None:
             msg = (f"Pedal calibration {merged.status()} for VIN {vin} was "
-                   f"NOT stored: {exc}")
+                   f"NOT stored: {err}")
             self.statusBar().showMessage(msg, 10000)
             self.log_report.append("\n" + msg)
             return

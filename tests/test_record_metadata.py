@@ -15,7 +15,7 @@ import json
 import os
 import re
 import sys
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -879,8 +879,14 @@ def _live(vin):
     """A dashboard bound to a GT connection whose VIN read as `vin`."""
     src = FakeGt()
     src.link = (1, {"examined": True, "value": vin} if vin else None)
-    return SimpleNamespace(source=src, _pedal_key=vin,
-                           _pedal_store_error=None)
+    from openobd.app import Dashboard
+    ns = SimpleNamespace(source=src, _pedal_key=vin,
+                         _pedal_store_error=None, _pedal_save_error=None,
+                         recording=False, _recorder=None,
+                         status=SimpleNamespace(setText=lambda _t: None))
+    # Learn saves through the Dashboard's one save path (the real method).
+    ns._store_pedal_cal = MethodType(Dashboard._store_pedal_cal, ns)
+    return ns
 
 
 def _learn_window(log, dashboard=None):
@@ -1008,6 +1014,69 @@ def test_a_failed_calibration_save_is_reported_never_claimed(dash, timed_gt,
     assert "NOT stored" in msgs[0] and "AccessError" in msgs[0]
     assert log.pedal_cal is None
     d._finalize_record()
+
+
+def test_a_failed_learn_save_marks_the_connection_not_saved(dash, timed_gt,
+                                                            monkeypatch):
+    """Learn and the live GT share ONE save path: a Learn save that fails
+    after a live save succeeded must flip the recording's persistence to
+    NOT SAVED (it used to keep claiming "settings pedal_cal/<VIN>")."""
+    import openobd.app as appmod
+    from openobd.appsettings import SettingsWriteError
+    d, _old = dash
+    real_save = appmod.save_pedal_cal
+    calls = []
+
+    def save_then_fail(vin, cal):
+        calls.append(vin)
+        if len(calls) == 1:
+            return real_save(vin, cal)
+        raise SettingsWriteError("pedal calibration for VIN x not saved: "
+                                 "AccessError after 5 attempts")
+    monkeypatch.setattr(appmod, "save_pedal_cal", save_then_fail)
+    g, _clock = timed_gt(pids=TRUCK_PIDS, info=INFO)
+    src = FakeGt(ctx_gt=g)
+    src._new_link()
+    d.bind_source(src)
+    d._bind_gt(src)
+    d.timer.stop()
+    d.toggle_record()
+    rec = d._recorder
+    _calibrate_live(src)
+    d._tick()
+    d._flush_meta()
+    pc = read_meta(rec.path)["pedal_calibration"]
+    assert pc["persistence"] == f"settings pedal_cal/{VIN}"
+    log = _drive_log()
+    log.meta = {"vehicle": {"vin": {"examined": True, "value": VIN}}}
+    log.pedal_cal = None
+    msgs = _learn_window(log, d)
+    assert calls == [VIN, VIN]
+    assert "NOT stored" in msgs[0] and "AccessError" in msgs[0]
+    assert d._pedal_save_error and "AccessError" in d._pedal_save_error
+    assert "Could not store the pedal calibration" in d.status.text()
+    d._flush_meta()
+    pc = read_meta(rec.path)["pedal_calibration"]
+    assert "NOT SAVED" in pc["persistence"]
+    d._finalize_record()
+
+
+def test_a_non_settings_error_in_a_pedal_save_is_not_swallowed(dash,
+                                                               monkeypatch):
+    """Only a SettingsError is a save failure; a defect propagates instead
+    of being reported as an unavailable store."""
+    import openobd.app as appmod
+    d, _old = dash
+
+    def broken(vin, cal):
+        raise TypeError("a defect, not a store failure")
+    monkeypatch.setattr(appmod, "save_pedal_cal", broken)
+    with pytest.raises(TypeError):
+        d._store_pedal_cal(VIN, PedalCal(18.0, 65.0, "x"))
+    log = _drive_log()
+    log.meta = {"vehicle": {"vin": {"examined": True, "value": VIN}}}
+    with pytest.raises(TypeError):
+        _learn_window(log, _live(VIN))
 
 
 @pytest.mark.parametrize("doc, why", [

@@ -15,6 +15,7 @@ the replace target), never through a double that encodes the assumption:
 """
 from __future__ import annotations
 
+import ast
 import os
 import stat
 import sys
@@ -127,7 +128,12 @@ def test_a_transient_write_failure_is_retried_on_a_fresh_object(store,
 
 
 def test_each_attempt_reapplies_the_change_to_a_new_object(store, attempts):
-    _seen, hooks = attempts
+    """Keeping every attempt's QSettings alive (objs) keeps the shared
+    QConfFile, so attempt 1's constructor replays attempt 0's pending change
+    into the still read-only file and fails: an attempt whose load failed
+    does NOT apply (its view cannot be trusted). Attempt 2 loads once the
+    hold is gone and re-applies on its own, new, object."""
+    seen, hooks = attempts
     _read_only_empty(store)
     hooks[2] = lambda: os.chmod(store, RW)
     objs = []
@@ -136,8 +142,9 @@ def test_each_attempt_reapplies_the_change_to_a_new_object(store, attempts):
         objs.append(st)
         st.setValue("pref/k", "v")
     aps.write_settings(apply)
-    assert len(objs) == 3
-    assert len({id(o) for o in objs}) == 3
+    assert seen == [1, 2]
+    assert len(objs) == 2
+    assert len({id(o) for o in objs}) == 2
     assert "k=v" in store.read_text(encoding="utf-8")
 
 
@@ -376,3 +383,292 @@ def test_a_real_held_target_fails_with_winerror_5_and_recovers(tmp_path,
     assert rec.meta_error is None
     assert recmod.read_meta(rec.path)["note"] == "after the hold"
     rec.close()
+
+
+# --------------------------------------------------------------------------- #
+# A final write failure is reconciled: the rejected value never reaches disk
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("prior", ["k=old\n", ""], ids=["existed", "absent"])
+def test_a_rejected_value_never_reaches_disk_through_a_later_write(
+        store, attempts, prior):
+    """PROBED (Qt 6.11.2, 2026-10-26): on a NON-EMPTY store the rejected
+    change stays pending in the parked QConfFile and the next successful
+    write on that file -- any key, any QSettings -- wrote it too: a value the
+    UI had reported NOT SAVED reached disk later. write_settings now puts the
+    touched keys back on a final failure."""
+    store.write_text(f"[pref]\nother=1\n{prior}", encoding="utf-8")
+    os.chmod(store, stat.S_IREAD)              # every attempt fails
+    with pytest.raises(aps.SettingsWriteError):
+        aps.write_settings(lambda st: st.setValue("pref/k", "rejected"))
+    os.chmod(store, RW)
+    aps.write_settings(lambda st: st.setValue("pref/unrelated", "2"))
+    text = store.read_text(encoding="utf-8")
+    assert "rejected" not in text
+    assert "unrelated=2" in text and "other=1" in text
+    assert ("k=old" in text) == bool(prior)
+    assert aps.app_settings().value("pref/k") == ("old" if prior else None)
+
+
+def test_a_rejected_removal_and_group_change_are_reconciled(store, attempts):
+    """A change made inside a group (save_pedal_cal) and a removal: every
+    touched key goes back to what was loaded."""
+    from openobd.app import save_pedal_cal
+    store.write_text(f"[pedal_cal]\n{VIN}\\rest=18\n{VIN}\\full=65\n"
+                     f"{VIN}\\source=stored\n[pref]\ngone=1\n",
+                     encoding="utf-8")
+    os.chmod(store, stat.S_IREAD)
+    with pytest.raises(aps.SettingsWriteError):
+        save_pedal_cal(VIN, PedalCal(25.0, None, "rejected"))
+    with pytest.raises(aps.SettingsWriteError):
+        aps.write_settings(lambda st: st.remove("pref/gone"))
+    os.chmod(store, RW)
+    aps.write_settings(lambda st: st.setValue("pref/unrelated", "2"))
+    text = store.read_text(encoding="utf-8")
+    assert "rejected" not in text and "25" not in text
+    assert "rest=18" in text and "full=65" in text and "gone=1" in text
+
+
+@pytest.mark.skipif(not WIN, reason="Windows share-mode semantics")
+def test_a_rejected_value_under_an_exclusive_hold_never_reaches_disk(
+        store, attempts):
+    """Same, with the store held exclusively (a scanner) rather than read
+    only. The store is loaded first, so the attempts reuse Qt's parked
+    QConfFile and the change is applied and rejected, not skipped."""
+    store.write_text("[pref]\nother=1\nk=old\n", encoding="utf-8")
+    assert aps.read_settings(lambda st: st.value("pref/k")) == "old"
+    close = _hold_exclusive(store)
+    try:
+        applied = []
+
+        def apply(st):
+            applied.append(st.fileName())
+            st.setValue("pref/k", "rejected")
+        with pytest.raises(aps.SettingsWriteError, match="AccessError"):
+            aps.write_settings(apply)
+    finally:
+        close()
+    assert applied                              # really applied, then failed
+    aps.write_settings(lambda st: st.setValue("pref/unrelated", "2"))
+    text = store.read_text(encoding="utf-8")
+    assert "rejected" not in text and "k=old" in text
+    assert "unrelated=2" in text
+
+
+def test_a_change_that_raises_leaves_nothing_pending(store, attempts):
+    store.write_text("[pref]\nother=1\n", encoding="utf-8")
+
+    def broken(st):
+        st.setValue("pref/half", "applied")
+        raise RuntimeError("defect mid-change")
+    with pytest.raises(RuntimeError):
+        aps.write_settings(broken)
+    aps.write_settings(lambda st: st.setValue("pref/unrelated", "2"))
+    text = store.read_text(encoding="utf-8")
+    assert "half" not in text and "unrelated=2" in text
+
+
+# --------------------------------------------------------------------------- #
+# save_pref failures are surfaced through ONE rate-limited hook
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def pref_notices(monkeypatch):
+    seen: list[tuple[str, str]] = []
+    clock = [1000.0]
+    monkeypatch.setattr(aps.time, "monotonic", lambda: clock[0])
+    aps.set_on_pref_write_failed(lambda key, why: seen.append((key, why)))
+    yield seen, clock
+    aps.set_on_pref_write_failed(None)
+
+
+def test_a_failed_pref_is_surfaced_once_per_interval_per_key(
+        store, attempts, pref_notices):
+    seen, clock = pref_notices
+    _read_only_empty(store)
+    for _ in range(3):                          # a splitter being dragged
+        assert aps.save_pref(None, "diag/split", "a") is False
+    assert aps.save_pref(None, "tuning/recent", "[]") is False
+    assert [k for k, _w in seen] == ["diag/split", "tuning/recent"]
+    assert seen[0][1].startswith("AccessError writing ")
+    assert "not saved" not in seen[0][1]        # the bare reason
+    clock[0] += aps.PREF_FAILURE_NOTICE_INTERVAL_S
+    assert aps.save_pref(None, "diag/split", "a") is False
+    assert [k for k, _w in seen] == ["diag/split", "tuning/recent",
+                                     "diag/split"]
+
+
+def test_a_failing_notice_handler_never_raises_into_the_caller(
+        store, attempts, caplog):
+    def broken(key, why):
+        raise RuntimeError("window already deleted")
+    aps.set_on_pref_write_failed(broken)
+    try:
+        _read_only_empty(store)
+        with caplog.at_level("ERROR", logger="openobd.appsettings"):
+            assert aps.save_pref(None, "diag/split", "a") is False
+        assert "preference-failure handler failed" in caplog.text
+    finally:
+        aps.set_on_pref_write_failed(None)
+
+
+def test_no_notice_when_the_pref_is_saved(store, pref_notices):
+    seen, _clock = pref_notices
+    assert aps.save_pref(None, "diag/split", "a") is True
+    assert seen == []
+
+
+@pytest.fixture
+def window(store):
+    from openobd.app import MainWindow, load_default_cal
+    cal, _path = load_default_cal()
+    win = MainWindow(cal, None)
+    yield win
+    win.dirty = False
+    win.close()
+    assert aps.on_pref_write_failed is None     # closeEvent uninstalls it
+
+
+def test_the_main_window_shows_a_pref_that_was_not_saved(window, store,
+                                                         attempts):
+    assert aps.on_pref_write_failed == window._on_pref_write_failed
+    _read_only_empty(store)
+    assert aps.save_pref(None, "livedata/split", "x") is False
+    msg = window.statusBar().currentMessage()
+    assert msg.startswith("Preference not saved: livedata/split")
+    assert "AccessError" in msg
+
+
+def test_a_dashboard_style_that_was_not_saved_says_so(window, monkeypatch):
+    import openobd.app as appmod
+    monkeypatch.setattr(appmod.QDialog, "exec",
+                        lambda self: appmod.QDialog.Accepted)
+    monkeypatch.setattr(appmod, "save_pref", lambda *_a: False)
+    window._open_settings()
+    msg = window.statusBar().currentMessage()
+    assert "NOT SAVED" in msg and "dashboard/style" in msg
+    monkeypatch.setattr(appmod, "save_pref", lambda *_a: True)
+    window._open_settings()
+    msg = window.statusBar().currentMessage()
+    assert msg.startswith("Dashboard visual: ") and "NOT SAVED" not in msg
+
+
+# --------------------------------------------------------------------------- #
+# SC-01: no QSettings write or construction outside openobd/appsettings.py
+# --------------------------------------------------------------------------- #
+OPENOBD = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "openobd")
+_WRITE_METHODS = {"setValue", "remove", "sync"}
+#: Receivers taken as QSettings by NAME (the names the code base uses for a
+#: settings object: self.settings, self._settings, an apply callback's st).
+_SETTINGS_NAMES = {"settings", "_settings", "st"}
+
+
+def _terminal_name(node) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def _is_settings_ctor(node) -> bool:
+    return (isinstance(node, ast.Call)
+            and _terminal_name(node.func) in ("QSettings", "app_settings"))
+
+
+def settings_write_violations(source: str, filename: str = "<src>") -> list:
+    """Bare QSettings writes / constructions in `source`.
+
+    Heuristic (documented so a reader knows what it can and cannot see):
+    * a call .setValue / .remove / .sync is a QSettings write when its
+      receiver's terminal name is in _SETTINGS_NAMES, OR was bound in this
+      file from QSettings(...) / app_settings(), OR is annotated QSettings
+      (parameter, variable or attribute). So dict.remove / list.remove /
+      QScrollBar.setValue on other names are not flagged; a QSettings held
+      under an unrelated, unannotated name that was never bound from a
+      constructor in the same file would be missed.
+    * a call inside a function (by name) or lambda passed as the change to
+      write_settings(...) is the sanctioned path, not a violation.
+    * any QSettings(...) construction is a violation (app_settings() is the
+      one constructor).
+    """
+    tree = ast.parse(source, filename)
+    names = set(_SETTINGS_NAMES)
+    sanctioned_fns: set[str] = set()
+    sanctioned_nodes: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            value = node.value
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target])
+            typed = (isinstance(node, ast.AnnAssign)
+                     and "QSettings" in ast.unparse(node.annotation))
+            if typed or (value is not None and _is_settings_ctor(value)):
+                names.update(_terminal_name(t) for t in targets)
+        elif isinstance(node, ast.arg) and node.annotation is not None:
+            if "QSettings" in ast.unparse(node.annotation):
+                names.add(node.arg)
+        elif (isinstance(node, ast.Call)
+              and _terminal_name(node.func) == "write_settings"):
+            change = (node.args[0] if node.args else next(
+                (k.value for k in node.keywords if k.arg == "apply"), None))
+            if isinstance(change, ast.Name):
+                sanctioned_fns.add(change.id)
+            elif isinstance(change, ast.Lambda):
+                sanctioned_nodes.update(id(n) for n in ast.walk(change))
+    for node in ast.walk(tree):
+        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name in sanctioned_fns):
+            sanctioned_nodes.update(id(n) for n in ast.walk(node))
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or id(node) in sanctioned_nodes:
+            continue
+        func = node.func
+        if _terminal_name(func) == "QSettings":
+            found.append(f"{filename}:{node.lineno}: QSettings(...) "
+                         f"constructed outside appsettings")
+        elif (isinstance(func, ast.Attribute) and func.attr in _WRITE_METHODS
+              and _terminal_name(func.value) in names):
+            found.append(f"{filename}:{node.lineno}: bare "
+                         f"{ast.unparse(func)}(...) outside appsettings")
+    return found
+
+
+@pytest.mark.parametrize("src, bad", [
+    ("self.settings.setValue('k', 1)\n", True),
+    ("self._settings.remove('k')\n", True),
+    ("settings.sync()\n", True),
+    ("prefs = app_settings()\nprefs.setValue('k', 1)\n", True),
+    ("def f(store: QSettings):\n    store.remove('k')\n", True),
+    ("s = QSettings('a', 'b')\n", True),
+    ("x = QtCore.QSettings(path, QSettings.IniFormat)\n", True),
+    ("lane.remove(name)\nbar.setValue(3)\nd.sync()\n", False),
+    ("QSettings.setDefaultFormat(QSettings.IniFormat)\n", False),
+    ("def apply(st):\n    st.setValue('k', 1)\n    st.remove('j')\n"
+     "write_settings(apply, what='x')\n", False),
+    ("write_settings(lambda st: st.setValue('k', 1))\n", False),
+    ("def apply(st):\n    st.setValue('k', 1)\n", True),   # never passed
+])
+def test_the_settings_write_scan_flags_exactly_bare_writes(src, bad):
+    assert bool(settings_write_violations(src)) is bad
+
+
+def test_no_qsettings_write_or_construction_outside_appsettings():
+    """SC-01, derived from the tree: every write goes through
+    appsettings.write_settings / save_pref, every store through
+    app_settings()."""
+    found, scanned = [], 0
+    for root, _dirs, files in os.walk(OPENOBD):
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(root, name)
+            if os.path.normcase(path) == os.path.normcase(
+                    os.path.join(OPENOBD, "appsettings.py")):
+                continue
+            with open(path, encoding="utf-8") as fh:
+                found += settings_write_violations(
+                    fh.read(), os.path.relpath(path, OPENOBD))
+            scanned += 1
+    assert scanned > 10                         # the scan really ran
+    assert found == []

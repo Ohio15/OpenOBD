@@ -29,9 +29,36 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   `.meta.json` rewrite retries `os.replace` up to 4 times on a
   `PermissionError` with winerror 5 / 32 only; any other error still fails at
   once and is reported in `meta_error`, the old document intact.
+- **A value reported NOT SAVED can no longer reach disk later.** Probed on
+  Qt 6.11.2: on a non-empty store the rejected change stays pending in Qt's
+  parked QConfFile and the next successful write to that file, of any key,
+  wrote it too. On a final failure `write_settings` now puts every key the
+  change touched back to its loaded value (or removes it when it did not
+  exist), and an attempt whose store failed to load no longer applies the
+  change onto its empty view. A change that raises part-way is undone the
+  same way.
+- **A preference that was not saved is surfaced, once.** `save_pref` reports a
+  final failure through one hook (`appsettings.set_on_pref_write_failed`),
+  rate-limited to one notice per key per 5 s, which the main window shows as
+  "Preference not saved: <key> — <reason>" in the status bar, so every call
+  site (splitters, recent tables, collapsed groups, layout, span, show mode,
+  overlay panel, notes) reports it without checking the return value. The
+  Settings dialog's dashboard visual says "NOT SAVED" when its preference was
+  not written instead of confirming it.
+- **Learn and the live GT share one pedal-calibration save path**
+  (`Dashboard._store_pedal_cal`): a failed Learn save now also marks the
+  connection NOT SAVED, so the recording's `pedal_calibration.persistence`
+  no longer claims "settings pedal_cal/<VIN>" after it. Only a
+  `SettingsError` counts as a save failure; any other exception is a defect
+  and propagates.
 - Tests: `tests/test_settings_persistence.py` injects the failures through the
   real dependencies (a read-only INI, an exclusively opened INI, a held replace
-  target) and pins the Qt behaviours the fix relies on.
+  target) and pins the Qt behaviours the fix relies on, including the replay
+  of a rejected change. A source scan (SC-01) fails on any `QSettings(...)`
+  construction or bare `.setValue` / `.remove` / `.sync` on a settings object
+  outside `openobd/appsettings.py`.
+- Known debt (brain commitment 7dec9d41): a persistently failing write still
+  blocks the GUI thread for about 0.37 s of retry backoff.
 
 ## 0.38.1 — 2026-10-26
 
