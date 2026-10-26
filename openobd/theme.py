@@ -57,7 +57,11 @@ COLORS: dict[str, str] = {
     "danger-surface": "#3b2b2b",
     "changed-marker": "#f5a524",     # corner triangle / navigator dot
     "ok": "#3caa5f",
+    "ok-text": "#8fd0a6",            # ok chips / tiles on dark surfaces
+    "ok-surface": "#263a2d",
     "warning": "#d6a93a",
+    "warning-text": "#e5c77a",       # warning chips / banners
+    "warning-surface": "#3a3629",
     # Dashboard primary row (Record / Mark), unchanged from v0.34.0
     "record": "#b3261e",
     "record-border": "#d9443a",
@@ -103,11 +107,11 @@ SPACING: dict[str, int] = {"xs": 2, "sm": 4, "md": 8, "lg": 12, "xl": 16}
 RADIUS: dict[str, int] = {"sm": 4, "md": 6, "lg": 8}
 FONT_PT: dict[str, int] = {"sm": 8, "body": 9, "title": 11}
 
-#: Toolbars across the Tuning sub-tabs.
+#: Toolbars across the Tuning and Diagnostics sub-tabs.
 TOOLBAR_HEIGHT = 36
 #: The Dashboard's big primary row (Record / Mark).
 PRIMARY_HEIGHT = 56
-#: Breadcrumb header above each Tuning sub-tab (title line + note line).
+#: Breadcrumb header above each Tuning / Diagnostics sub-tab (title + note).
 BREADCRUMB_HEIGHT = 50
 #: Compact tree / list row height (navigator, scalars, channels).
 ROW_HEIGHT = 22
@@ -297,33 +301,48 @@ def text_qss(name: str, extra: str = "") -> str:
     return f"color:{_c(name)};{(' ' + extra) if extra else ''}"
 
 
-def toolbar_qss() -> str:
+#: objectNames of the workspace toolbars that share one look.
+TOOLBAR_NAMES = ("tuningToolbar", "diagToolbar")
+
+
+def _toolbar_block(name: str) -> str:
     return f"""
-QToolBar#tuningToolbar {{
+QToolBar#{name} {{
     background: {_c('surface-raised')}; border: none;
     border-bottom: 1px solid {_c('border')};
     spacing: {SPACING['xs']}px; padding: 0px {SPACING['sm']}px;
     /* QSS heights are the content box: + the 1 px bottom border = TOOLBAR_HEIGHT */
     min-height: {TOOLBAR_HEIGHT - 1}px; max-height: {TOOLBAR_HEIGHT - 1}px;
 }}
-QToolBar#tuningToolbar QToolButton {{
+QToolBar#{name} QToolButton {{
     color: {_c('text')}; background: transparent;
     border: 1px solid transparent; border-radius: {RADIUS['sm']}px;
     padding: 2px {SPACING['sm']}px;
 }}
-QToolBar#tuningToolbar QToolButton:hover {{
+QToolBar#{name} QToolButton:hover {{
     background: {_c('surface-hover')}; border-color: {_c('border')};
 }}
-QToolBar#tuningToolbar QToolButton:pressed {{ background: {_c('surface-pressed')}; }}
-QToolBar#tuningToolbar QToolButton:checked {{
+QToolBar#{name} QToolButton:pressed {{ background: {_c('surface-pressed')}; }}
+QToolBar#{name} QToolButton:checked {{
     background: {_c('surface-pressed')}; border-color: {_c('accent')};
 }}
-QToolBar#tuningToolbar QToolButton:disabled {{ color: {_c('text-disabled')}; }}
-QToolBar#tuningToolbar QLabel {{ color: {_c('text-muted')}; padding: 0px {SPACING['xs']}px; }}
-QToolBar#tuningToolbar::separator {{
+QToolBar#{name} QToolButton[primary="true"] {{
+    font-weight: bold; border-color: {_c('accent')};
+}}
+QToolBar#{name} QToolButton:disabled {{
+    color: {_c('text-disabled')}; border-color: transparent;
+}}
+QToolBar#{name} QLabel {{ color: {_c('text-muted')}; padding: 0px {SPACING['xs']}px; }}
+QToolBar#{name}::separator {{
     background: {_c('border')}; width: 1px; margin: {SPACING['sm']}px {SPACING['xs']}px;
 }}
 """
+
+
+def toolbar_qss() -> str:
+    """The 36 px workspace toolbar (Tuning and Diagnostics). A QToolButton
+    with the dynamic property primary=true is the sub-tab's main action."""
+    return "".join(_toolbar_block(n) for n in TOOLBAR_NAMES)
 
 
 def breadcrumb_qss() -> str:
@@ -339,7 +358,8 @@ QLabel#breadcrumbNote {{ color: {_c('text-muted')}; }}
 
 def chip_qss() -> str:
     """Chips are QLabels with the dynamic property chip = neutral | danger |
-    accent | muted | ok. Re-polish after changing the property (tuningui.set_chip)."""
+    warning | accent | muted | ok. Re-polish after changing the property
+    (tuningui.set_chip)."""
     return f"""
 QLabel[chip="neutral"] {{
     color: {_c('text')}; background: {_c('surface-raised')};
@@ -357,15 +377,40 @@ QLabel[chip="accent"] {{
     color: {_c('link')}; background: {_c('surface-raised')};
     border: 1px solid {_c('accent')}; border-radius: {RADIUS['md']}px; padding: 1px {SPACING['md']}px;
 }}
+QLabel[chip="ok"] {{
+    color: {_c('ok-text')}; background: {_c('ok-surface')};
+    border: 1px solid {_c('ok')}; border-radius: {RADIUS['md']}px; padding: 1px {SPACING['md']}px;
+}}
+QLabel[chip="warning"] {{
+    color: {_c('warning-text')}; background: {_c('warning-surface')};
+    border: 1px solid {_c('warning')}; border-radius: {RADIUS['md']}px; padding: 1px {SPACING['md']}px;
+}}
 """
 
 
 def banner_qss() -> str:
-    """Muted banner (the calibration safety note)."""
+    """The calibration safety note (#safetyBanner) and the inline status
+    banners: QLabels with the dynamic property banner = danger | warning |
+    muted (Diagnostics scan / link errors, MIL state)."""
     return f"""
 QLabel#safetyBanner {{
     color: {_c('danger-muted')}; background: {_c('surface-sunken')};
     border: 1px solid {_c('border')}; border-left: 3px solid {_c('danger-muted')};
+    border-radius: {RADIUS['sm']}px; padding: {SPACING['md']}px;
+}}
+QLabel[banner="danger"] {{
+    color: {_c('danger-text')}; background: {_c('danger-surface')};
+    border: 1px solid {_c('danger')}; border-left: 3px solid {_c('danger')};
+    border-radius: {RADIUS['sm']}px; padding: {SPACING['md']}px; font-weight: bold;
+}}
+QLabel[banner="warning"] {{
+    color: {_c('warning-text')}; background: {_c('warning-surface')};
+    border: 1px solid {_c('warning')}; border-left: 3px solid {_c('warning')};
+    border-radius: {RADIUS['sm']}px; padding: {SPACING['md']}px;
+}}
+QLabel[banner="muted"] {{
+    color: {_c('text-muted')}; background: {_c('surface-sunken')};
+    border: 1px dashed {_c('border')}; border-left: 3px solid {_c('border-strong')};
     border-radius: {RADIUS['sm']}px; padding: {SPACING['md']}px;
 }}
 """
@@ -384,17 +429,18 @@ def tree_qss() -> str:
     """Compact rows for the navigator, scalars and channel trees."""
     return f"""
 QTreeView#navigatorTree, QTreeView#scalarsTree, QTreeWidget#channelTree,
-QTableWidget#cursorReadout {{
+QTableWidget#cursorReadout, QTreeView#dtcTree {{
     background: {_c('surface-sunken')}; border: 1px solid {_c('border')};
 }}
 QTreeView#navigatorTree::item, QTreeView#scalarsTree::item,
-QTreeWidget#channelTree::item {{ min-height: {ROW_HEIGHT}px; }}
-QLineEdit#navSearch, QLineEdit#scalarSearch {{
+QTreeWidget#channelTree::item, QTreeView#dtcTree::item {{ min-height: {ROW_HEIGHT}px; }}
+QLineEdit#navSearch, QLineEdit#scalarSearch, QLineEdit#dtcSearch {{
     background: {_c('surface-sunken')}; color: {_c('text')};
     border: 1px solid {_c('border')}; border-radius: {RADIUS['sm']}px;
     padding: 3px {SPACING['sm']}px;
 }}
-QLineEdit#navSearch:focus, QLineEdit#scalarSearch:focus {{ border-color: {_c('accent')}; }}
+QLineEdit#navSearch:focus, QLineEdit#scalarSearch:focus,
+QLineEdit#dtcSearch:focus {{ border-color: {_c('accent')}; }}
 """
 
 
@@ -421,10 +467,42 @@ QLabel#cornerLabel {{
 """
 
 
+def diag_panel_qss() -> str:
+    """Diagnostics: the module card, the map legend row and the readiness
+    monitor tiles."""
+    return f"""
+QLabel#cardTitle {{ color: {_c('text')}; font-weight: bold; font-size: {FONT_PT['title']}pt; }}
+QLabel#cardKey {{ color: {_c('text-muted')}; }}
+QLabel#cardValue, QLabel#cardNotes {{ color: {_c('text')}; }}
+QLabel#sectionTitle {{ color: {_c('text')}; font-weight: bold; }}
+QLabel#legendText {{ color: {_c('text-muted')}; }}
+QFrame#monitorTile {{
+    background: {_c('surface-raised')}; border: 1px solid {_c('border')};
+    border-left: 3px solid {_c('border-strong')}; border-radius: {RADIUS['sm']}px;
+}}
+QFrame#monitorTile[state="ready"] {{ border-left: 3px solid {_c('ok')}; }}
+QFrame#monitorTile[state="notready"] {{ border-left: 3px solid {_c('warning')}; }}
+QLabel#monitorName {{ color: {_c('text')}; }}
+QScrollArea#readinessScroll, QScrollArea#cardScroll {{ background: transparent; border: none; }}
+QWidget#readinessGrid, QWidget#cardBody {{ background: transparent; }}
+"""
+
+
+def workspace_qss() -> str:
+    """Everything a workspace page (Tuning, Diagnostics) needs, applied once
+    to its root so both pages share one set of chrome."""
+    return (toolbar_qss() + breadcrumb_qss() + chip_qss() + banner_qss()
+            + splitter_qss() + tree_qss() + panel_qss() + diag_panel_qss())
+
+
 def tuning_qss() -> str:
     """Everything the Tuning workspace needs, applied once to its root."""
-    return (toolbar_qss() + breadcrumb_qss() + chip_qss() + banner_qss()
-            + splitter_qss() + tree_qss() + panel_qss())
+    return workspace_qss()
+
+
+def diag_qss() -> str:
+    """Everything the Diagnostics workspace needs: the same chrome."""
+    return workspace_qss()
 
 
 # --------------------------------------------------------------------------- #
@@ -433,7 +511,8 @@ def tuning_qss() -> str:
 # --------------------------------------------------------------------------- #
 GLYPHS = ("set", "add", "sub", "mul", "div", "pct", "interp_h", "interp_v",
           "interp_2d", "smooth", "revert", "next", "copy", "paste", "heatmap",
-          "diff", "open", "events", "learn", "search")
+          "diff", "open", "events", "learn", "search", "scan", "read",
+          "clear", "not_examined", "incomplete")
 
 
 def glyph_icon(kind: str, color: str = "text", size: int = ICON_SIZE):
@@ -561,6 +640,49 @@ def glyph_icon(kind: str, color: str = "text", size: int = ICON_SIZE):
         r = s * 0.22
         p.drawEllipse(QPointF(mid - s * 0.06, mid - s * 0.06), r, r)
         line(mid + r * 0.6, mid + r * 0.6, hi, hi)
+    elif kind == "scan":
+        # a node tree: the tool on the left fanning out to three modules
+        r = s * 0.07
+        p.setBrush(qcolor(color))
+        p.drawEllipse(QPointF(lo, mid), r * 1.4, r * 1.4)
+        for y in (lo, mid, hi):
+            line(lo, mid, hi - s * 0.12, y)
+            p.drawEllipse(QPointF(hi - s * 0.04, y), r, r)
+    elif kind == "read":
+        # a list: three bulleted rows
+        r = s * 0.06
+        p.setBrush(qcolor(color))
+        for y in (lo + s * 0.04, mid, hi - s * 0.04):
+            p.drawEllipse(QPointF(lo + r, y), r, r)
+            line(lo + s * 0.25, y, hi, y)
+    elif kind == "clear":
+        # an eraser: slanted block with its band
+        path = QPainterPath(QPointF(lo + s * 0.05, mid + s * 0.12))
+        path.lineTo(mid - s * 0.02, lo + s * 0.05)
+        path.lineTo(hi, mid - s * 0.02)
+        path.lineTo(mid + s * 0.08, hi - s * 0.02)
+        path.lineTo(lo + s * 0.22, hi - s * 0.02)
+        path.closeSubpath()
+        p.drawPath(path)
+        line(mid - s * 0.2, mid - s * 0.12, mid + s * 0.12, mid + s * 0.2)
+    elif kind == "not_examined":
+        # dashed ring with a centre dot: nothing was looked at
+        dash = QPen(pen)
+        dash.setStyle(Qt.DashLine)
+        p.setPen(dash)
+        p.drawEllipse(QPointF(mid, mid), (hi - lo) / 2, (hi - lo) / 2)
+        p.setPen(Qt.NoPen)
+        p.setBrush(qcolor(color))
+        p.drawEllipse(QPointF(mid, mid), s * 0.07, s * 0.07)
+    elif kind == "incomplete":
+        # a ring with one half filled: part of the answer is missing
+        rect = QRectF(lo, lo, hi - lo, hi - lo)
+        p.drawEllipse(rect)
+        path = QPainterPath(QPointF(mid, mid))
+        path.arcTo(rect, 90, 180)
+        path.closeSubpath()
+        p.setBrush(qcolor(color))
+        p.drawPath(path)
     p.end()
     return QIcon(px)
 

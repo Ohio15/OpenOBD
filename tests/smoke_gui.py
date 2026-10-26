@@ -232,40 +232,48 @@ assert v.modules["ecm"] == Status.OK and v.modules["ebcm"] == Status.SILENT
 assert v.failure_point == "module:ebcm"
 win.diag.map_view.grab()  # paints without error
 win.diag._show_module("ebcm")
-assert "EBCM" in win.diag.map_details.toPlainText()
+assert win.diag.card.title.text() == "EBCM (ABS)"
+assert "request 243 / response 643" in win.diag.card.text()
+
+
+def _dtc_rows():
+    return win.diag.visible_rows()
+
 
 dtcs = {"stored": parse_dtc_reply("7E806430203000171", "03")["codes"],
         "pending": parse_dtc_reply("7E80447010700", "07")["codes"],
         "permanent": []}
 ready = parse_readiness([0x82, 0x07, 0xFF, 0x04])
 win.diag.populate_codes(dtcs, ready)
-assert win.diag.dtc_table.rowCount() == 3
-assert win.diag.dtc_table.item(0, 1).text() == "P0300"
-assert "ON" in win.diag.mil_label.text()
-assert win.diag.ready_table.rowCount() > 0
+codes = [r for r in _dtc_rows() if r["row"] == "code"]
+assert len(codes) == 3, codes
+assert codes[0]["code"] == "P0300" and codes[0]["kind"] == "Stored"
+assert win.diag.codes_crumb.chips()[0] == ("MIL ON", "danger")
+assert "MIL is ON" in win.diag.mil_banner.text()
+assert win.diag.monitor_tiles
 # not examined must never render as "No trouble codes" / a clean MIL
 win.diag.populate_codes({"examined": False, "error": "GT refused ATSH7DF",
                          "stored": None, "pending": None, "permanent": None},
                         {"error": "GT refused ATSH7E0"})
-texts = [win.diag.dtc_table.item(r, 2).text()
-         for r in range(win.diag.dtc_table.rowCount())]
-assert all(t.startswith("Not examined") for t in texts), texts
+rows = _dtc_rows()
+texts = [r["description"] for r in rows]
+assert len(rows) == 3 and all(t.startswith("Not examined") for t in texts), texts
 assert "No trouble codes" not in texts
-assert "not examined" in win.diag.mil_label.text()
+assert win.diag.codes_crumb.chips()[0] == ("MIL not examined", "muted")
+assert "not examined" in win.diag.mil_banner.text()
 # a module whose multi-frame reply was truncated shows as Incomplete, and
 # the kinds never collapse to "No trouble codes"
 win.diag.populate_codes({"examined": True, "stored": ["P0711"],
                          "pending": [], "permanent": [],
                          "incomplete": {"stored": {"7E8": "truncated: 6 of 8 bytes"}}},
                         ready)
-texts = [win.diag.dtc_table.item(r, 2).text()
-         for r in range(win.diag.dtc_table.rowCount())]
+texts = [r["description"] for r in _dtc_rows()]
 assert any(t.startswith("Incomplete from 7E8") for t in texts), texts
 assert "No trouble codes" not in texts
 win.diag.populate_codes(dtcs, ready)
 print("diagnostics OK: map verdict painted,",
-      win.diag.dtc_table.rowCount(), "DTC rows,",
-      win.diag.ready_table.rowCount(), "monitors")
+      len(_dtc_rows()), "DTC rows,",
+      len(win.diag.monitor_tiles), "monitors")
 
 # select a table that carries stock values (needed by the editor asserts;
 # the historical "WOT Shift Speed — Normal" name no longer exists in the

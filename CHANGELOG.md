@@ -3,6 +3,40 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.36.0 — 2026-10-26
+
+### Changed (Diagnostics tab UX overhaul; cues from GM GDS2 / Tech2, HP Tuners VCM Scanner, Autel / Snap-on)
+- **Shared chrome.** Both Diagnostics sub-tabs carry the Tuning breadcrumb
+  ("Diagnostics › Module Map", "Diagnostics › Codes & Readiness") with chips
+  and a muted note, and one 36 px toolbar with vector glyph icons (the emoji
+  buttons are gone). F5 runs the sub-tab's primary action (Scan Modules /
+  Read Codes); Ctrl+F focuses the code search, Esc clears it. While a GT job
+  runs every job-starting action is disabled and a "Scanning…" /
+  "Reading…" chip shows — one job at a time, so a scan and a read can no
+  longer race for the same result handler.
+- **Module Map.** Chips for DLC voltage, modules responding, not examined
+  and "fault at: <segment/module>"; the legend is a row under the header;
+  hover a module for name, status, bus, request/response ids and role. A
+  module card (title + status chip, Bus / Role / Diagnostic address, a
+  collapsible "Scan notes" list) replaces the plain text box, with an empty
+  state before the first scan. Scan errors and the GT binary-mode advice are
+  an inline danger banner; the failed-segment marker is drawn as a vector
+  triangle.
+- **Codes & Readiness.** DTCs are a tree grouped Stored / Pending /
+  Permanent with counts (Stored open by default, plus any group holding an
+  unknown), columns Code | Description | Module | Status, status as chips.
+  Not-examined and incomplete rows keep their exact wording and stay muted
+  italic with their own glyph; "No trouble codes" is still only said when
+  every kind was examined. Module comes from the responder id; a code with
+  no local description says so. Search filters code, description and module;
+  Copy codes puts the visible rows on the clipboard as TSV. Readiness is a
+  tile grid with Ready / Not ready chips and an "n/m ready" summary. MIL ON
+  is a danger banner, MIL not examined a muted one; a link error is an
+  inline banner instead of a dialog (the two Clear-codes outcome dialogs
+  stay).
+- **Layout.** Map/card and codes/readiness splitter positions persist under
+  `diag/`; the Diagnostics page's minimum width stays under 700 px.
+
 ## 0.35.0 — 2026-10-26
 
 ### Changed (Tuning tab UX overhaul; cues from HP Tuners VCM Editor, EFILive, TunerStudio)

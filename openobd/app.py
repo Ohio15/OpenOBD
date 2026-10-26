@@ -72,7 +72,7 @@ from .model import CalTableModel, HeatmapDelegate, clean_unit
 from .tuningui import (
     Breadcrumb, CalTableView, ChannelTree, CollapsiblePanel, CursorReadout,
     ElidedLabel, Navigator, ScalarsTree, empty_state_label, format_selection_stats,
-    table_category,
+    make_toolbar, table_category,
 )
 from .transport import DataSource, LogReplaySource, GtDataSource, Sample
 from . import tmsource, tmstore
@@ -1667,8 +1667,9 @@ class MainWindow(QMainWindow):
         self.main_tabs.currentChanged.connect(self._sync_clipboard_actions)
         self.tune_tabs.currentChanged.connect(self._sync_clipboard_actions)
 
-        self.diag = DiagnosticsPage(self.dashboard)
+        self.diag = DiagnosticsPage(self.dashboard, self.settings)
         self.main_tabs.addTab(self.diag, "Diagnostics")
+        self.diag.tabs.currentChanged.connect(self._sync_find_shortcut)
 
         # Live Data + Active Tests read truck-mcp's drive-log store and control
         # journal off disk (never the serial port). Appended AFTER Diagnostics
@@ -1741,6 +1742,9 @@ class MainWindow(QMainWindow):
                      getattr(self, "active_tests", None)):
             if page is not None:
                 page.shutdown()
+        diag = getattr(self, "diag", None)
+        if diag is not None:
+            diag.save_state()
 
     def _build_menu(self):
         m = self.menuBar().addMenu("&File")
@@ -1855,17 +1859,9 @@ class MainWindow(QMainWindow):
     # -- shared Tuning chrome --------------------------------------------- #
     @staticmethod
     def _make_toolbar() -> QToolBar:
-        """The 36 px toolbar every Tuning sub-tab uses (theme.toolbar_qss).
-        Actions that do not fit go to the toolbar's overflow menu, so the
-        toolbar never sets the page's minimum width."""
-        tb = QToolBar()
-        tb.setObjectName("tuningToolbar")
-        tb.setMovable(False)
-        tb.setFloatable(False)
-        tb.setIconSize(QSize(theme.ICON_SIZE, theme.ICON_SIZE))
-        tb.setFixedHeight(theme.TOOLBAR_HEIGHT)
-        tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        return tb
+        """The 36 px toolbar every Tuning sub-tab uses (tuningui.make_toolbar,
+        shared with Diagnostics)."""
+        return make_toolbar("tuningToolbar")
 
     @staticmethod
     def _toolbar_action(tb: QToolBar, action: QAction,
@@ -1884,8 +1880,13 @@ class MainWindow(QMainWindow):
         return a
 
     def _sync_find_shortcut(self, *_a) -> None:
+        """Ctrl+F is live on Tuning (table search) and on Diagnostics >
+        Codes & Readiness (code search); nowhere else has a search field."""
+        cur = self.main_tabs.currentWidget()
+        diag = getattr(self, "diag", None)
         self._find_shortcut.setEnabled(
-            self.main_tabs.currentWidget() is self.tuning_page)
+            cur is self.tuning_page
+            or (diag is not None and cur is diag and diag.has_search()))
 
     def _editor_showing(self) -> bool:
         """True while Tuning > Editor (the calibration grid) is on screen."""
@@ -1912,7 +1913,10 @@ class MainWindow(QMainWindow):
         self.tune_tabs.setCurrentIndex(0)   # Editor
 
     def focus_table_search(self):
-        """Ctrl+F on the Tuning workspace."""
+        """Ctrl+F: the search field of the workspace on screen."""
+        if self.main_tabs.currentWidget() is getattr(self, "diag", None):
+            self.diag.focus_search()
+            return
         self.navigator.focus_search()
 
     # -- editor tab -------------------------------------------------------- #
