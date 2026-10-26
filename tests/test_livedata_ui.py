@@ -761,10 +761,9 @@ def test_g1_db_text_labels_are_plain_text(env):
 
 @pytest.mark.parametrize("bad", ["garbage", "1,2,3", 42])
 def test_g3_tampered_splitter_state_falls_back(env, bad):
-    from openobd.appsettings import app_settings
+    from openobd.appsettings import write_settings
     from openobd.livedata import SPLIT_KEY
-    app_settings().setValue(SPLIT_KEY, bad)
-    app_settings().sync()
+    write_settings(lambda st: st.setValue(SPLIT_KEY, bad))
     pg = env.make()
     assert pg._restore_split(bad) is False
     assert len(pg._split.sizes()) == 2

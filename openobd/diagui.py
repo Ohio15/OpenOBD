@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme, vehnet
+from .appsettings import save_pref
 from .gt import DTC_DESCRIPTIONS
 from .tuningui import (
     CHIP_KIND_ROLE, Breadcrumb, ChipDelegate, CollapsiblePanel,
@@ -737,13 +738,14 @@ class DiagnosticsPage(QWidget):
         if not restore_splitter_state(split, self.settings.value(key)):
             split.setSizes(default)
         split.splitterMoved.connect(
-            lambda *_a, s=split, k=key: self.settings.setValue(k, s.saveState()))
+            lambda *_a, s=split, k=key: save_pref(self.settings, k,
+                                                  s.saveState()))
         self._splits.append((split, key))
 
     def save_state(self) -> None:
         """Persist the splitter positions (also saved on every drag)."""
         for split, key in self._splits:
-            self.settings.setValue(key, split.saveState())
+            save_pref(self.settings, key, split.saveState())
 
     def busy(self) -> Optional[str]:
         """The running job: 'scan' | 'read' | 'clear', or None."""
@@ -826,8 +828,8 @@ class DiagnosticsPage(QWidget):
         notes_open = str(self.settings.value(NOTES_OPEN_KEY, "true")).lower()
         self.card = ModuleCard(notes_open == "true")
         self.card.notes_toggled.connect(
-            lambda on: self.settings.setValue(NOTES_OPEN_KEY,
-                                              "true" if on else "false"))
+            lambda on: save_pref(self.settings, NOTES_OPEN_KEY,
+                                 "true" if on else "false"))
         split.addWidget(self.card)
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 0)

@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
+from .appsettings import save_pref
 from .model import clean_unit
 # Re-exported: the escaping helper lives in theme so model.py (which
 # tuningui imports) can use it too.
@@ -356,8 +357,7 @@ class Navigator(QWidget):
             return
         self._recent = [name] + [n for n in self._recent if n != name]
         self._recent = self._recent[:RECENT_MAX]
-        self._settings.setValue(RECENT_KEY, json.dumps(self._recent))
-        self._settings.sync()
+        save_pref(self._settings, RECENT_KEY, json.dumps(self._recent))
         if not defer:
             self._rebuild_pending = False
             self._rebuild_recent()
