@@ -33,6 +33,16 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   real dependencies (a read-only INI, an exclusively opened INI, a held replace
   target) and pins the Qt behaviours the fix relies on.
 
+## 0.38.1 — 2026-10-26
+
+### Fixed
+- The tooltip guard test now sees every ToolTipRole position: a role in the
+  middle of the call (`QTreeWidgetItem.setData(column, role, value)`), a
+  `{ToolTipRole: value}` roles dict, and `match`/`case` role arms; any other
+  mention of ToolTipRole (a role kept in a variable, a negated test, a
+  ternary) is flagged, and a `theme` / `tuningui` name rebound in the file is
+  no longer trusted as the escaping helper's module.
+
 ## 0.38.0 — 2026-10-26
 
 ### Changed (Active Tests tab UX overhaul; cues from HP Tuners VCM Scanner, GM GDS2, Autel special functions)
