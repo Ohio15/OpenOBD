@@ -403,18 +403,20 @@ def session_simulated(meta: dict) -> bool:
     return session_provenance(meta) == PROVENANCE_SIMULATED
 
 
-def session_tag(entry: dict) -> str:
+def session_tag(entry: dict, short: bool = False) -> str:
     """Picker prefix for a tmstore.list_sessions() entry: LIVE, SIMULATED and
     UNKNOWN provenance are all shown, so a fabricated or unreadable session
-    can never pass for a drive."""
-    tag = "● LIVE  " if entry.get("live") else ""
+    can never pass for a drive. short: the compact form for the Dashboard's
+    session menu ("[SIM] "); UNKNOWN is never abbreviated."""
+    sep = " " if short else "  "
+    tag = f"● LIVE{sep}" if entry.get("live") else ""
     prov = entry.get("provenance")
     if prov is None:  # entry built without provenance: fall back to the flag
         prov = PROVENANCE_SIMULATED if entry.get("simulated") else PROVENANCE_REAL
     if prov == PROVENANCE_SIMULATED:
-        tag += "[SIMULATED]  "
+        tag += f"[{'SIM' if short else 'SIMULATED'}]{sep}"
     elif prov == PROVENANCE_UNKNOWN:
-        tag += "[PROVENANCE UNKNOWN]  "
+        tag += f"[PROVENANCE UNKNOWN]{sep}"
     return tag
 
 

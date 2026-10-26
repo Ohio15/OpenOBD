@@ -95,6 +95,12 @@ for i in range(300):
 conn.commit()
 conn.close()
 
+# The Dashboard auto-connects the OBDX Pro GT when its USB ID shows up. The
+# smoke must never open a real GT on a workstation where one is plugged in:
+# its default ports provider reports none here.
+import openobd.app as _app_mod  # noqa: E402
+_app_mod.detect_gt_ports = lambda: []
+
 app = QApplication(sys.argv)
 cal, path = load_default_cal()
 win = MainWindow(cal, path)
@@ -463,7 +469,8 @@ assert "SIMULATED" in d.status.text(), d.status.text()
 d.toggle_record()
 assert d.recording is False, "Record must stay refused for a truck-mcp session"
 _refusal = d.status.text()
-assert "archived SIMULATED" in _refusal and d.btn_connect.text() in _refusal, _refusal
+assert "archived SIMULATED" in _refusal and _app_mod.RECONNECT_GT_MENU_PATH in _refusal, _refusal
+assert not d.btn_record.isEnabled(), "Record must be disabled for a truck-mcp session"
 assert "session_export" not in _refusal, _refusal
 d.stop()
 d.bind_source(LogReplaySource(win.log, speed=1.0))
@@ -586,7 +593,8 @@ assert win.cursor_label.text().startswith("t="), "cursor readout empty"
 
 # replay transport controls
 d = win.dashboard
-assert d.replay_ctl.isVisible() or True  # offscreen: visibility not painted
+assert not d.replay_ctl.isHidden() and not d.btn_pause.isHidden()
+assert d.btn_start.parent() is d.replay_ctl and d.btn_stop.parent() is d.replay_ctl
 assert hasattr(d.source, "seek")
 d.start()
 d._toggle_pause()
@@ -705,16 +713,20 @@ assert d.gauges["ethanol"].isHidden()
 # was 1150 px (unwrapped status line); the toolbar buttons are now the floor
 assert d.minimumSizeHint().width() < 1000, d.minimumSizeHint().width()
 # shortcuts exist and are advertised in the tooltips
-assert "Ctrl+G" in d.shortcut_tooltip(d.btn_connect)
+# Connect GT / truck-mcp session moved from bar buttons to menu actions
+assert not hasattr(d, "btn_connect") and not hasattr(d, "btn_tm")
+assert win.act_reconnect_gt.shortcut().toString() == "Ctrl+G"
+assert win.act_reconnect_gt.text() == _app_mod.RECONNECT_GT_LABEL
 assert "F5" in d.shortcut_tooltip(d.btn_start)
 assert "Shift+F5" in d.shortcut_tooltip(d.btn_stop)
 # the recorder rewrites btn_record's tooltip with the log path; the key hint
 # is appended at display time and must survive that
 d.btn_record.setToolTip("Last recording: C:/x.csv")
-assert d.shortcut_tooltip(d.btn_record) == "Last recording: C:/x.csv (Ctrl+R)"
+assert d.shortcut_tooltip(d.btn_record) == "Last recording: C:/x.csv (R)"
 d.btn_record.setToolTip("")
-assert d.shortcut_tooltip(d.btn_record).endswith("datalog (Ctrl+R)")
-assert len(d._shortcuts) == 7
+assert d.shortcut_tooltip(d.btn_record).endswith("datalog (R)")
+assert len(d._shortcuts) == 7   # R, Ctrl+R, M, F5, Shift+F5, Space, P
+assert "(Space)" in d.shortcut_tooltip(d.btn_pause)
 assert "(M)" in d.shortcut_tooltip(d.btn_mark)
 print("gauge fluency OK: eased needle landed, held/stale/failed states, "
       "collapse + reflow, shortcuts")

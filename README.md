@@ -94,10 +94,14 @@ connected.
 
 ## Live from the OBDX Pro GT
 
-**Dashboard → 🔌 Connect GT Pro** (or launch with `--gt`) polls the ECM through the
-OBDX Pro GT's ELM327 text mode. The GT is found by its USB id (0483:5740) and
-nothing else: with no GT, or two, the connect fails and names every serial
-port it saw, rather than guessing a port that might be the OBDLink MX+.
+Plug the OBDX Pro GT in: the Dashboard finds it by its USB id (0483:5740)
+within 2 s and connects by itself, then polls the ECM through the GT's
+ELM327 text mode. It looks for nothing else: with two GTs the connect fails
+and names every serial port it saw, rather than guessing a port that might be
+the OBDLink MX+. **Settings → Reconnect GT now** (Ctrl+G) forces a connect;
+**Settings → Disconnect GT** stops it until it is unplugged and replugged.
+Auto-connect pauses while a truck-mcp session (**File → Open truck-mcp
+session…**) or a log replay is bound.
 
 * **Identified before it is configured.** After any pass-thru session (an
   e38flash read, HP Tuners, a sniff) the GT stays in its binary pass-thru mode
@@ -183,7 +187,7 @@ RPM drops) so you can compare real WOT shifts to the setpoint tables.
 
 **Dashboard** — a gauge cluster with rolling sparklines and min/max capture
 (click a gauge to reset). Replay has full transport controls — pause/resume,
-speed (0.5–8×), and a seek slider. **⏺ Record** streams every sample losslessly
+speed (0.5–8×), and a seek slider. The big **⏺ RECORD** button (R) streams every sample losslessly
 to disk (drain-based, not UI-tick-sampled) and offers the saved CSV straight
 back to Log Analysis. Fed by a `LogReplaySource` or live by `GtDataSource`
 (OBDX Pro GT), both behind the same `DataSource` seam.

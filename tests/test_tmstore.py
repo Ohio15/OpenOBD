@@ -379,6 +379,16 @@ def test_session_tag_shows_live_and_simulated():
     assert tmstore.session_tag({}) == ""
 
 
+def test_session_tag_short_form_for_the_dashboard_menu():
+    assert tmstore.session_tag({"simulated": True}, short=True) == "[SIM] "
+    assert tmstore.session_tag({"provenance": "simulated", "live": True},
+                               short=True) == "● LIVE [SIM] "
+    # unknown provenance is never abbreviated, real stays untagged
+    assert (tmstore.session_tag({"provenance": "unknown"}, short=True)
+            == "[PROVENANCE UNKNOWN] ")
+    assert tmstore.session_tag({"provenance": "real"}, short=True) == ""
+
+
 def test_candidate_roots_env_is_authoritative(tmp_path, monkeypatch):
     monkeypatch.setenv("TRUCK_MCP_DATA", str(tmp_path))
     roots = tmstore.candidate_roots()
