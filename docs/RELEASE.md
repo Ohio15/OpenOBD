@@ -10,6 +10,22 @@ Commands are PowerShell, run from the repo root (the folder holding
 `openobd.spec`). The checkout can live anywhere: `_build.bat` and
 `_deploy.ps1` resolve paths from their own location.
 
+**Run `_build.bat` and `_deploy.ps1` from PowerShell or cmd, never through Git
+Bash/MSYS.** From Git Bash, `cmd /c "D:\...\_build.bat"` has its path argument
+mangled: cmd prints its banner, exits 0, and the build never runs. That
+silently left a stale `dist\openobd.exe` on the v0.34.0 release (discovery
+455efc83). The exact lines (from the repo root, in PowerShell):
+
+```powershell
+.\_build.bat; "build exit $LASTEXITCODE"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\_deploy.ps1; "deploy exit $LASTEXITCODE"
+```
+
+Defence in depth: `_build.bat` deletes the previous `dist\openobd.exe` and
+`build.log` before building, and `_deploy.ps1` refuses a build that does not
+match the package (step 5a, step 7), so a skipped build now fails loudly
+instead of deploying old code.
+
 ## 1. Prerequisites (once per checkout)
 
 - Windows with Python 3 (the `py` launcher) installed.
@@ -93,6 +109,27 @@ Select-String -Path openobd\__init__.py -Pattern '__version__'
 The two versions must be equal. Optionally launch `dist\openobd.exe` once
 and confirm it opens on the 2010 Silverado calibration.
 
+### 5a. Pre-deploy version check (explicit, do not skip)
+
+Confirm the exe you are about to install is the one just built from this
+tree, and that `build.log` shows a clean build and verify:
+
+```powershell
+(Get-Item dist\openobd.exe).VersionInfo.ProductVersion
+Select-String -Path openobd\__init__.py -Pattern '__version__'
+(Get-Item dist\openobd.exe).LastWriteTime        # must be from this build
+Select-String -Path build.log -Pattern '^(BUILD|VERIFY)_DONE_EXIT_'   # both _0
+```
+
+`_deploy.ps1` enforces this itself and refuses (non-zero exit, nothing
+copied, no backup taken, install dir untouched) unless all hold: last
+`BUILD_DONE_EXIT_0` then `VERIFY_DONE_EXIT_0` in `build.log`; exe
+`ProductVersion` equals `__version__`; no file under `openobd\` newer than the
+exe; exe and `build.log` written within 10 minutes of each other (the exe is
+written before the log's DONE lines, so "same build" is an mtime pairing, not
+"exe newer than log"). If it refuses, run `_build.bat` from PowerShell and
+retry. Do not work around the gate by copying the exe by hand.
+
 ## 6. Back up the installed copy
 
 Automatic: `_deploy.ps1` copies the outgoing exe to
@@ -108,8 +145,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\_deploy.ps1
 
 What it does:
 
-- Fails with "no build at ... run _build.bat first" if
+- Runs the pre-deploy gate (step 5a) first. Any failure prints
+  "deploy REFUSED (nothing copied, no backup taken): <reason>" and exits
+  non-zero; this includes "no build at ... run _build.bat first" when
   `dist\openobd.exe` is missing.
+- Test or dry-run against a throwaway location with `-DistExe`, `-InstallDir`,
+  `-BuildLog`, `-PackageDir` and `-NoShortcuts` (all default to the real paths).
 - Creates `%LOCALAPPDATA%\Programs\OpenOBD` if needed.
 - If OpenOBD is running from that folder, it asks each window to close.
   Unsaved calibration edits bring up the "Save before closing?" prompt. It

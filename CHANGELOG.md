@@ -3,6 +3,26 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.34.1 — 2026-10-26
+
+### Fixed (release tooling, discovery 455efc83)
+- **`_deploy.ps1` refuses a stale build.** On the v0.34.0 release a silently
+  skipped build left a 0.32.2 `dist\openobd.exe` that the deploy installed over
+  0.33.0. The deploy now checks, before touching anything (no copy, no backup,
+  no install dir created), that `build.log` ends `BUILD_DONE_EXIT_0` then
+  `VERIFY_DONE_EXIT_0`, that the exe `ProductVersion` equals `__version__`, that
+  no file under `openobd\` is newer than the exe, and that the exe and
+  `build.log` come from the same build (mtimes within 10 minutes). New
+  parameters `-DistExe`, `-InstallDir`, `-BuildLog`, `-PackageDir`,
+  `-NoShortcuts` default to the real locations.
+- **`_build.bat` deletes the previous `dist\openobd.exe` and `build.log` first**,
+  so a failed or skipped build cannot leave a stale exe behind.
+- **`docs\RELEASE.md`**: build and deploy run from PowerShell or cmd, never Git
+  Bash/MSYS (which mangles the `cmd /c` argument and skips the build), plus an
+  explicit pre-deploy version check step.
+- Tests: `tests/test_deploy_gate.py` runs the real `_deploy.ps1` against a
+  throwaway dist and install dir.
+
 ## 0.34.0 — 2026-10-26
 
 ### Changed (Dashboard controls redesign)

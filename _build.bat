@@ -16,6 +16,15 @@ if not exist "%PY%" (
     exit /b 2
 )
 
+REM Remove the previous exe (and the old log) first: a failed or skipped build
+REM must never leave a stale dist\openobd.exe for _deploy.ps1 to install.
+if exist "dist\openobd.exe" del /f /q "dist\openobd.exe"
+if exist "dist\openobd.exe" (
+    echo cannot delete dist\openobd.exe - is it running? close it and rerun
+    exit /b 5
+)
+if exist build.log del /f /q build.log
+
 "%PY%" -m PyInstaller openobd.spec --noconfirm --clean > build.log 2>&1
 set "RC=%ERRORLEVEL%"
 echo BUILD_DONE_EXIT_%RC% >> build.log
