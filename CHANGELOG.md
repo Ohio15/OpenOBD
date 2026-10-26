@@ -9,8 +9,10 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
 - **Design tokens (`openobd/theme.py`).** Colours, spacing and control heights
   (toolbar 36 px, Dashboard primary row 56 px) plus QSS helpers live in one
   module; the dark palette, Dashboard Record/Mark buttons, Diagnostics, Live
-  Data and the strip chart read them. No raw colour literals remain outside
-  `theme.py` (gauge dial colours exempt).
+  Data and the strip chart read them. Outside `theme.py`, no module in
+  `openobd/` other than `gauges.py` holds a raw colour literal (`#rrggbb` or
+  `QColor(r, g, b)`); `gauges.py` keeps its dial artwork colours, and a test
+  scans every other module for both spellings.
 - **Navigator.** Search-as-you-type (Ctrl+F focuses, Esc clears, Down/Enter
   navigate), collapsible categories with counts, a changed-vs-stock dot per
   table and a persisted "Recent" group (8 tables). A breadcrumb header
@@ -42,6 +44,28 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   endpoints, navigator filter + Recent persistence, Ctrl+F / Esc, Smooth
   undo/redo, TSV round trip / clipping / rejection, diff colouring and
   tooltip, changed-cell marker, selection stats, scalar undo, minimum width).
+
+### Fixed (review round 1 + security gate pass 1)
+- nan / inf / -inf can no longer enter a calibration: one finite-number gate
+  (`editops.parse_number`) backs paste (the whole paste is refused and the
+  status bar says why), in-cell edits and scalar edits.
+- Log overlay grids and their scale are built once per change instead of per
+  cell per role (a 16x16 repaint rebuilt them over a thousand times).
+- Copy / Paste only act while Tuning > Editor is showing; Ctrl+V on Scalars,
+  Log Analysis or another page no longer writes into the hidden table.
+- Undoing back to the saved state clears the unsaved-changes flag (the undo
+  stack's clean index tracks save and load).
+- Holding a grid math key (+, -, ...) no longer pushes one undo step per
+  key repeat.
+- Clicking a Recent table rebuilds the Recent group after the click is
+  delivered, not while Qt still holds the clicked item.
+- Opening another calibration with unsaved edits asks about (and saves) the
+  OLD file before loading the new one; previously Save wrote the new file and
+  the old edits were lost.
+- A table with no stock baseline reads as such: no navigator dot, a muted
+  "no stock baseline" chip and "n/a" diff text, never "0 cells changed".
+- Diff colour scale tolerates a stock grid whose shape differs from the
+  values grid. Dead `CalTableModel.revert_cell` (bypassed undo) removed.
 
 ## 0.34.1 — 2026-10-26
 

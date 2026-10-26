@@ -1,6 +1,7 @@
 """openobd.theme: colour scales, contrast, tokens and the QSS/palette helpers
 (brief item 1). The scale functions are pure; the palette test needs a
 QApplication (offscreen)."""
+import glob
 import os
 import re
 import sys
@@ -93,14 +94,26 @@ def test_qss_helpers_use_tokens_only():
 
 
 def test_no_raw_colour_literals_outside_theme():
-    """Every colour lives in theme.py (gauges.py dial colours exempt)."""
+    """Every colour lives in theme.py. Scans every module in openobd/ (so a
+    new module is covered without editing this list) for both spellings of
+    a raw colour: a '#rrggbb' string and a QColor(<int>, ...) constructor.
+
+    gauges.py is the one exemption: the Dashboard dial artwork (bezels,
+    needles, zone arcs, skin palettes) is illustration, not UI chrome, and
+    is drawn per skin rather than from the shared token set."""
     pkg = os.path.join(ROOT, "openobd")
+    exempt = {"theme.py", "gauges.py"}
+    pattern = re.compile(r"#[0-9a-fA-F]{6}\b|QColor\(\s*\d+\s*,")
+    files = sorted(os.path.basename(p)
+                   for p in glob.glob(os.path.join(pkg, "*.py")))
+    assert "app.py" in files and "model.py" in files    # glob is live
     offenders = []
-    for name in ("app.py", "tuningui.py", "diagui.py", "livedata.py",
-                 "stripchart.py", "model.py"):
+    for name in files:
+        if name in exempt:
+            continue
         with open(os.path.join(pkg, name), encoding="utf-8") as f:
             for n, line in enumerate(f, 1):
-                if re.search(r"#[0-9a-fA-F]{6}\b", line):
+                if pattern.search(line):
                     offenders.append(f"{name}:{n}")
     assert offenders == []
 

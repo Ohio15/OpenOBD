@@ -54,7 +54,7 @@ def repolish(widget: QWidget) -> None:
 
 
 def set_chip(label: QLabel, kind: str) -> None:
-    """kind: neutral | danger | accent (theme.chip_qss)."""
+    """kind: neutral | danger | accent | muted (theme.chip_qss)."""
     if label.property("chip") != kind:
         label.setProperty("chip", kind)
         repolish(label)
@@ -248,6 +248,7 @@ class Navigator(QWidget):
             self._cats[cat].addChild(self._make_leaf(t))
             self._cat_total[cat] += 1
         self._recent: list[str] = self._load_recent()
+        self._rebuild_pending = False   # a deferred Recent rebuild is queued
         self._rebuild_recent()
         self._relabel_groups()
         self._recent_root.setExpanded(True)
@@ -264,6 +265,8 @@ class Navigator(QWidget):
         leaf = QTreeWidgetItem([table_label(t)])
         leaf.setData(0, Qt.UserRole, t.name)
         tip = t.name + (f"\n{t.note}" if t.note else "")
+        if self.changed_state(t.name) == self.NO_STOCK:
+            tip += "\nNo stock baseline: changes cannot be tracked"
         leaf.setToolTip(0, tip)
         changed = self.is_changed(t.name)
         leaf.setIcon(0, self._dot if changed else self._blank)
@@ -289,14 +292,28 @@ class Navigator(QWidget):
     def recent(self) -> list[str]:
         return list(self._recent)
 
-    def push_recent(self, name: str) -> None:
+    def push_recent(self, name: str, defer: bool = False) -> None:
+        """Move name to the front of Recent. defer=True (the click path)
+        rebuilds the Recent items on the next event-loop turn: rebuilding
+        deletes the Recent leaves, and the clicked one may be the item Qt
+        is still delivering itemClicked / itemActivated for."""
         if name not in self._by_name:
             return
         self._recent = [name] + [n for n in self._recent if n != name]
         self._recent = self._recent[:RECENT_MAX]
         self._settings.setValue(RECENT_KEY, json.dumps(self._recent))
         self._settings.sync()
-        self._rebuild_recent()
+        if not defer:
+            self._rebuild_pending = False
+            self._rebuild_recent()
+        elif not self._rebuild_pending:
+            self._rebuild_pending = True
+            QTimer.singleShot(0, self, self._deferred_rebuild)
+
+    def _deferred_rebuild(self) -> None:
+        if self._rebuild_pending:
+            self._rebuild_pending = False
+            self._rebuild_recent()
 
     def _rebuild_recent(self) -> None:
         for i in reversed(range(self._recent_root.childCount())):
@@ -358,6 +375,18 @@ class Navigator(QWidget):
         return out
 
     # -- changed dots ------------------------------------------------------- #
+    CHANGED = "changed"
+    UNCHANGED = "unchanged"
+    NO_STOCK = "no-stock"
+
+    def changed_state(self, name: str) -> str:
+        """Three-valued verdict: CHANGED / UNCHANGED vs stock, or NO_STOCK
+        when the table has no baseline (unknown, never 'unchanged')."""
+        t = self._by_name.get(name)
+        if t is None or t.stock_values is None:
+            return self.NO_STOCK
+        return self.CHANGED if self.is_changed(name) else self.UNCHANGED
+
     def is_changed(self, name: str) -> bool:
         t = self._by_name.get(name)
         if t is None or t.stock_values is None:
@@ -395,7 +424,7 @@ class Navigator(QWidget):
     def _on_item(self, item: QTreeWidgetItem, _col: int = 0) -> None:
         name = item.data(0, Qt.UserRole)
         if name:
-            self.push_recent(name)
+            self.push_recent(name, defer=True)
             self.table_activated.emit(name)
             # push_recent rebuilt Recent: keep the highlight on a live item.
             self.select_name(name)

@@ -339,7 +339,7 @@ QLabel#breadcrumbNote {{ color: {_c('text-muted')}; }}
 
 def chip_qss() -> str:
     """Chips are QLabels with the dynamic property chip = neutral | danger |
-    accent | ok. Re-polish after changing the property (tuningui.set_chip)."""
+    accent | muted | ok. Re-polish after changing the property (tuningui.set_chip)."""
     return f"""
 QLabel[chip="neutral"] {{
     color: {_c('text')}; background: {_c('surface-raised')};
@@ -348,6 +348,10 @@ QLabel[chip="neutral"] {{
 QLabel[chip="danger"] {{
     color: {_c('danger-text')}; background: {_c('danger-surface')};
     border: 1px solid {_c('danger')}; border-radius: {RADIUS['md']}px; padding: 1px {SPACING['md']}px;
+}}
+QLabel[chip="muted"] {{
+    color: {_c('text-muted')}; background: {_c('surface-sunken')};
+    border: 1px dashed {_c('border')}; border-radius: {RADIUS['md']}px; padding: 1px {SPACING['md']}px;
 }}
 QLabel[chip="accent"] {{
     color: {_c('link')}; background: {_c('surface-raised')};

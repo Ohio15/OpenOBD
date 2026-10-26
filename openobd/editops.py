@@ -11,6 +11,7 @@ result in an undo command and the core stays unit-testable without Qt.
 """
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 from .calspec import Table
@@ -212,9 +213,21 @@ def to_tsv(table: Table, cells: Cells) -> str:
     return "\n".join(lines)
 
 
+def parse_number(value) -> Optional[float]:
+    """The one gate every edit sink uses: value as a finite float, or None.
+    float() accepts 'nan', 'inf' and '-inf'; none of those is a calibration
+    value (a NaN never compares equal, so it also defeats change tracking),
+    so they are refused here exactly like non-numeric text."""
+    try:
+        fv = float(value)
+    except (TypeError, ValueError):
+        return None
+    return fv if math.isfinite(fv) else None
+
+
 def parse_tsv(text: str) -> list[list[Optional[float]]]:
-    """Clipboard TSV -> grid of floats (None for blanks/non-numeric).
-    Accepts trailing newline; tolerates CRLF."""
+    """Clipboard TSV -> grid of floats (None for blanks, non-numeric and
+    non-finite fields). Accepts trailing newline; tolerates CRLF."""
     grid: list[list[Optional[float]]] = []
     for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         if line == "" and grid:  # trailing blank line
@@ -222,10 +235,7 @@ def parse_tsv(text: str) -> list[list[Optional[float]]]:
         row: list[Optional[float]] = []
         for cell in line.split("\t"):
             cell = cell.strip()
-            try:
-                row.append(float(cell)) if cell else row.append(None)
-            except ValueError:
-                row.append(None)
+            row.append(parse_number(cell) if cell else None)
         grid.append(row)
     while grid and all(v is None for v in grid[-1]):
         grid.pop()
@@ -236,7 +246,8 @@ def parse_tsv_checked(text: str) -> tuple[list[list[Optional[float]]],
                                           list[tuple[int, int, str]]]:
     """parse_tsv plus the cells it could not read: (grid, rejects) where
     rejects lists (row, col, text) for every non-blank field that is not a
-    number. The editor refuses a paste with any reject rather than silently
+    finite number (text, nan, inf, -inf). The editor refuses a paste with
+    any reject rather than silently
     skipping it (an Excel header row would otherwise land as a partial,
     shifted paste)."""
     rejects: list[tuple[int, int, str]] = []
@@ -244,11 +255,7 @@ def parse_tsv_checked(text: str) -> tuple[list[list[Optional[float]]],
     for r, line in enumerate(lines):
         for c, cell in enumerate(line.split("\t")):
             cell = cell.strip()
-            if not cell:
-                continue
-            try:
-                float(cell)
-            except ValueError:
+            if cell and parse_number(cell) is None:
                 rejects.append((r, c, cell))
     return parse_tsv(text), rejects
 

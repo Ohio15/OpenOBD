@@ -264,6 +264,7 @@ def test_smooth_edges_use_neighbours_inside_table():
 
 def test_tsv_round_trip_clip_and_reject(win, qapp):
     from PySide6.QtWidgets import QApplication
+    show_editor(win)                # copy / paste act on the Editor only
     t = open_table(win, first_2d_table(win).name)
     restore_stock(win, t)
     for r in range(3):          # distinct values so every paste is visible
@@ -528,3 +529,356 @@ def test_log_tab_empty_state_and_shared_chrome(win):
         assert len(bars) == 1 and len(crumbs) == 1
         assert bars[0].maximumHeight() == theme.TOOLBAR_HEIGHT
         assert crumbs[0].maximumHeight() == theme.BREADCRUMB_HEIGHT
+
+
+# --------------------------------------------------------------------------- #
+# Review round 1 / gate pass 1 regressions
+# --------------------------------------------------------------------------- #
+def show_editor(win):
+    win.main_tabs.setCurrentWidget(win.tuning_page)
+    win.tune_tabs.setCurrentWidget(win.editor_tab)
+
+
+def test_paste_and_setdata_refuse_non_finite(win, qapp):
+    from PySide6.QtWidgets import QApplication
+    show_editor(win)
+    t = open_table(win, first_2d_table(win).name)
+    restore_stock(win, t)
+    before = [row[:] for row in t.values]
+    for bad in ("nan", "inf", "-inf"):
+        QApplication.clipboard().setText(f"1\t{bad}\n2\t3\n")
+        select_rect(win, 0, 0, 0, 0)
+        n = win.undo_stack.count()
+        win.paste_selection()
+        assert win.undo_stack.count() == n, bad
+        assert t.values == before, bad
+        msg = win.statusBar().currentMessage()
+        assert "rejected" in msg and "finite" in msg, msg
+    m = win.current_model
+    n = win.undo_stack.count()
+    for bad in ("inf", "-inf", "nan"):
+        assert m.setData(m.index(0, 0), bad) is False
+    assert t.values == before and win.undo_stack.count() == n
+
+
+def test_overlay_grids_built_once_per_sweep(qapp):
+    from PySide6.QtCore import Qt
+    from openobd.logbin import CellBin, Overlay
+    from openobd.model import CalTableModel
+    n = 16
+    vals = [[float(r * n + c) for c in range(n)] for r in range(n)]
+    t = Table(name="Sweep", unit="", category="X",
+              x_axis=Axis("x", "", list(range(n))),
+              y_axis=Axis("y", "", list(range(n))),
+              values=vals, stock_values=[row[:] for row in vals])
+    bins = [[CellBin() for _ in range(n)] for _ in range(n)]
+    for r in range(n):
+        for c in range(0, n, 3):
+            bins[r][c].add(float(r + c))
+    ov = Overlay(n, n, bins, n * 6, "afr")
+    calls = {"count": 0, "mean": 0}
+    real_count, real_mean = ov.count_grid, ov.mean_grid
+
+    def count_grid():
+        calls["count"] += 1
+        return real_count()
+
+    def mean_grid():
+        calls["mean"] += 1
+        return real_mean()
+    ov.count_grid, ov.mean_grid = count_grid, mean_grid
+    m = CalTableModel(t)
+    roles = (Qt.DisplayRole, Qt.BackgroundRole, Qt.ForegroundRole,
+             Qt.ToolTipRole)
+    for mode in (CalTableModel.OVERLAY_COUNT, CalTableModel.OVERLAY_MEAN):
+        m.set_overlay(ov, mode)
+        calls.update(count=0, mean=0)
+        for r in range(n):
+            for c in range(n):
+                for role in roles:
+                    m.data(m.index(r, c), role)
+        assert calls == {"count": 1, "mean": 1}, (mode, calls)
+    # An edit notification drops the cache like _stats.
+    m.refresh_all()
+    calls.update(count=0, mean=0)
+    m.data(m.index(0, 0), Qt.BackgroundRole)
+    m.data(m.index(1, 1), Qt.BackgroundRole)
+    assert calls == {"count": 1, "mean": 1}
+
+
+def test_clipboard_actions_gated_to_editor(win, qapp):
+    from PySide6.QtWidgets import QApplication
+    show_editor(win)
+    t = open_table(win, first_2d_table(win).name)
+    restore_stock(win, t)
+    assert win.act_paste.isEnabled() and win.act_copy.isEnabled()
+    before = [row[:] for row in t.values]
+    QApplication.clipboard().setText("1234\t5678\n")
+    select_rect(win, 0, 0, 0, 0)
+    for switch in (lambda: win.tune_tabs.setCurrentIndex(1),     # Scalars
+                   lambda: win.tune_tabs.setCurrentIndex(2),     # Log
+                   lambda: win.main_tabs.setCurrentIndex(0)):    # Dashboard
+        show_editor(win)
+        switch()
+        assert not win.act_paste.isEnabled()
+        assert not win.act_copy.isEnabled()
+        n = win.undo_stack.count()
+        win.act_paste.trigger()
+        win.paste_selection()            # the explicit in-slot check
+        assert t.values == before and win.undo_stack.count() == n
+        assert "refused" in win.statusBar().currentMessage()
+    show_editor(win)
+    assert win.act_paste.isEnabled()
+    n = win.undo_stack.index()
+    win.act_paste.trigger()
+    assert t.values[0][0] == 1234.0 and win.undo_stack.index() == n + 1
+    assert win.undo_stack.undoText() == "paste"
+    win.undo_stack.undo()
+    assert t.values == before
+
+
+def test_dashboard_shortcuts_do_not_leak_into_item_views(win, qapp):
+    """R / Ctrl+R / M / Space / P are Dashboard shortcuts; typed into the
+    calibration grid or the scalars tree they must not record/mark/pause."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+    hits = []
+    slots = []
+    for sc in win.dashboard._shortcuts:
+        slot = (lambda k=sc.key().toString(): hits.append(k))
+        sc.activated.connect(slot)
+        slots.append((sc, slot))
+    try:
+        win.activateWindow()
+        show_editor(win)
+        t = open_table(win, first_2d_table(win).name)
+        restore_stock(win, t)
+        before = [row[:] for row in t.values]
+        for tab, view in ((0, win.view), (1, win.scalars_view.view)):
+            win.tune_tabs.setCurrentIndex(tab)
+            qapp.processEvents()
+            view.setFocus()
+            for key in (Qt.Key_R, Qt.Key_M, Qt.Key_Space, Qt.Key_P):
+                QTest.keyClick(view, key)
+                fw = QApplication.focusWidget()
+                if fw is not None and fw is not view:   # cell editor opened
+                    QTest.keyClick(fw, Qt.Key_Escape)
+            QTest.keyClick(view, Qt.Key_R, Qt.ControlModifier)
+            qapp.processEvents()
+            assert hits == [], (tab, hits)
+        assert t.values == before
+        # Positive control: the same shortcuts are live on the Dashboard,
+        # so the empty result above is not a dead harness.
+        win.main_tabs.setCurrentWidget(win.dashboard)
+        qapp.processEvents()
+        win.dashboard.setFocus()
+        QTest.keyClick(win, Qt.Key_M)
+        qapp.processEvents()
+        assert hits == ["M"]
+    finally:
+        for sc, slot in slots:
+            sc.activated.disconnect(slot)
+        show_editor(win)
+
+
+def _fresh_window(qapp, tmp_path, stem):
+    from openobd.app import MainWindow, load_default_cal
+    from openobd.calspec import Calibration
+    cal, _ = load_default_cal()
+    path = str(tmp_path / f"{stem}.cal.json")
+    cal.save(path)
+    w = MainWindow(Calibration.load(path), path)
+    w.show()
+    qapp.processEvents()
+    return w, path
+
+
+def _close_window(w):
+    w.dirty = False
+    w._shutdown_pages()
+    w.close()
+
+
+def _first_value(path, name):
+    from openobd.calspec import Calibration
+    return next(t for t in Calibration.load(path).tables
+                if t.name == name).values[0][0]
+
+
+def test_dirty_follows_undo_clean_index(qapp, tmp_path):
+    w, _path = _fresh_window(qapp, tmp_path, "dirty")
+    try:
+        show_editor(w)
+        m = w.current_model
+        v0 = m.table.values[0][0]
+        assert w.dirty is False
+        m.setData(m.index(0, 0), str(v0 + 1))
+        assert w.dirty is True and w.windowTitle().endswith("*")
+        w.undo_stack.undo()
+        assert w.dirty is False and not w.windowTitle().endswith("*")
+        m.setData(m.index(0, 0), str(v0 + 2))
+        w.save_cal()
+        assert w.dirty is False
+        m.setData(m.index(0, 0), str(v0 + 3))
+        assert w.dirty is True
+        w.undo_stack.undo()                 # back to the saved state
+        assert w.dirty is False
+        w.undo_stack.undo()                 # past it: differs from disk
+        assert w.dirty is True
+    finally:
+        _close_window(w)
+
+
+def test_grid_math_key_ignores_auto_repeat(win, qapp):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    show_editor(win)
+    t = open_table(win, first_2d_table(win).name)
+    restore_stock(win, t)
+    before = [row[:] for row in t.values]
+    win.amount_spin.setValue(1)
+    select_rect(win, 0, 0, 0, 0)
+    n = win.undo_stack.count()
+    rep = QKeyEvent(QEvent.KeyPress, Qt.Key_Plus, Qt.NoModifier, "+", True)
+    assert rep.isAutoRepeat()
+    assert win.eventFilter(win.view, rep) is True     # consumed, no-op
+    assert win.undo_stack.count() == n and t.values == before
+    n = win.undo_stack.index()
+    first = QKeyEvent(QEvent.KeyPress, Qt.Key_Plus, Qt.NoModifier, "+")
+    assert win.eventFilter(win.view, first) is True
+    assert win.undo_stack.index() == n + 1
+    win.undo_stack.undo()
+    assert t.values == before
+
+
+def test_click_recent_item_defers_rebuild(qapp, tmp_path):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from openobd.tuningui import Navigator
+    nav = Navigator(tables_fixture(), nav_settings(tmp_path))
+    nav.resize(320, 600)
+    for name in ("Table 01", "Table 02", "Table 03"):
+        nav.push_recent(name)
+    nav.show()
+    nav._recent_root.setExpanded(True)
+    qapp.processEvents()
+    opened = []
+    nav.table_activated.connect(opened.append)
+    root = nav._recent_root
+    names = [root.child(i).data(0, Qt.UserRole)
+             for i in range(root.childCount())]
+    assert names == ["Table 03", "Table 02", "Table 01"]
+    leaf = root.child(2)
+    nav.tree.scrollToItem(leaf)
+    qapp.processEvents()
+    rect = nav.tree.visualItemRect(leaf)
+    assert rect.isValid()
+    QTest.mouseClick(nav.tree.viewport(), Qt.LeftButton, Qt.NoModifier,
+                     rect.center())
+    assert opened == ["Table 01"]
+    assert nav.recent()[0] == "Table 01"
+    assert nav._rebuild_pending          # not rebuilt inside the signal
+    qapp.processEvents()
+    assert not nav._rebuild_pending
+    names = [root.child(i).data(0, Qt.UserRole)
+             for i in range(root.childCount())]
+    assert names == ["Table 01", "Table 03", "Table 02"]
+    nav.close()
+
+
+def test_table_stats_tolerate_stock_shape_mismatch(qapp):
+    from PySide6.QtCore import Qt
+    from openobd.model import CalTableModel
+    t = make_table()
+    t.stock_values = [row[:2] for row in t.stock_values[:2]]   # 2x2 of 3x4
+    m = CalTableModel(t)
+    m.set_diff_mode(CalTableModel.DIFF_ABS)
+    t.values[0][0] += 4.0
+    m.refresh_all()
+    for r in range(t.n_rows):
+        for c in range(t.n_cols):
+            m.data(m.index(r, c), Qt.BackgroundRole)
+    assert m._table_stats()["max_abs"] == 4.0
+    assert m.delta_text(2, 3) == "n/a"
+
+
+def test_open_cal_saves_old_file_not_new(qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+    app = QApplication.instance()
+    prev = getattr(app, "_openobd_main", None)
+    try:
+        for answer in (QMessageBox.Save, QMessageBox.Discard):
+            tag = "save" if answer == QMessageBox.Save else "discard"
+            w, a_path = _fresh_window(qapp, tmp_path, f"a_{tag}")
+            b_path = str(tmp_path / f"b_{tag}.cal.json")
+            from openobd.calspec import Calibration
+            Calibration.load(a_path).save(b_path)
+            new = None
+            try:
+                show_editor(w)
+                m = w.current_model
+                name = m.table.name
+                v0 = m.table.values[0][0]
+                m.setData(m.index(0, 0), str(v0 + 7))
+                assert w.dirty
+                monkeypatch.setattr(
+                    QFileDialog, "getOpenFileName",
+                    staticmethod(lambda *a, **k: (b_path, "")))
+                asked = []
+
+                def question(*_a, **_k):
+                    asked.append(1)
+                    return answer
+                monkeypatch.setattr(QMessageBox, "question",
+                                    staticmethod(question))
+                w.open_cal()
+                qapp.processEvents()
+                new = app._openobd_main
+                assert new is not w and new.path == b_path
+                assert asked == [1]                 # asked exactly once
+                assert w.path == a_path and not w.isVisible()
+                want_a = v0 + 7 if answer == QMessageBox.Save else v0
+                assert _first_value(a_path, name) == want_a
+                assert _first_value(b_path, name) == v0   # new file untouched
+            finally:
+                if new is not None and new is not w:
+                    _close_window(new)
+                if w.isVisible():
+                    _close_window(w)
+    finally:
+        app._openobd_main = prev
+
+
+def test_no_stock_table_is_a_distinct_state(win, qapp, tmp_path):
+    from openobd.model import CalTableModel
+    from openobd.tuningui import Navigator
+    tables = tables_fixture()
+    tables[2].stock_values = None
+    tables[1].values[0][0] = 99.0
+    nav = Navigator(tables, nav_settings(tmp_path))
+    assert nav.changed_state("Table 02") == Navigator.NO_STOCK
+    assert nav.changed_state("Table 01") == Navigator.CHANGED
+    assert nav.changed_state("Table 00") == Navigator.UNCHANGED
+    assert not nav.has_dot("Table 02")
+    assert "No stock baseline" in nav._leaves["Table 02"][0].toolTip(0)
+    # Breadcrumb chip and the diff text in the window.
+    show_editor(win)
+    t = open_table(win, first_2d_table(win).name)
+    stock = t.stock_values
+    try:
+        t.stock_values = None
+        win._update_table_info()
+        chips = win.editor_crumb.chips()
+        assert ("no stock baseline", "muted") in chips
+        assert not any(text.endswith("changed") for text, _ in chips)
+        m = win.current_model
+        m.set_diff_mode(CalTableModel.DIFF_ABS)
+        assert m.delta_text(0, 0) == "n/a"
+        assert m.data(m.index(0, 0)) == "n/a"
+    finally:
+        win.current_model.set_diff_mode(CalTableModel.DIFF_OFF)
+        t.stock_values = stock
+        win._update_table_info()
+    assert any(text.endswith("changed") for text, _ in
+               win.editor_crumb.chips())

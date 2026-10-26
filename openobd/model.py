@@ -24,7 +24,7 @@ from PySide6.QtWidgets import QStyledItemDelegate
 
 from . import theme
 from .calspec import Axis, Table
-from .editops import pct_delta
+from .editops import parse_number, pct_delta
 from .logbin import Overlay
 
 #: Item-data role carrying "this cell differs from stock" for the delegate.
@@ -88,6 +88,11 @@ class CalTableModel(QAbstractTableModel):
         # connections are made before any view connects, so the cache is
         # cleared before a view re-reads the cells.
         self._stats: Optional[dict] = None
+        # The log overlay's grids and their scale (count max, mean lo/hi) are
+        # cached the same way, and dropped with _stats and on set_overlay:
+        # rebuilding them per cell per role made one repaint of a 16x16
+        # table rebuild the grids over a thousand times.
+        self._overlay_cache: Optional[dict] = None
         self.dataChanged.connect(self._drop_stats)
         self.layoutChanged.connect(self._drop_stats)
         self.modelReset.connect(self._drop_stats)
@@ -95,6 +100,26 @@ class CalTableModel(QAbstractTableModel):
     # -- cached table statistics ------------------------------------------- #
     def _drop_stats(self, *_a) -> None:
         self._stats = None
+        self._overlay_cache = None
+
+    def _overlay_stats(self) -> Optional[dict]:
+        """counts / means grids plus count max and mean lo/hi for the active
+        overlay, computed once per change (None without an overlay)."""
+        if self.overlay is None:
+            return None
+        if self._overlay_cache is None:
+            counts = self.overlay.count_grid()
+            means = self.overlay.mean_grid()
+            flat = [m for row in means for m in row if m is not None]
+            self._overlay_cache = {
+                "counts": counts,
+                "count_max": max((max(row) for row in counts if row),
+                                 default=0),
+                "means": means,
+                "mean_lo": min(flat) if flat else None,
+                "mean_hi": max(flat) if flat else None,
+            }
+        return self._overlay_cache
 
     def _table_stats(self) -> dict:
         if self._stats is None:
@@ -105,7 +130,13 @@ class CalTableModel(QAbstractTableModel):
             if stock is not None:
                 for r in range(self.table.n_rows):
                     for c in range(self.table.n_cols):
-                        v, s = self.table.values[r][c], stock[r][c]
+                        # Same shape guard as stock(): a stock grid that does
+                        # not match the values grid skips the missing cells.
+                        try:
+                            s = stock[r][c]
+                        except IndexError:
+                            continue
+                        v = self.table.values[r][c]
                         max_abs = max(max_abs, abs(v - s))
                         p = pct_delta(v, s)
                         if p is not None:
@@ -160,12 +191,13 @@ class CalTableModel(QAbstractTableModel):
             return None
 
     def delta_text(self, r: int, c: int) -> str:
-        """The cell's diff-mode text: '+1.5' (absolute) or '+3.2%'. A table
-        without stock values shows the value itself."""
+        """The cell's diff-mode text: '+1.5' (absolute) or '+3.2%'. A cell
+        with no stock baseline has no delta: 'n/a' (never '+0', which would
+        read as unchanged)."""
         val = self.table.values[r][c]
         st = self.stock(r, c)
         if st is None:
-            return f"{val:g}"
+            return "n/a"
         if self.diff_mode == self.DIFF_PCT:
             p = pct_delta(val, st)
             return "n/a" if p is None else f"{p:+.1f}%"
@@ -229,18 +261,18 @@ class CalTableModel(QAbstractTableModel):
     def _bg_color(self, r: int, c: int, val: float) -> Optional[QColor]:
         # Overlay tint takes precedence when active; cells the log never
         # touched keep the palette background (None).
-        if self.overlay and self.overlay_mode == self.OVERLAY_COUNT:
-            counts = self.overlay.count_grid()
-            mx = max((max(row) for row in counts), default=0)
+        ov = self._overlay_stats()
+        if ov is not None and self.overlay_mode == self.OVERLAY_COUNT:
+            counts = ov["counts"]
+            mx = ov["count_max"]
             cnt = counts[r][c] if r < len(counts) and c < len(counts[r]) else 0
             if mx > 0 and cnt > 0:
                 return heat_color(cnt / mx, theme.OVERLAY_ALPHA)
             return None
-        if self.overlay and self.overlay_mode == self.OVERLAY_MEAN:
-            means = self.overlay.mean_grid()
-            flat = [m for row in means for m in row if m is not None]
-            if flat:
-                lo, hi = min(flat), max(flat)
+        if ov is not None and self.overlay_mode == self.OVERLAY_MEAN:
+            means = ov["means"]
+            if ov["mean_lo"] is not None:
+                lo, hi = ov["mean_lo"], ov["mean_hi"]
                 m = means[r][c] if r < len(means) and c < len(means[r]) else None
                 if m is not None:
                     span = (hi - lo) or 1.0
@@ -275,12 +307,12 @@ class CalTableModel(QAbstractTableModel):
             parts.append(f"stock {st:g}")
             parts.append(f"Δ {val - st:+g} ({pct})")
         lines = [", ".join(parts)]
-        if self.overlay:
-            counts = self.overlay.count_grid()
-            means = self.overlay.mean_grid()
+        ov = self._overlay_stats()
+        if ov is not None:
+            counts, means = ov["counts"], ov["means"]
             if r < len(counts) and c < len(counts[r]):
                 lines.append(f"log hits: {counts[r][c]}")
-                m = means[r][c]
+                m = means[r][c] if r < len(means) and c < len(means[r]) else None
                 if m is not None and self.overlay.value_channel:
                     lines.append(f"mean {self.overlay.value_channel}: {m:.2f}")
         return "\n".join(lines)
@@ -294,9 +326,8 @@ class CalTableModel(QAbstractTableModel):
     def setData(self, index, value, role=Qt.EditRole) -> bool:
         if role != Qt.EditRole or not index.isValid():
             return False
-        try:
-            fv = float(value)
-        except (TypeError, ValueError):
+        fv = parse_number(value)
+        if fv is None:          # non-numeric, nan, inf, -inf
             return False
         r, c = index.row(), index.column()
         old = self.table.values[r][c]
@@ -317,16 +348,11 @@ class CalTableModel(QAbstractTableModel):
             self.index(self.rowCount() - 1, self.columnCount() - 1))
 
     # -- helpers used by the window --------------------------------------- #
-    def revert_cell(self, r: int, c: int) -> None:
-        if self.table.stock_values is not None:
-            self.table.values[r][c] = self.table.stock_values[r][c]
-            idx = self.index(r, c)
-            self.dataChanged.emit(idx, idx)
-
     def set_overlay(self, overlay: Optional[Overlay], mode: int) -> None:
         self.layoutAboutToBeChanged.emit()
         self.overlay = overlay
         self.overlay_mode = mode
+        self._overlay_cache = None  # rebuilt once, on the views' first read
         self.layoutChanged.emit()
 
     def set_heatmap(self, on: bool) -> None:

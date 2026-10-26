@@ -1609,6 +1609,10 @@ class MainWindow(QMainWindow):
         self.current_model: Optional[CalTableModel] = None
         self.dirty = False
         self.undo_stack = QUndoStack(self)
+        # The stack's clean index is the saved state: undoing back to it
+        # clears dirty, moving off it sets dirty (_on_clean_changed).
+        self.undo_stack.setClean()
+        self.undo_stack.cleanChanged.connect(self._on_clean_changed)
 
         self.setWindowTitle(self._title())
         self.resize(1180, 760)
@@ -1634,7 +1638,8 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self._build_tree())
         self.tune_tabs = QTabWidget()
         self.tune_tabs.setDocumentMode(True)
-        self.tune_tabs.addTab(self._build_editor_tab(), "Editor")
+        self.editor_tab = self._build_editor_tab()
+        self.tune_tabs.addTab(self.editor_tab, "Editor")
         self.tune_tabs.addTab(self._build_scalars_tab(), "Scalars")
         self.tune_tabs.addTab(self._build_log_tab(), "Log Analysis")
         splitter.addWidget(self.tune_tabs)
@@ -1648,6 +1653,11 @@ class MainWindow(QMainWindow):
         self._find_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
         self._find_shortcut.activated.connect(self.focus_table_search)
         self.main_tabs.currentChanged.connect(self._sync_find_shortcut)
+        # Copy / Paste act on the calibration grid, which is only on screen
+        # on Tuning > Editor; anywhere else Ctrl+V would write into a table
+        # the user cannot see.
+        self.main_tabs.currentChanged.connect(self._sync_clipboard_actions)
+        self.tune_tabs.currentChanged.connect(self._sync_clipboard_actions)
 
         self.diag = DiagnosticsPage(self.dashboard)
         self.main_tabs.addTab(self.diag, "Diagnostics")
@@ -1663,6 +1673,7 @@ class MainWindow(QMainWindow):
         self.main_tabs.setCurrentIndex(0)
         self.setCentralWidget(self.main_tabs)
         self._sync_find_shortcut()
+        self._sync_clipboard_actions()
 
         # select first table
         if self.cal.tables:
@@ -1680,21 +1691,33 @@ class MainWindow(QMainWindow):
             self.dirty = True
             self.setWindowTitle(self._title())
 
-    def closeEvent(self, event):
+    def _on_clean_changed(self, clean: bool) -> None:
+        # Emitted after the undo/redo command ran, so it has the last word
+        # over the _mark_dirty the command's own write triggered.
+        self.dirty = not clean
+        self.setWindowTitle(self._title())
+
+    def _resolve_unsaved(self) -> bool:
+        """Ask about unsaved edits to THIS window's calibration. True when
+        it is safe to let them go (saved, discarded, or none), False when
+        the user cancelled or the save did not happen."""
         if not self.dirty:
-            self._shutdown_pages()
-            return super().closeEvent(event)
+            return True
         ans = QMessageBox.question(
             self, "Unsaved changes",
             "The calibration has unsaved edits. Save before closing?",
             QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
             QMessageBox.Save)
         if ans == QMessageBox.Cancel:
-            return event.ignore()
+            return False
         if ans == QMessageBox.Save:
             self.save_cal()
-            if self.dirty:  # save failed or Save As was cancelled
-                return event.ignore()
+            return not self.dirty   # save failed or Save As was cancelled
+        return True
+
+    def closeEvent(self, event):
+        if not self._resolve_unsaved():
+            return event.ignore()
         self._shutdown_pages()
         super().closeEvent(event)
 
@@ -1855,6 +1878,16 @@ class MainWindow(QMainWindow):
     def _sync_find_shortcut(self, *_a) -> None:
         self._find_shortcut.setEnabled(
             self.main_tabs.currentWidget() is self.tuning_page)
+
+    def _editor_showing(self) -> bool:
+        """True while Tuning > Editor (the calibration grid) is on screen."""
+        return (self.main_tabs.currentWidget() is self.tuning_page
+                and self.tune_tabs.currentWidget() is self.editor_tab)
+
+    def _sync_clipboard_actions(self, *_a) -> None:
+        on = self._editor_showing()
+        self.act_copy.setEnabled(on)
+        self.act_paste.setEnabled(on)
 
     # -- navigator (left pane) ------------------------------------------- #
     def _build_tree(self) -> QWidget:
@@ -2074,8 +2107,13 @@ class MainWindow(QMainWindow):
             chips.append((unit, "neutral"))
         if t.param_id:
             chips.append((f"HPT id {t.param_id}", "neutral"))
-        chips.append((f"{changed} cell{'' if changed == 1 else 's'} changed",
-                      "danger" if changed else "neutral"))
+        if t.stock_values is None:
+            # No baseline: "0 cells changed" would claim it is stock.
+            chips.append(("no stock baseline", "muted"))
+        else:
+            chips.append(
+                (f"{changed} cell{'' if changed == 1 else 's'} changed",
+                 "danger" if changed else "neutral"))
         self.editor_crumb.set_chips(chips)
         self.editor_crumb.set_note(t.note or "")
         self.navigator.refresh_changed(t.name)
@@ -2179,6 +2217,10 @@ class MainWindow(QMainWindow):
 
     # -- clipboard ----------------------------------------------------------- #
     def copy_selection(self):
+        if not self._editor_showing():
+            self.statusBar().showMessage(
+                "Copy works on the Tuning > Editor table", 3000)
+            return
         cells = self._selected_cells()
         if not cells:
             return
@@ -2189,7 +2231,13 @@ class MainWindow(QMainWindow):
     def paste_selection(self):
         """Paste a tab-separated grid (Excel) at the current cell as ONE
         undoable edit, clipped to the table. Any non-numeric field rejects
-        the whole paste (a header row would otherwise land shifted)."""
+        the whole paste (a header row would otherwise land shifted), and so
+        does nan / inf / -inf. Refused unless the Editor is on screen: the
+        target table is otherwise invisible."""
+        if not self._editor_showing():
+            self.statusBar().showMessage(
+                "Paste refused: open the Tuning > Editor table first", 4000)
+            return
         if not self.current_model:
             return
         grid, rejects = editops.parse_tsv_checked(
@@ -2197,8 +2245,9 @@ class MainWindow(QMainWindow):
         if rejects:
             r, c, text = rejects[0]
             self.statusBar().showMessage(
-                f"Paste rejected: {len(rejects)} non-numeric cell(s), first "
-                f"{text!r} at row {r + 1}, column {c + 1}", 6000)
+                f"Paste rejected: {len(rejects)} cell(s) not a finite number "
+                f"(text, nan and inf are refused), first {text!r} at row "
+                f"{r + 1}, column {c + 1}", 6000)
             return
         if not grid or all(v is None for row in grid for v in row):
             self.statusBar().showMessage("Clipboard has no numeric grid", 3000)
@@ -2238,7 +2287,10 @@ class MainWindow(QMainWindow):
                                              | Qt.AltModifier)):
             op = self.GRID_KEY_OPS.get(event.key())
             if op is not None:
-                self._math_op(op[0], negate=op[1])
+                # Holding a key must not push one undo step per repeat;
+                # the repeat is consumed so it never opens the cell editor.
+                if not event.isAutoRepeat():
+                    self._math_op(op[0], negate=op[1])
                 return True
         return super().eventFilter(obj, event)
 
@@ -2673,16 +2725,21 @@ class MainWindow(QMainWindow):
             self, "Open calibration", "", "Calibration (*.cal.json *.json)")
         if not p:
             return
+        # Settle THIS window's unsaved edits while self.cal / self.path still
+        # name its calibration: asking from closeEvent after the swap saved
+        # the newly opened file instead and lost the old edits.
+        if not self._resolve_unsaved():
+            return
         try:
-            self.cal = Calibration.load(p)
+            cal = Calibration.load(p)
         except Exception as e:
             QMessageBox.critical(self, "Open failed", str(e)); return
-        self.path = p
         # rebuild UI by re-instantiating (simplest, robust). Keep a Python
         # reference on the QApplication or the new window gets GC'd.
-        new = MainWindow(self.cal, p)
+        new = MainWindow(cal, p)
         QApplication.instance()._openobd_main = new
         new.show()
+        self.dirty = False      # resolved above (saved or discarded)
         self.close()
 
     def save_cal(self):
@@ -2690,6 +2747,7 @@ class MainWindow(QMainWindow):
             return self.save_cal_as()
         try:
             self.cal.save(self.path)
+            self.undo_stack.setClean()
             self.dirty = False
             self.setWindowTitle(self._title())
             self.statusBar().showMessage(f"Saved {self.path}", 4000)
