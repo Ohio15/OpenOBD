@@ -514,16 +514,20 @@ print("provenance OK: source=simulated flagged, corrupt sweep_config shown as un
 # scalar edit path + dirty tracking + invalid-input restore
 assert win.dirty is False
 win.cal.scalars[0].value = 4.10
-win._set_scalar_row(0, win.cal.scalars[0])
-it = win.scalar_tbl.item(0, 1)
-it.setText("not-a-number")   # triggers _on_scalar_edit -> restore
-assert win.scalar_tbl.item(0, 1).text() == f"{win.cal.scalars[0].value:g}", \
+win.scalars_view.refresh(0)
+sv = win.scalars_view
+sv.value_item(0).setText("not-a-number")   # -> _on_scalar_edit -> restore
+assert sv.value_text(0) == f"{win.cal.scalars[0].value:g}", \
     "invalid scalar text not reverted"
-it2 = win.scalar_tbl.item(0, 1)
-it2.setText("3.73")
+assert win.dirty is False, "rejected scalar edit marked dirty"
+sv.value_item(0).setText("3.73")
 assert win.cal.scalars[0].value == 3.73
 assert win.dirty is True, "scalar edit did not mark dirty"
-print("scalar edit/dirty OK")
+win.undo_stack.undo()
+assert win.cal.scalars[0].value == 4.10 and sv.value_text(0) == "4.1"
+win.undo_stack.redo()
+assert win.cal.scalars[0].value == 3.73
+print("scalar edit/dirty/undo OK")
 
 # Wave 1: editor power tools ------------------------------------------------
 from PySide6.QtCore import QItemSelectionModel  # noqa: E402
@@ -548,7 +552,7 @@ selm = win.view.selectionModel()
 selm.clear()
 for c in (0, 1):
     selm.select(m.index(0, c), QItemSelectionModel.Select)
-win.amount_edit.setText("3")
+win.amount_spin.setValue(3)
 before = [t.values[0][0], t.values[0][1]]
 win._math_op("add")
 assert [t.values[0][0], t.values[0][1]] == [before[0] + 3, before[1] + 3]
@@ -587,18 +591,18 @@ print("editor power tools OK (undo/math/clipboard/revert/filter)")
 from PySide6.QtCore import Qt  # noqa: E402
 win.load_log_path(log_path)          # full path: times, events, chart, replay
 assert win._log_times, "log times not computed"
-assert win.chan_list.count() > 0, "channel list empty"
+assert win.chan_tree.channels(), "channel list empty"
 assert len(win._plots) >= 1, "no plots built"
 assert win._knock_times, "knock event not found for markers"
 # toggle a channel and rebuild
-item0 = win.chan_list.item(0)
-item0.setCheckState(Qt.Checked if item0.checkState() != Qt.Checked
-                    else Qt.Unchecked)
+ch0 = win.chan_tree.channels()[0]
+win.chan_tree.set_checked(ch0, ch0 not in win._checked_channels())
 app.processEvents()
 # cursor readout across plots
 from PySide6.QtCore import QPointF as _QPF  # noqa: E402
 win._on_chart_mouse(win._plots[0].vb.mapViewToScene(_QPF(5.0, 0.0)))
-assert win.cursor_label.text().startswith("t="), "cursor readout empty"
+assert win.cursor_readout.value("t") not in (None, "—"), \
+    "cursor readout empty"
 
 # replay transport controls
 d = win.dashboard
@@ -758,12 +762,12 @@ win.load_log_path(_rec.path)
 assert win._marker_times == [(7.25, "smoke mark")], win._marker_times
 assert "smoke mark" in win.log_report.toPlainText()
 assert "WOT criterion: pedal uncalibrated" in win.log_report.toPlainText()
-assert win.events_chk.isChecked() and win._plots
+assert win.act_events.isChecked() and win._plots
 _drive = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
                       "gt_log_20261025_141431.csv")
 win.load_log_path(_drive)
 assert "WOT/PE samples: 50" in win.log_report.toPlainText()
-win.btn_learn_pedal.click()
+win.act_learn_pedal.trigger()
 _txt = win.log_report.toPlainText()
 assert "rest 19.2 % / full 61.2 %" in _txt and "WOT/PE samples: 14" in _txt, _txt
 assert "No VIN in this log; calibration applies to this log's analysis "     "only" in _txt                            # VIN-less log: nothing stored

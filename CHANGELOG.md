@@ -3,6 +3,46 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.35.0 — 2026-10-26
+
+### Changed (Tuning tab UX overhaul; cues from HP Tuners VCM Editor, EFILive, TunerStudio)
+- **Design tokens (`openobd/theme.py`).** Colours, spacing and control heights
+  (toolbar 36 px, Dashboard primary row 56 px) plus QSS helpers live in one
+  module; the dark palette, Dashboard Record/Mark buttons, Diagnostics, Live
+  Data and the strip chart read them. No raw colour literals remain outside
+  `theme.py` (gauge dial colours exempt).
+- **Navigator.** Search-as-you-type (Ctrl+F focuses, Esc clears, Down/Enter
+  navigate), collapsible categories with counts, a changed-vs-stock dot per
+  table and a persisted "Recent" group (8 tables). A breadcrumb header
+  ("Category › Table") carries unit, HPT id and changed-cells chips and the
+  table note.
+- **Editor.** One 36 px toolbar replaces both control rows: Amount, = + − × ÷ %
+  (grid keys too), Interp ↔ / ↕ / 2D, Smooth (3×3 mean, undoable), Revert
+  selection to stock, Next Δ (F3), Copy / Paste as Excel TSV (one undo step,
+  clipped to the grid, any non-numeric field rejects the paste), Heatmap and
+  Diff vs stock (Off / Absolute / Percent). Log-overlay controls moved to a
+  collapsible right panel whose state persists.
+- **Grid.** Axis headers show breakpoints with units and the corner reads
+  "Y \ X"; full-spectrum heatmap (blue-cyan-green-yellow-red, per table min..max)
+  with contrast-aware text; diff mode shows the delta on a diverging
+  blue/grey/red scale with the real value in the tooltip; a corner triangle
+  marks changed cells in every mode; the tooltip gives X, Y, value, stock and
+  Δ %; a readout strip shows n, min, max, mean and changed count for the
+  selection.
+- **Scalars.** Grouped by category (collapsible), searchable, category filter,
+  Δ chip, the same numeric validation, undoable edits and revert, and the
+  safety note as a muted banner.
+- **Log Analysis.** Same breadcrumb + toolbar chrome, channels in a checkable
+  tree grouped Engine / Fuel / Spark / Trans / Sensors / Other, a cursor
+  readout column beside the plots and an empty state before a log is loaded.
+- The Tuning page's minimum width is now under 1000 px (was 1136).
+
+### Tests
+- New `tests/test_theme.py` and `tests/test_tuningui.py` (colour-scale
+  endpoints, navigator filter + Recent persistence, Ctrl+F / Esc, Smooth
+  undo/redo, TSV round trip / clipping / rejection, diff colouring and
+  tooltip, changed-cell marker, selection stats, scalar undo, minimum width).
+
 ## 0.34.1 — 2026-10-26
 
 ### Fixed (release tooling, discovery 455efc83)

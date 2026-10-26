@@ -23,7 +23,12 @@ Changes = dict[tuple[int, int], tuple[float, float]]
 # Selection math
 # --------------------------------------------------------------------------- #
 def apply_math(table: Table, cells: Cells, op: str, operand: float) -> Changes:
-    """op: 'set' | 'add' | 'mul' | 'pct' (pct: +N% -> value * (1 + N/100))."""
+    """op: 'set' | 'add' | 'mul' | 'div' | 'pct' (pct: +N% -> value *
+    (1 + N/100)). 'div' divides by operand (a true division, not a multiply
+    by the reciprocal, so 30 / 3 is exactly 10); dividing by zero raises
+    ZeroDivisionError before anything is planned."""
+    if op == "div" and operand == 0:
+        raise ZeroDivisionError("divide by zero")
     changes: Changes = {}
     for r, c in cells:
         old = table.values[r][c]
@@ -33,6 +38,8 @@ def apply_math(table: Table, cells: Cells, op: str, operand: float) -> Changes:
             new = old + operand
         elif op == "mul":
             new = old * operand
+        elif op == "div":
+            new = old / operand
         elif op == "pct":
             new = old * (1.0 + operand / 100.0)
         else:
@@ -111,6 +118,58 @@ def interpolate(table: Table, cells: Cells, mode: str) -> Changes:
 
 
 # --------------------------------------------------------------------------- #
+# Smoothing
+# --------------------------------------------------------------------------- #
+def smooth(table: Table, cells: Cells) -> Changes:
+    """3x3 mean over the selection: every selected cell becomes the mean of
+    itself and its (up to) 8 neighbours inside the table, all read from the
+    values BEFORE smoothing (one pass, no cascade through cells already
+    written). Edge cells average the neighbours that exist; a 1-row table
+    therefore smooths along its row only (1x3)."""
+    changes: Changes = {}
+    n_rows, n_cols = table.n_rows, table.n_cols
+    for r, c in sorted(set(cells)):
+        acc = 0.0
+        n = 0
+        for rr in range(max(0, r - 1), min(n_rows, r + 2)):
+            for cc in range(max(0, c - 1), min(n_cols, c + 2)):
+                acc += table.values[rr][cc]
+                n += 1
+        new = acc / n
+        old = table.values[r][c]
+        if new != old:
+            changes[(r, c)] = (old, new)
+    return changes
+
+
+# --------------------------------------------------------------------------- #
+# Selection statistics (the editor's readout strip)
+# --------------------------------------------------------------------------- #
+def pct_delta(value: float, stock: float) -> Optional[float]:
+    """(value - stock) / |stock| * 100; None when stock is 0 and the value
+    moved (no meaningful percentage), 0.0 when both are 0."""
+    if stock == 0:
+        return 0.0 if value == 0 else None
+    return (value - stock) / abs(stock) * 100.0
+
+
+def selection_stats(table: Table, cells: Cells) -> dict:
+    """Statistics of the selected cells: n, min, max, mean (None for an
+    empty selection) and how many of them differ from stock."""
+    uniq = sorted(set(cells))
+    vals = [table.values[r][c] for r, c in uniq]
+    if not vals:
+        return {"n": 0, "min": None, "max": None, "mean": None, "changed": 0}
+    return {
+        "n": len(vals),
+        "min": min(vals),
+        "max": max(vals),
+        "mean": sum(vals) / len(vals),
+        "changed": sum(1 for r, c in uniq if table.cell_changed(r, c)),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Revert to stock
 # --------------------------------------------------------------------------- #
 def revert_cells(table: Table, cells: Cells) -> Changes:
@@ -171,6 +230,40 @@ def parse_tsv(text: str) -> list[list[Optional[float]]]:
     while grid and all(v is None for v in grid[-1]):
         grid.pop()
     return grid
+
+
+def parse_tsv_checked(text: str) -> tuple[list[list[Optional[float]]],
+                                          list[tuple[int, int, str]]]:
+    """parse_tsv plus the cells it could not read: (grid, rejects) where
+    rejects lists (row, col, text) for every non-blank field that is not a
+    number. The editor refuses a paste with any reject rather than silently
+    skipping it (an Excel header row would otherwise land as a partial,
+    shifted paste)."""
+    rejects: list[tuple[int, int, str]] = []
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    for r, line in enumerate(lines):
+        for c, cell in enumerate(line.split("\t")):
+            cell = cell.strip()
+            if not cell:
+                continue
+            try:
+                float(cell)
+            except ValueError:
+                rejects.append((r, c, cell))
+    return parse_tsv(text), rejects
+
+
+def paste_clipped(table: Table, r0: int, c0: int,
+                  grid: list[list[Optional[float]]]) -> int:
+    """How many non-blank grid cells fall outside the table when pasted at
+    (r0, c0) (paste_grid drops them)."""
+    out = 0
+    for dr, row in enumerate(grid):
+        for dc, v in enumerate(row):
+            if v is not None and (r0 + dr >= table.n_rows
+                                  or c0 + dc >= table.n_cols):
+                out += 1
+    return out
 
 
 def paste_grid(table: Table, r0: int, c0: int,

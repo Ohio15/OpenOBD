@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import tmstore
+from . import theme, tmstore
 
 # Drag payload for a Live Data field: a tile drags its channel name under
 # this type; the graphed-channels table is the drop target.
@@ -80,14 +80,10 @@ DEFAULT_RANGES: dict[str, tuple[float, float]] = {
 }
 
 # Per-slot channel colors within a lane (VCM-style: red, green, white, cyan…).
-CHANNEL_COLORS = ["#FF5048", "#54E06E", "#F2F4F8", "#4FC3FF",
-                  "#E060D8", "#E8D44D", "#FF9A40", "#8AB4FF"]
+CHANNEL_COLORS = theme.STRIP_CHANNEL_COLORS
 
 # View-state caption colors — same meanings as livedata.STATE_COLORS accents.
-CAPTION_COLORS = {
-    "live": "#5FD08A", "not advancing": "#D6A93A",
-    "archived drive": "#5A7EC3", "read failed": "#CD3C32",
-}
+CAPTION_COLORS = theme.STRIP_CAPTION_COLORS
 
 WINDOW_SPANS = [("30 s", 30.0), ("1 min", 60.0), ("2 min", 120.0),
                 ("5 min", 300.0), ("All", None)]
@@ -269,7 +265,8 @@ class StripChart(QWidget):
             for slot, name in enumerate(lane):
                 self.traces[name] = _Trace(
                     name, units.get(name, ""),
-                    QColor(CHANNEL_COLORS[slot % len(CHANNEL_COLORS)]))
+                    theme.hex_qcolor(
+                        CHANNEL_COLORS[slot % len(CHANNEL_COLORS)]))
         self.t_end = None
         self.setMinimumHeight(max(210, 68 * len(lanes)))
         self.update()
@@ -320,9 +317,9 @@ class StripChart(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        p.fillRect(0, 0, w, h, QColor(5, 6, 10))
+        p.fillRect(0, 0, w, h, theme.strip_qcolor("canvas"))
         if not self.lanes:
-            p.setPen(QColor(123, 128, 136))
+            p.setPen(theme.strip_qcolor("empty-text"))
             p.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, self.empty_text)
             p.end()
             return
@@ -343,17 +340,17 @@ class StripChart(QWidget):
 
             # lane backgrounds: label panel glow + plot area
             gl = QLinearGradient(0, y0, plot_x0 + 120, y0)
-            gl.setColorAt(0.0, QColor(10, 12, 24))
-            gl.setColorAt(1.0, QColor(16, 22, 52))
+            gl.setColorAt(0.0, theme.strip_qcolor("label-glow-start"))
+            gl.setColorAt(1.0, theme.strip_qcolor("label-glow-end"))
             p.fillRect(QRectF(0, y0, plot_x0, lane_h), gl)
             gp = QLinearGradient(plot_x0, y0, plot_x1, y0)
-            gp.setColorAt(0.0, QColor(12, 16, 38))
-            gp.setColorAt(0.35, QColor(6, 8, 18))
-            gp.setColorAt(1.0, QColor(4, 5, 10))
+            gp.setColorAt(0.0, theme.strip_qcolor("plot-glow-start"))
+            gp.setColorAt(0.35, theme.strip_qcolor("plot-glow-mid"))
+            gp.setColorAt(1.0, theme.strip_qcolor("plot-glow-end"))
             p.fillRect(plot, gp)
 
             # gridlines
-            p.setPen(QPen(QColor(38, 44, 58), 1))
+            p.setPen(QPen(theme.strip_qcolor("gridline"), 1))
             for gi in range(1, 4):
                 gy = y0 + lane_h * gi / 4.0
                 p.drawLine(QPointF(plot_x0, gy), QPointF(plot_x1, gy))
@@ -401,18 +398,19 @@ class StripChart(QWidget):
                     p.setClipping(False)
 
             # lane separator
-            p.setPen(QPen(QColor(58, 63, 74), 1))
+            p.setPen(QPen(theme.strip_qcolor("lane-separator"), 1))
             p.drawLine(QPointF(0, y0 + lane_h), QPointF(w, y0 + lane_h))
 
         # view-state caption — a frozen trace must announce what it is
         if self.caption:
             cf = QFont(); cf.setPointSizeF(9.0); cf.setBold(True)
             p.setFont(cf)
-            p.setPen(QColor(CAPTION_COLORS.get(self.caption, "#CD3C32")))
+            p.setPen(theme.hex_qcolor(CAPTION_COLORS.get(
+                self.caption, theme.STRIP_COLORS["caption-fallback"])))
             p.drawText(QRectF(plot_x0, 4, plot_x1 - plot_x0 - 8, 16),
                        Qt.AlignRight | Qt.AlignVCenter, self.caption)
         if not have_data:
-            p.setPen(QColor(123, 128, 136))
+            p.setPen(theme.strip_qcolor("empty-text"))
             p.drawText(QRectF(plot_x0, 0, plot_x1 - plot_x0, h), Qt.AlignCenter,
                        "No fresh numeric samples yet.")
         p.end()
@@ -442,11 +440,7 @@ class ChannelTable(QTableWidget):
         for c in (1, 2, 3):
             self.horizontalHeader().setSectionResizeMode(
                 c, QHeaderView.ResizeToContents)
-        self.setStyleSheet(
-            "QTableWidget { background:#0B0D14; border:1px solid #3A3F4A; "
-            "color:#DEE0E4; gridline-color:#262C3A; }"
-            "QHeaderView::section { background:#1A1E2A; color:#9DA3AD; "
-            "border:0px; padding:2px 8px; }")
+        self.setStyleSheet(theme.strip_readout_qss())
         self.setMaximumHeight(180)
         self._names: list[str] = []
         self._lane_of: dict[str, int] = {}
@@ -470,13 +464,13 @@ class ChannelTable(QTableWidget):
             cell.setForeground(color)
             self.setItem(i, 0, cell)
             val = QTableWidgetItem("—")
-            val.setForeground(QColor("#DEE0E4"))
+            val.setForeground(theme.strip_qcolor("readout-text"))
             self.setItem(i, 1, val)
             unit_it = QTableWidgetItem(unit)
-            unit_it.setForeground(QColor("#9DA3AD"))
+            unit_it.setForeground(theme.strip_qcolor("secondary-text"))
             self.setItem(i, 2, unit_it)
             lane_it = QTableWidgetItem(str(lane_i + 1))
-            lane_it.setForeground(QColor("#9DA3AD"))
+            lane_it.setForeground(theme.strip_qcolor("secondary-text"))
             lane_it.setTextAlignment(Qt.AlignCenter)
             self.setItem(i, 3, lane_it)
 
@@ -540,7 +534,8 @@ class ChartPane(QWidget):
         self._span_combo.currentIndexChanged.connect(self._on_span)
         bar.addWidget(self._span_combo)
         self._note = QLabel("")
-        self._note.setStyleSheet("color:#9DA3AD; font-size:11px;")
+        self._note.setStyleSheet(
+            f"color:{theme.STRIP_COLORS['secondary-text']}; font-size:11px;")
         bar.addWidget(self._note, 1)
         root.addLayout(bar)
         # Graphed-channels table between the toolbar and the chart: the drop

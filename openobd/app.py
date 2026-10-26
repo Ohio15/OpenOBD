@@ -31,15 +31,16 @@ Run:  python -m openobd.app  [optional path to a .cal.json]
 from __future__ import annotations
 
 import csv
+import math
 import os
 import sys
 import threading
 import time
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, QEvent, QPoint, Signal
+from PySide6.QtCore import Qt, QTimer, QEvent, QPoint, QSize, Signal
 from PySide6.QtGui import (
-    QAction, QColor, QCursor, QIcon, QKeySequence, QPalette, QShortcut, QFont,
+    QAction, QActionGroup, QCursor, QIcon, QKeySequence, QShortcut, QFont,
     QUndoCommand, QUndoStack,
 )
 from PySide6.QtWidgets import (
@@ -48,13 +49,14 @@ from PySide6.QtWidgets import (
     QComboBox, QCheckBox, QPushButton, QFileDialog, QTextEdit, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QGroupBox, QLineEdit,
     QSlider, QListWidget, QListWidgetItem, QMenu, QDialog, QDialogButtonBox,
-    QFormLayout, QSizePolicy, QToolTip,
+    QFormLayout, QSizePolicy, QToolTip, QDoubleSpinBox, QStackedWidget,
+    QToolBar, QToolButton,
 )
 
 import numpy as np
 import pyqtgraph as pg
 
-from . import __version__, editops
+from . import __version__, editops, theme
 from .appsettings import app_settings
 from .calspec import Calibration
 from .diagui import DiagnosticsPage
@@ -66,10 +68,13 @@ from .logbin import (
 from . import pollplan
 from .pedal import PedalCal
 
-pg.setConfigOption("background", (28, 30, 34))
-pg.setConfigOption("foreground", (200, 203, 208))
-pg.setConfigOptions(antialias=True)
-from .model import CalTableModel, HeatmapDelegate
+theme.configure_pyqtgraph()
+from .model import CalTableModel, HeatmapDelegate, clean_unit
+from .tuningui import (
+    Breadcrumb, CalTableView, ChannelTree, CollapsiblePanel, CursorReadout,
+    ElidedLabel, Navigator, ScalarsTree, empty_state_label, format_selection_stats,
+    table_category,
+)
 from .transport import DataSource, LogReplaySource, GtDataSource, Sample
 from . import tmsource, tmstore
 from .recorder import (
@@ -238,37 +243,19 @@ DASHBOARD_KEYS_HELP = (
     f"{RECONNECT_GT_LABEL.lower()} · Ctrl+T open truck-mcp session")
 
 # The primary action is styled on the button object only; everything else
-# keeps the app's dark Fusion palette (apply_dark_theme).
-RECORD_BUTTON_QSS = """
-QPushButton#recordButton {
-    background-color: #b3261e; color: #ffffff;
-    border: 2px solid #d9443a; border-radius: 8px;
-    font-size: 16pt; font-weight: bold; padding: 4px 16px;
-}
-QPushButton#recordButton:hover { background-color: #c42d24; }
-QPushButton#recordButton:pressed { background-color: #8f1d17; }
-QPushButton#recordButton[recording="true"] {
-    background-color: #3b1f1f; color: #ffb4ab; border: 2px solid #e5484d;
-}
-QPushButton#recordButton[recording="true"]:hover {
-    background-color: #4a2626;
-}
-QPushButton#recordButton:disabled {
-    background-color: #33353a; color: #8a8d93; border: 2px solid #44474d;
-}
-"""
-MARK_BUTTON_QSS = """
-QPushButton#markButton {
-    background-color: #2d3035; color: #dee0e4;
-    border: 2px solid #5a5e66; border-radius: 8px;
-    font-size: 14pt; font-weight: bold; padding: 4px 12px;
-}
-QPushButton#markButton:hover { background-color: #383b41; }
-QPushButton#markButton:pressed { background-color: #24262a; }
-"""
+# keeps the app's dark Fusion palette (apply_dark_theme). Both come from the
+# theme tokens (openobd.theme), values unchanged from v0.34.0.
+RECORD_BUTTON_QSS = theme.record_button_qss()
+MARK_BUTTON_QSS = theme.mark_button_qss()
 #: The primary row's height: tall enough to hit while driving, small enough
 #: not to take the cluster's room on a 600 px tablet screen.
-PRIMARY_ROW_HEIGHT = 56
+PRIMARY_ROW_HEIGHT = theme.PRIMARY_HEIGHT
+
+#: QSettings key: is the editor's Log overlay panel expanded ("true"/"false").
+OVERLAY_PANEL_KEY = "tuning/overlay_panel_open"
+#: The Log Analysis plot area before a log is loaded.
+LOG_EMPTY_TEXT = ("No log loaded — Load Log… or record a drive on the "
+                  "Dashboard")
 
 
 def detect_gt_ports() -> list[str]:
@@ -1589,6 +1576,26 @@ class BulkEditCommand(QUndoCommand):
         self.win._table_touched(self.table)
 
 
+class ScalarEditCommand(QUndoCommand):
+    """One scalar parameter edit (value old -> new) on the shared undo
+    stack. Holds the scalar's index into Calibration.scalars."""
+
+    def __init__(self, win: "MainWindow", index: int, old: float, new: float):
+        super().__init__(f"edit {win.cal.scalars[index].name}")
+        self.win = win
+        self.index = index
+        self.old = old
+        self.new = new
+
+    def redo(self):
+        self.win.cal.scalars[self.index].value = self.new
+        self.win._scalar_touched(self.index)
+
+    def undo(self):
+        self.win.cal.scalars[self.index].value = self.old
+        self.win._scalar_touched(self.index)
+
+
 # --------------------------------------------------------------------------- #
 # Main window
 # --------------------------------------------------------------------------- #
@@ -1615,20 +1622,32 @@ class MainWindow(QMainWindow):
         self.main_tabs = QTabWidget()
         self.main_tabs.addTab(self.dashboard, "Dashboard")
 
+        # Tuning: navigator | Editor / Scalars / Log Analysis. One theme
+        # stylesheet on the root styles every widget inside (theme.py).
         tuning = QWidget()
+        tuning.setObjectName("tuningPage")
+        tuning.setStyleSheet(theme.tuning_qss())
+        self.tuning_page = tuning
         tl = QHBoxLayout(tuning); tl.setContentsMargins(0, 0, 0, 0)
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
         splitter.addWidget(self._build_tree())
         self.tune_tabs = QTabWidget()
+        self.tune_tabs.setDocumentMode(True)
         self.tune_tabs.addTab(self._build_editor_tab(), "Editor")
         self.tune_tabs.addTab(self._build_scalars_tab(), "Scalars")
         self.tune_tabs.addTab(self._build_log_tab(), "Log Analysis")
         splitter.addWidget(self.tune_tabs)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([300, 880])
+        splitter.setSizes([260, 920])
+        self.tuning_splitter = splitter
         tl.addWidget(splitter)
         self.main_tabs.addTab(tuning, "Tuning")
+        # Ctrl+F focuses the table search while the Tuning page is showing.
+        self._find_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
+        self._find_shortcut.activated.connect(self.focus_table_search)
+        self.main_tabs.currentChanged.connect(self._sync_find_shortcut)
 
         self.diag = DiagnosticsPage(self.dashboard)
         self.main_tabs.addTab(self.diag, "Diagnostics")
@@ -1643,6 +1662,7 @@ class MainWindow(QMainWindow):
 
         self.main_tabs.setCurrentIndex(0)
         self.setCentralWidget(self.main_tabs)
+        self._sync_find_shortcut()
 
         # select first table
         if self.cal.tables:
@@ -1717,14 +1737,20 @@ class MainWindow(QMainWindow):
         redo.setShortcut("Ctrl+Y")
         e.addAction(undo); e.addAction(redo)
         e.addSeparator()
-        for label, slot, keys in [
-            ("Copy selection", self.copy_selection, "Ctrl+C"),
-            ("Paste", self.paste_selection, "Ctrl+V"),
-        ]:
-            a = QAction(label, self)
-            a.setShortcut(keys)
-            a.triggered.connect(slot)
-            e.addAction(a)
+        # The same QAction objects sit on the editor toolbar (one shortcut
+        # owner each, so Ctrl+C / Ctrl+V are never ambiguous).
+        self.act_copy = QAction(theme.glyph_icon("copy"), "Copy", self)
+        self.act_copy.setShortcut("Ctrl+C")
+        self.act_copy.setToolTip("Copy the selection as tab-separated values "
+                                 "(Excel)  (Ctrl+C)")
+        self.act_copy.triggered.connect(self.copy_selection)
+        self.act_paste = QAction(theme.glyph_icon("paste"), "Paste", self)
+        self.act_paste.setShortcut("Ctrl+V")
+        self.act_paste.setToolTip("Paste a tab-separated grid at the current "
+                                  "cell, clipped to the table  (Ctrl+V)")
+        self.act_paste.triggered.connect(self.paste_selection)
+        e.addAction(self.act_copy)
+        e.addAction(self.act_paste)
         e.addSeparator()
         rs = QAction("Revert selection → stock", self)
         rs.triggered.connect(self._revert_selected); e.addAction(rs)
@@ -1795,128 +1821,222 @@ class MainWindow(QMainWindow):
             + md.get("safety", ""),
         )
 
-    # -- left tree --------------------------------------------------------- #
+    # -- shared Tuning chrome --------------------------------------------- #
+    @staticmethod
+    def _make_toolbar() -> QToolBar:
+        """The 36 px toolbar every Tuning sub-tab uses (theme.toolbar_qss).
+        Actions that do not fit go to the toolbar's overflow menu, so the
+        toolbar never sets the page's minimum width."""
+        tb = QToolBar()
+        tb.setObjectName("tuningToolbar")
+        tb.setMovable(False)
+        tb.setFloatable(False)
+        tb.setIconSize(QSize(theme.ICON_SIZE, theme.ICON_SIZE))
+        tb.setFixedHeight(theme.TOOLBAR_HEIGHT)
+        tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        return tb
+
+    @staticmethod
+    def _toolbar_action(tb: QToolBar, action: QAction,
+                        icon_only: bool = False) -> QAction:
+        tb.addAction(action)
+        btn = tb.widgetForAction(action)
+        if btn is not None and icon_only:
+            btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        return action
+
+    def _new_action(self, glyph: str, text: str, tip: str, slot,
+                    shortcut_hint: str = "") -> QAction:
+        a = QAction(theme.glyph_icon(glyph), text, self)
+        a.setToolTip(f"{tip}  ({shortcut_hint})" if shortcut_hint else tip)
+        a.triggered.connect(slot)
+        return a
+
+    def _sync_find_shortcut(self, *_a) -> None:
+        self._find_shortcut.setEnabled(
+            self.main_tabs.currentWidget() is self.tuning_page)
+
+    # -- navigator (left pane) ------------------------------------------- #
     def _build_tree(self) -> QWidget:
-        host = QWidget(); lay = QVBoxLayout(host)
-        lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(2)
-        self.tree_filter = QLineEdit()
-        self.tree_filter.setPlaceholderText("Filter tables…")
-        self.tree_filter.setClearButtonEnabled(True)
-        self.tree_filter.textChanged.connect(self._filter_tree)
-        lay.addWidget(self.tree_filter)
+        self.navigator = Navigator(self.cal.tables, self.settings)
+        self.navigator.table_activated.connect(self._on_navigator_open)
+        # The tree and its search field, under their long-standing names.
+        self.tree = self.navigator.tree
+        self.tree_filter = self.navigator.search
+        return self.navigator
 
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Tables"])
-        cats: dict[str, QTreeWidgetItem] = {}
-        for t in self.cal.tables:
-            cat = t.category.split("/")[0] or "Uncategorized"
-            if cat not in cats:
-                node = QTreeWidgetItem([cat]); self.tree.addTopLevelItem(node)
-                cats[cat] = node
-            leaf = QTreeWidgetItem([t.name.replace("WOT Shift Speed — ", "")])
-            leaf.setData(0, Qt.UserRole, t.name)
-            cats[cat].addChild(leaf)
-        self.tree.expandAll()
-        self.tree.itemClicked.connect(self._on_tree_click)
-        lay.addWidget(self.tree, 1)
-        return host
+    def _on_navigator_open(self, name: str):
+        self._select_table(name)
+        self.main_tabs.setCurrentIndex(1)   # Tuning workspace
+        self.tune_tabs.setCurrentIndex(0)   # Editor
 
-    def _filter_tree(self, text: str):
-        needle = text.strip().lower()
-        for i in range(self.tree.topLevelItemCount()):
-            cat = self.tree.topLevelItem(i)
-            any_visible = False
-            for j in range(cat.childCount()):
-                leaf = cat.child(j)
-                full = (leaf.data(0, Qt.UserRole) or "").lower()
-                hit = not needle or needle in full or needle in leaf.text(0).lower()
-                leaf.setHidden(not hit)
-                any_visible = any_visible or hit
-            cat.setHidden(not any_visible)
-
-    def _on_tree_click(self, item, _col):
-        name = item.data(0, Qt.UserRole)
-        if name:
-            self._select_table(name)
-            self.main_tabs.setCurrentIndex(1)   # Tuning workspace
-            self.tune_tabs.setCurrentIndex(0)   # Editor
+    def focus_table_search(self):
+        """Ctrl+F on the Tuning workspace."""
+        self.navigator.focus_search()
 
     # -- editor tab -------------------------------------------------------- #
+    #: Grid keys -> selection math (op, negate). HP Tuners staples: +/-
+    #: nudge by Amount, = sets, * and / multiply / divide, % scales.
+    GRID_KEY_OPS = {
+        Qt.Key_Plus: ("add", False),
+        Qt.Key_Minus: ("add", True),
+        Qt.Key_Equal: ("set", False),
+        Qt.Key_Asterisk: ("mul", False),
+        Qt.Key_Slash: ("div", False),
+        Qt.Key_Percent: ("pct", False),
+    }
+
     def _build_editor_tab(self) -> QWidget:
-        w = QWidget(); lay = QVBoxLayout(w)
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.editor_crumb = Breadcrumb()
+        lay.addWidget(self.editor_crumb)
 
-        ctl = QHBoxLayout()
-        self.heat_chk = QCheckBox("Heatmap"); self.heat_chk.setChecked(True)
-        self.heat_chk.stateChanged.connect(self._toggle_heat)
-        ctl.addWidget(self.heat_chk)
+        tb = self._make_toolbar()
+        self.editor_toolbar = tb
+        tb.addWidget(QLabel("Amount"))
+        self.amount_spin = QDoubleSpinBox()
+        self.amount_spin.setRange(-1e9, 1e9)
+        self.amount_spin.setDecimals(4)
+        self.amount_spin.setValue(1.0)
+        self.amount_spin.setFixedWidth(96)
+        self.amount_spin.setToolTip(
+            "Operand for the math actions and the grid keys "
+            "(+ / - nudge, = set, * multiply, / divide, % scale)")
+        tb.addWidget(self.amount_spin)
+        A = self.editor_actions = {}
+        for key, glyph, text, tip, hint, fn in [
+            ("set", "set", "=", "Set selection to Amount", "=",
+             lambda: self._math_op("set")),
+            ("add", "add", "+", "Add Amount to selection", "+",
+             lambda: self._math_op("add")),
+            ("sub", "sub", "−", "Subtract Amount from selection", "-",
+             lambda: self._math_op("add", negate=True)),
+            ("mul", "mul", "×", "Multiply selection by Amount", "*",
+             lambda: self._math_op("mul")),
+            ("div", "div", "÷", "Divide selection by Amount", "/",
+             lambda: self._math_op("div")),
+            ("pct", "pct", "%", "Scale selection by Amount percent",
+             "Shift+5", lambda: self._math_op("pct")),
+        ]:
+            A[key] = self._toolbar_action(
+                tb, self._new_action(glyph, text, tip, fn, hint),
+                icon_only=True)
+        tb.addSeparator()
+        for key, glyph, text, mode in [("interp_h", "interp_h", "Interp ↔", "h"),
+                                       ("interp_v", "interp_v", "Interp ↕", "v"),
+                                       ("interp_2d", "interp_2d", "Interp 2D",
+                                        "2d")]:
+            A[key] = self._toolbar_action(tb, self._new_action(
+                glyph, text, "Linear interpolation across the selection",
+                lambda _=False, m=mode: self._interp(m)))
+        A["smooth"] = self._toolbar_action(tb, self._new_action(
+            "smooth", "Smooth",
+            "3×3 mean over the selection (neighbours inside the table)",
+            self._smooth))
+        tb.addSeparator()
+        A["revert"] = self._toolbar_action(tb, self._new_action(
+            "revert", "Revert sel → stock",
+            "Revert the selected cells to stock", self._revert_selected))
+        A["next"] = self._toolbar_action(tb, self._new_action(
+            "next", "Next Δ", "Jump to the next changed-vs-stock cell",
+            self._goto_next_changed, "F3"))
+        A["next"].setShortcut(QKeySequence(Qt.Key_F3))
+        A["copy"] = self._toolbar_action(tb, self.act_copy)
+        A["paste"] = self._toolbar_action(tb, self.act_paste)
+        tb.addSeparator()
+        self.act_heatmap = QAction(theme.glyph_icon("heatmap"), "Heatmap", self)
+        self.act_heatmap.setCheckable(True)
+        self.act_heatmap.setChecked(True)
+        self.act_heatmap.setToolTip("Colour cells by value (table min → max)")
+        self.act_heatmap.toggled.connect(self._toggle_heat)
+        A["heatmap"] = self._toolbar_action(tb, self.act_heatmap)
+        self.diff_btn = QToolButton()
+        self.diff_btn.setIcon(theme.glyph_icon("diff"))
+        self.diff_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.diff_btn.setPopupMode(QToolButton.InstantPopup)
+        self.diff_btn.setToolTip("Show each cell's difference from stock")
+        diff_menu = QMenu(self.diff_btn)
+        group = QActionGroup(self)
+        self.diff_actions: dict[int, QAction] = {}
+        for mode, label in [(CalTableModel.DIFF_OFF, "Off"),
+                            (CalTableModel.DIFF_ABS, "Absolute"),
+                            (CalTableModel.DIFF_PCT, "Percent")]:
+            a = diff_menu.addAction(label)
+            a.setCheckable(True)
+            group.addAction(a)
+            a.triggered.connect(lambda _=False, m=mode: self.set_diff_mode(m))
+            self.diff_actions[mode] = a
+        self.diff_btn.setMenu(diff_menu)
+        tb.addWidget(self.diff_btn)
+        self._diff_mode = CalTableModel.DIFF_OFF
+        lay.addWidget(tb)
 
-        ctl.addWidget(QLabel("Overlay:"))
+        body = QHBoxLayout()
+        body.setContentsMargins(theme.SPACING["sm"], theme.SPACING["sm"],
+                                theme.SPACING["sm"], 0)
+        body.setSpacing(theme.SPACING["sm"])
+        grid_col = QVBoxLayout()
+        grid_col.setSpacing(0)
+        self.view = CalTableView()
+        self.view.setItemDelegate(HeatmapDelegate(self.view))
+        hh = self.view.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Stretch)
+        hh.setMinimumSectionSize(48)
+        self.view.installEventFilter(self)  # grid math keys
+        grid_col.addWidget(self.view, 1)
+        # Elides rather than widening the page (a long readout once pushed
+        # the window past a 1366 px screen).
+        self.selection_readout = ElidedLabel("No selection")
+        self.selection_readout.setObjectName("selectionReadout")
+        grid_col.addWidget(self.selection_readout)
+        body.addLayout(grid_col, 1)
+
+        # Log overlay controls: a collapsible right-hand panel.
+        ov = QWidget()
+        form = QFormLayout(ov)
+        form.setContentsMargins(0, 0, 0, 0)
         self.overlay_mode = QComboBox()
         self.overlay_mode.addItems(["None", "Log count", "Log mean value"])
         self.overlay_mode.currentIndexChanged.connect(self._apply_overlay)
-        ctl.addWidget(self.overlay_mode)
-
-        ctl.addWidget(QLabel("X ch:"))
-        self.x_ch = QComboBox(); ctl.addWidget(self.x_ch)
-        ctl.addWidget(QLabel("Y ch:"))
-        self.y_ch = QComboBox(); ctl.addWidget(self.y_ch)
-        ctl.addWidget(QLabel("Value:"))
-        self.v_ch = QComboBox(); ctl.addWidget(self.v_ch)
-        for cb in (self.x_ch, self.y_ch, self.v_ch):
+        form.addRow("Mode", self.overlay_mode)
+        self.x_ch = QComboBox()
+        self.y_ch = QComboBox()
+        self.v_ch = QComboBox()
+        for label, cb in (("X channel", self.x_ch), ("Y channel", self.y_ch),
+                          ("Value", self.v_ch)):
             cb.addItem("(none)")
             cb.currentIndexChanged.connect(self._apply_overlay)
-
-        self.next_delta_btn = QPushButton("Next Δ")
-        self.next_delta_btn.setToolTip("Jump to the next changed-vs-stock cell")
-        self.next_delta_btn.clicked.connect(self._goto_next_changed)
-        ctl.addWidget(self.next_delta_btn)
-        ctl.addStretch(1)
-        lay.addLayout(ctl)
-
-        # selection-math toolbar (HP Tuners staples). +/- keys nudge by Amount.
-        math_bar = QHBoxLayout()
-        math_bar.addWidget(QLabel("Amount:"))
-        self.amount_edit = QLineEdit("1")
-        self.amount_edit.setFixedWidth(70)
-        self.amount_edit.setToolTip(
-            "Operand for the math buttons and the +/- key nudge")
-        math_bar.addWidget(self.amount_edit)
-        for label, tip, fn in [
-            ("=", "Set selection to Amount", lambda: self._math_op("set")),
-            ("+", "Add Amount to selection", lambda: self._math_op("add")),
-            ("−", "Subtract Amount from selection",
-             lambda: self._math_op("add", negate=True)),
-            ("×", "Multiply selection by Amount", lambda: self._math_op("mul")),
-            ("%", "Scale selection by Amount percent",
-             lambda: self._math_op("pct")),
-        ]:
-            b = QPushButton(label); b.setFixedWidth(34); b.setToolTip(tip)
-            b.clicked.connect(fn)
-            math_bar.addWidget(b)
-        math_bar.addSpacing(12)
-        for label, mode in [("Interp ↔", "h"), ("Interp ↕", "v"),
-                            ("Interp 2D", "2d")]:
-            b = QPushButton(label)
-            b.setToolTip("Linear interpolation across the selection")
-            b.clicked.connect(lambda _=False, m=mode: self._interp(m))
-            math_bar.addWidget(b)
-        math_bar.addSpacing(12)
-        rb = QPushButton("Revert sel → stock")
-        rb.clicked.connect(self._revert_selected)
-        math_bar.addWidget(rb)
-        math_bar.addStretch(1)
-        lay.addLayout(math_bar)
-
-        self.view = QTableView()
-        self.view.setItemDelegate(HeatmapDelegate(self.view))
-        self.view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.view.installEventFilter(self)  # +/- nudge keys
-        lay.addWidget(self.view, 1)
-
-        self.table_info = QLabel(""); self.table_info.setWordWrap(True)
-        self.table_info.setStyleSheet("color:#9aa0a6; padding:4px;")
-        lay.addWidget(self.table_info)
+            form.addRow(label, cb)
+        help_lbl = QLabel("Bins the loaded log into this table's cells. "
+                          "Log count tints by hits; Log mean value tints by "
+                          "the Value channel's mean per cell.")
+        help_lbl.setWordWrap(True)
+        help_lbl.setStyleSheet(theme.muted_qss())
+        form.addRow(help_lbl)
+        open_ = str(self.settings.value(OVERLAY_PANEL_KEY, "false")).lower()
+        self.overlay_panel = CollapsiblePanel(
+            "Log overlay", ov, expanded=open_ == "true")
+        self.overlay_panel.toggled.connect(
+            lambda on: self.settings.setValue(OVERLAY_PANEL_KEY,
+                                              "true" if on else "false"))
+        body.addWidget(self.overlay_panel, 0)
+        lay.addLayout(body, 1)
+        self.set_diff_mode(CalTableModel.DIFF_OFF)
         return w
+
+    def set_diff_mode(self, mode: int):
+        """Diff vs stock: CalTableModel.DIFF_OFF / DIFF_ABS / DIFF_PCT."""
+        self._diff_mode = mode
+        for m, a in self.diff_actions.items():
+            a.setChecked(m == mode)
+        self.diff_btn.setText({CalTableModel.DIFF_OFF: "Diff vs stock",
+                               CalTableModel.DIFF_ABS: "Diff: Absolute",
+                               CalTableModel.DIFF_PCT: "Diff: Percent"}[mode])
+        if self.current_model:
+            self.current_model.set_diff_mode(mode)
 
     def _select_table(self, name: str):
         t = self.cal.table(name)
@@ -1926,9 +2046,20 @@ class MainWindow(QMainWindow):
         self.current_model = CalTableModel(t, shift_events=events)
         self.current_model.dataChanged.connect(self._mark_dirty)
         self.current_model.edit_hook = self._on_cell_edit
-        self.current_model.show_heatmap = self.heat_chk.isChecked()
+        self.current_model.show_heatmap = self.act_heatmap.isChecked()
+        self.current_model.diff_mode = self._diff_mode
+        old_sel = self.view.selectionModel()
         self.view.setModel(self.current_model)
+        if old_sel is not None:
+            old_sel.deleteLater()     # setModel never frees the old one
+        self.view.selectionModel().selectionChanged.connect(
+            self._update_selection_readout)
+        self.view.selectionModel().currentChanged.connect(
+            self._update_selection_readout)
+        self.view.set_corner_text(self.current_model.corner_text())
+        self.navigator.select_name(name)
         self._update_table_info()
+        self._update_selection_readout()
         self._apply_overlay()
 
     def _update_table_info(self):
@@ -1936,15 +2067,30 @@ class MainWindow(QMainWindow):
             return
         t = self.current_model.table
         changed = len(editops.changed_cells(t))
-        pid = f" · HPT id {t.param_id}" if t.param_id else ""
-        self.table_info.setText(
-            f"<b>{t.name}</b> ({t.unit}){pid} · {changed} cell(s) changed vs "
-            f"stock<br>{t.note}"
-        )
+        self.editor_crumb.set_path([table_category(t), t.name])
+        chips = []
+        unit = clean_unit(t.unit)
+        if unit:
+            chips.append((unit, "neutral"))
+        if t.param_id:
+            chips.append((f"HPT id {t.param_id}", "neutral"))
+        chips.append((f"{changed} cell{'' if changed == 1 else 's'} changed",
+                      "danger" if changed else "neutral"))
+        self.editor_crumb.set_chips(chips)
+        self.editor_crumb.set_note(t.note or "")
+        self.navigator.refresh_changed(t.name)
 
-    def _toggle_heat(self):
+    def _update_selection_readout(self, *_a):
+        if not self.current_model:
+            self.selection_readout.setText("No table")
+            return
+        t = self.current_model.table
+        stats = editops.selection_stats(t, self._selected_cells())
+        self.selection_readout.setText(format_selection_stats(stats, t.unit))
+
+    def _toggle_heat(self, *_a):
         if self.current_model:
-            self.current_model.set_heatmap(self.heat_chk.isChecked())
+            self.current_model.set_heatmap(self.act_heatmap.isChecked())
 
     # -- editing: undo plumbing --------------------------------------------- #
     def _on_cell_edit(self, r, c, old, new):
@@ -1954,9 +2100,11 @@ class MainWindow(QMainWindow):
     def _table_touched(self, table):
         """Called by undo commands after writing to a Table."""
         self._mark_dirty()
+        self.navigator.refresh_changed(table.name)
         if self.current_model and self.current_model.table is table:
             self.current_model.refresh_all()
             self._update_table_info()
+            self._update_selection_readout()
 
     def _push_changes(self, changes, text):
         if not changes:
@@ -1977,12 +2125,7 @@ class MainWindow(QMainWindow):
         return [(i.row(), i.column()) for i in idxs]
 
     def _amount(self) -> Optional[float]:
-        try:
-            return float(self.amount_edit.text())
-        except ValueError:
-            self.statusBar().showMessage(
-                f"Amount is not a number: {self.amount_edit.text()!r}", 4000)
-            return None
+        return float(self.amount_spin.value())
 
     def _math_op(self, op: str, negate: bool = False):
         cells = self._selected_cells()
@@ -1991,9 +2134,15 @@ class MainWindow(QMainWindow):
             return
         if negate:
             amt = -amt
-        label = {"set": "set", "add": "add", "mul": "multiply", "pct": "scale %"}[op]
-        self._push_changes(
-            editops.apply_math(self.current_model.table, cells, op, amt), label)
+        label = {"set": "set", "add": "add", "mul": "multiply",
+                 "div": "divide", "pct": "scale %"}[op]
+        try:
+            changes = editops.apply_math(self.current_model.table, cells,
+                                         op, amt)
+        except ZeroDivisionError:
+            self.statusBar().showMessage("Divide: Amount is 0", 4000)
+            return
+        self._push_changes(changes, label)
 
     def _interp(self, mode: str):
         cells = self._selected_cells()
@@ -2003,6 +2152,14 @@ class MainWindow(QMainWindow):
         self._push_changes(
             editops.interpolate(self.current_model.table, cells, mode),
             f"interpolate {mode}")
+
+    def _smooth(self):
+        cells = self._selected_cells()
+        if not cells:
+            self.statusBar().showMessage("Select cells to smooth", 3000)
+            return
+        self._push_changes(editops.smooth(self.current_model.table, cells),
+                           "smooth")
 
     def _revert_selected(self):
         cells = self._selected_cells()
@@ -2030,16 +2187,32 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Copied {len(cells)} cell(s)", 3000)
 
     def paste_selection(self):
+        """Paste a tab-separated grid (Excel) at the current cell as ONE
+        undoable edit, clipped to the table. Any non-numeric field rejects
+        the whole paste (a header row would otherwise land shifted)."""
         if not self.current_model:
             return
-        grid = editops.parse_tsv(QApplication.clipboard().text())
-        if not grid:
+        grid, rejects = editops.parse_tsv_checked(
+            QApplication.clipboard().text())
+        if rejects:
+            r, c, text = rejects[0]
+            self.statusBar().showMessage(
+                f"Paste rejected: {len(rejects)} non-numeric cell(s), first "
+                f"{text!r} at row {r + 1}, column {c + 1}", 6000)
+            return
+        if not grid or all(v is None for row in grid for v in row):
             self.statusBar().showMessage("Clipboard has no numeric grid", 3000)
             return
         cur = self.view.currentIndex()
         r0, c0 = (cur.row(), cur.column()) if cur.isValid() else (0, 0)
-        self._push_changes(
-            editops.paste_grid(self.current_model.table, r0, c0, grid), "paste")
+        t = self.current_model.table
+        clipped = editops.paste_clipped(t, r0, c0, grid)
+        changes = editops.paste_grid(t, r0, c0, grid)
+        self._push_changes(changes, "paste")
+        if clipped:
+            self.statusBar().showMessage(
+                f"paste: {len(changes)} cell(s); {clipped} outside the "
+                "table clipped", 5000)
 
     # -- navigation ----------------------------------------------------------- #
     def _goto_next_changed(self):
@@ -2058,10 +2231,14 @@ class MainWindow(QMainWindow):
         self.view.scrollTo(idx)
 
     def eventFilter(self, obj, event):
-        # +/- on the grid nudges the selection by Amount (HP Tuners style).
-        if obj is self.view and event.type() == QEvent.KeyPress:
-            if event.key() in (Qt.Key_Plus, Qt.Key_Minus) and self.current_model:
-                self._math_op("add", negate=event.key() == Qt.Key_Minus)
+        # Grid keys run the selection math with Amount (HP Tuners style).
+        if (obj is self.view and event.type() == QEvent.KeyPress
+                and self.current_model is not None
+                and not event.modifiers() & (Qt.ControlModifier
+                                             | Qt.AltModifier)):
+            op = self.GRID_KEY_OPS.get(event.key())
+            if op is not None:
+                self._math_op(op[0], negate=op[1])
                 return True
         return super().eventFilter(obj, event)
 
@@ -2111,91 +2288,139 @@ class MainWindow(QMainWindow):
 
     # -- scalars tab ------------------------------------------------------- #
     def _build_scalars_tab(self) -> QWidget:
-        w = QWidget(); lay = QVBoxLayout(w)
-        self.scalar_tbl = QTableWidget(len(self.cal.scalars), 6)
-        self.scalar_tbl.setHorizontalHeaderLabels(
-            ["Parameter", "Value", "Unit", "Stock", "Δ", "Category"])
-        self.scalar_tbl.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.Stretch)
-        for r, s in enumerate(self.cal.scalars):
-            self._set_scalar_row(r, s)
-        self.scalar_tbl.itemChanged.connect(self._on_scalar_edit)
-        lay.addWidget(self.scalar_tbl)
-        note = QLabel(self.cal.metadata.get("safety", ""))
-        note.setWordWrap(True); note.setStyleSheet("color:#e07b72; padding:6px;")
-        lay.addWidget(note)
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.scalars_crumb = Breadcrumb()
+        lay.addWidget(self.scalars_crumb)
+        tb = self._make_toolbar()
+        self.scalar_search = QLineEdit()
+        self.scalar_search.setObjectName("scalarSearch")
+        self.scalar_search.setPlaceholderText("Search parameters")
+        self.scalar_search.setClearButtonEnabled(True)
+        self.scalar_search.setFixedWidth(220)
+        tb.addWidget(self.scalar_search)
+        tb.addSeparator()
+        tb.addWidget(QLabel("Category"))
+        self.scalar_category = QComboBox()
+        self.scalar_category.addItem("All categories", "")
+        self.scalars_view = ScalarsTree(self.cal.scalars)
+        for cat in self.scalars_view.categories():
+            self.scalar_category.addItem(cat, cat)
+        tb.addWidget(self.scalar_category)
+        tb.addSeparator()
+        self.act_scalar_revert = self._toolbar_action(tb, self._new_action(
+            "revert", "Revert to stock",
+            "Revert the selected parameter to its stock value",
+            self._revert_scalar))
+        lay.addWidget(tb)
+
+        body = QVBoxLayout()
+        m = theme.SPACING["sm"]
+        body.setContentsMargins(m, m, m, m)
+        body.setSpacing(m)
+        self.scalars_view.edit_requested.connect(self._on_scalar_edit)
+        body.addWidget(self.scalars_view, 1)
+        self.safety_banner = QLabel(self.cal.metadata.get("safety", ""))
+        self.safety_banner.setObjectName("safetyBanner")
+        self.safety_banner.setWordWrap(True)
+        self.safety_banner.setVisible(bool(self.safety_banner.text()))
+        body.addWidget(self.safety_banner)
+        lay.addLayout(body, 1)
+        self.scalar_search.textChanged.connect(self._on_scalar_filter)
+        self.scalar_category.currentIndexChanged.connect(
+            self._on_scalar_filter)
+        self._update_scalars_crumb()
         return w
 
-    def _set_scalar_row(self, r, s):
-        def item(text, editable=False, color=None):
-            it = QTableWidgetItem(text)
-            if not editable:
-                it.setFlags(it.flags() & ~Qt.ItemIsEditable)
-            if color:
-                it.setForeground(color)
-            return it
-        self.scalar_tbl.blockSignals(True)
-        self.scalar_tbl.setItem(r, 0, item(s.name))
-        vi = item(f"{s.value:g}", editable=True)
-        vi.setData(Qt.UserRole, r)
-        self.scalar_tbl.setItem(r, 1, vi)
-        self.scalar_tbl.setItem(r, 2, item(s.unit))
-        self.scalar_tbl.setItem(
-            r, 3, item("" if s.stock_value is None else f"{s.stock_value:g}"))
-        delta = ""
-        if s.stock_value is not None:
-            d = s.value - s.stock_value
-            delta = f"{d:+g}" if d else ""
-        self.scalar_tbl.setItem(
-            r, 4, item(delta, color=QColor(235, 110, 100) if delta else None))
-        self.scalar_tbl.setItem(r, 5, item(s.category))
-        self.scalar_tbl.blockSignals(False)
+    def _on_scalar_filter(self, *_a):
+        self.scalars_view.set_search(self.scalar_search.text())
+        self.scalars_view.set_category(self.scalar_category.currentData())
+        self._update_scalars_crumb()
 
-    def _on_scalar_edit(self, it):
-        if it.column() != 1:
-            return
-        r = it.data(Qt.UserRole)
-        if r is None:
-            r = it.row()
-        text = it.text()
+    def _update_scalars_crumb(self):
+        cat = self.scalar_category.currentData() or ""
+        self.scalars_crumb.set_path(["Scalars",
+                                     cat or "All categories"])
+        shown = self.scalars_view.visible_scalar_count()
+        changed = sum(1 for s in self.cal.scalars
+                      if s.changed and (not cat or
+                                        (s.category or "Uncategorized") == cat))
+        self.scalars_crumb.set_chips([
+            (f"{shown} parameter{'' if shown == 1 else 's'}", "neutral"),
+            (f"{changed} changed", "danger" if changed else "neutral"),
+        ])
+        self.scalars_crumb.set_note(
+            "Double-click a value to edit (Ctrl+Z undoes). Δ is the "
+            "difference from stock.")
+
+    def _on_scalar_edit(self, i: int, text: str):
+        s = self.cal.scalars[i]
         try:
             v = float(text)
+            if not math.isfinite(v):
+                raise ValueError(text)
         except ValueError:
             # Restore the display so the cell never shows a value the model
-            # doesn't hold. _set_scalar_row replaces the row's items, deleting
-            # `it` — so only the pre-captured text may be used after it.
-            self._set_scalar_row(r, self.cal.scalars[r])
+            # doesn't hold.
+            self.scalars_view.refresh(i)
             self.statusBar().showMessage(
                 f"Not a number: {text!r} — edit reverted", 4000)
             return
-        if v != self.cal.scalars[r].value:
-            self._mark_dirty()
-        self.cal.scalars[r].value = v
-        self._set_scalar_row(r, self.cal.scalars[r])
+        if v == s.value:
+            self.scalars_view.refresh(i)
+            return
+        self.undo_stack.push(ScalarEditCommand(self, i, s.value, v))
+
+    def _revert_scalar(self):
+        idx = self.scalars_view.view.currentIndex()
+        if not idx.isValid():
+            self.statusBar().showMessage("Select a parameter to revert", 3000)
+            return
+        src = self.scalars_view.proxy.mapToSource(idx)
+        i = src.sibling(src.row(), 1).data(Qt.UserRole)
+        if i is None:
+            return
+        s = self.cal.scalars[int(i)]
+        if s.stock_value is None or s.value == s.stock_value:
+            self.statusBar().showMessage(f"{s.name}: already stock", 3000)
+            return
+        self.undo_stack.push(ScalarEditCommand(self, int(i), s.value,
+                                               s.stock_value))
+
+    def _scalar_touched(self, i: int):
+        """Called by ScalarEditCommand after writing a Scalar."""
+        self._mark_dirty()
+        self.scalars_view.refresh(i)
+        self._update_scalars_crumb()
 
     # -- log tab ----------------------------------------------------------- #
     def _build_log_tab(self) -> QWidget:
-        w = QWidget(); lay = QVBoxLayout(w)
-        bar = QHBoxLayout()
-        b = QPushButton("Load Log…"); b.clicked.connect(self.load_log)
-        bar.addWidget(b)
-        self.events_chk = QCheckBox("Event markers")
-        self.events_chk.setChecked(True)
-        self.events_chk.setToolTip("Knock events (red), shifts (cyan) and "
-                                   "recording markers (amber, from the "
-                                   ".meta.json beside a recording)")
-        self.events_chk.toggled.connect(self._rebuild_plots)
-        bar.addWidget(self.events_chk)
-        self.btn_learn_pedal = QPushButton("Learn pedal calibration from this log")
-        self.btn_learn_pedal.setToolTip(
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.log_crumb = Breadcrumb()
+        lay.addWidget(self.log_crumb)
+        tb = self._make_toolbar()
+        self.act_load_log = self._toolbar_action(tb, self._new_action(
+            "open", "Load Log…", "Load a VCM Scanner CSV or a Dashboard "
+            "recording", self.load_log, "Ctrl+L"))
+        self.act_events = QAction(theme.glyph_icon("events"), "Events", self)
+        self.act_events.setCheckable(True)
+        self.act_events.setChecked(True)
+        self.act_events.setToolTip(
+            "Event markers: knock (red), shifts (cyan) and recording markers "
+            "(amber, from the .meta.json beside a recording)")
+        self.act_events.toggled.connect(self._rebuild_plots)
+        self._toolbar_action(tb, self.act_events)
+        self.act_learn_pedal = self._toolbar_action(tb, self._new_action(
+            "learn", "Learn pedal calibration",
             "Derive pedal rest / full from this log's idle and WOT samples "
-            "(same rules as the live learner) and store them for its VIN")
-        self.btn_learn_pedal.clicked.connect(self.learn_pedal_from_log)
-        bar.addWidget(self.btn_learn_pedal)
-        self.cursor_label = QLabel("")
-        self.cursor_label.setStyleSheet("color:#9aa0a6;")
-        bar.addWidget(self.cursor_label, 1)
-        lay.addLayout(bar)
+            "(same rules as the live learner) and store them for its VIN",
+            self.learn_pedal_from_log))
+        lay.addWidget(tb)
 
         # chart state
         self._log_times: list[float] = []
@@ -2207,14 +2432,23 @@ class MainWindow(QMainWindow):
 
         split = QSplitter(Qt.Vertical)
         top = QSplitter(Qt.Horizontal)
-        self.chan_list = QListWidget()
-        self.chan_list.setMaximumWidth(180)
-        self.chan_list.itemChanged.connect(self._rebuild_plots)
-        top.addWidget(self.chan_list)
+        top.setChildrenCollapsible(False)
+        self.chan_tree = ChannelTree()
+        self.chan_tree.changed.connect(self._rebuild_plots)
+        top.addWidget(self.chan_tree)
         self.plot_area = pg.GraphicsLayoutWidget()
         self.plot_area.scene().sigMouseMoved.connect(self._on_chart_mouse)
-        top.addWidget(self.plot_area)
-        top.setStretchFactor(0, 0); top.setStretchFactor(1, 1)
+        self.plot_empty = empty_state_label(LOG_EMPTY_TEXT)
+        self.plot_stack = QStackedWidget()
+        self.plot_stack.addWidget(self.plot_empty)
+        self.plot_stack.addWidget(self.plot_area)
+        top.addWidget(self.plot_stack)
+        self.cursor_readout = CursorReadout()
+        top.addWidget(self.cursor_readout)
+        top.setStretchFactor(0, 0)
+        top.setStretchFactor(1, 1)
+        top.setStretchFactor(2, 0)
+        top.setSizes([180, 640, 180])
         split.addWidget(top)
 
         self.log_report = QTextEdit(); self.log_report.setReadOnly(True)
@@ -2227,46 +2461,72 @@ class MainWindow(QMainWindow):
             "any table.")
         split.addWidget(self.log_report)
         split.setSizes([460, 220])
-        lay.addWidget(split, 1)
+        m = theme.SPACING["sm"]
+        holder = QVBoxLayout()
+        holder.setContentsMargins(m, m, m, m)
+        holder.addWidget(split)
+        lay.addLayout(holder, 1)
+        self._update_log_crumb()
         return w
+
+    def _update_log_crumb(self):
+        if not self.log:
+            self.log_crumb.set_path(["Log Analysis", "No log loaded"])
+            self.log_crumb.set_chips([])
+            self.log_crumb.set_note("Load a VCM Scanner CSV export or a "
+                                    "Dashboard recording (Ctrl+L).")
+            return
+        self.log_crumb.set_path(["Log Analysis", self.log.source or "log"])
+        chips = [(f"{self.log.n_samples:,} samples", "neutral")]
+        if self._log_times:
+            chips.append((f"{self._log_times[-1]:.0f} s", "neutral"))
+        n_ch = len([k for k in self.log.canonical_keys() if k != "time"])
+        chips.append((f"{n_ch} channels", "neutral"))
+        if getattr(self, "_meta_problem", None):
+            chips.append(("metadata unreadable", "danger"))
+        self.log_crumb.set_chips(chips)
+        note = []
+        if self.log.timed:
+            note.append("per-channel times from the .long.csv sidecar")
+        if self.log.meta:
+            note.append("recording metadata loaded")
+        self.log_crumb.set_note(" · ".join(note) or
+                                "Hover the chart for the cursor readout.")
 
     # -- charting ------------------------------------------------------------ #
     _PLOT_DEFAULTS = ["rpm", "vss", "app", "tps", "spark", "knock_retard"]
 
     def _populate_channels(self):
-        self.chan_list.blockSignals(True)
-        self.chan_list.clear()
         keys = [k for k in self.log.canonical_keys() if k != "time"]
         present = set(keys)
         # default to the tuning staples that are actually in the log (max 4)
         want = [k for k in self._PLOT_DEFAULTS if k in present][:4] or keys[:3]
-        for k in keys:
-            it = QListWidgetItem(k)
-            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
-            it.setCheckState(Qt.Checked if k in want else Qt.Unchecked)
-            self.chan_list.addItem(it)
-        self.chan_list.blockSignals(False)
+        self.chan_tree.populate(keys, want)
 
     def _checked_channels(self) -> list[str]:
-        return [self.chan_list.item(i).text()
-                for i in range(self.chan_list.count())
-                if self.chan_list.item(i).checkState() == Qt.Checked]
+        return self.chan_tree.checked_channels()
 
     def _rebuild_plots(self, *_a):
         self.plot_area.clear()
         self._plots = []; self._vlines = []
         if not self.log or not self._log_times:
+            self.plot_stack.setCurrentWidget(self.plot_empty)
+            self.cursor_readout.set_channels([])
             return
+        self.plot_stack.setCurrentWidget(self.plot_area)
         times = np.asarray(self._log_times, dtype=float)
         keys = self._checked_channels()
+        self.cursor_readout.set_channels(keys)
         first = None
+        events = self.act_events.isChecked()
         for i, key in enumerate(keys):
             p = self.plot_area.addPlot(row=i, col=0)
             ser = self.log.series(key)
             y = np.array([np.nan if v is None else v for v in ser], dtype=float)
             n = min(len(times), len(y))
             p.plot(times[:n], y[:n],
-                   pen=pg.mkPen((120, 170, 240), width=1.4), connect="finite")
+                   pen=pg.mkPen(theme.pen_rgb("plot-trace"), width=1.4),
+                   connect="finite")
             p.setLabel("left", key)
             p.showGrid(x=True, y=True, alpha=0.15)
             if first is None:
@@ -2275,28 +2535,29 @@ class MainWindow(QMainWindow):
                 p.setXLink(first)
             if i < len(keys) - 1:
                 p.getAxis("bottom").setStyle(showValues=False)
-            if self.events_chk.isChecked():
+            if events:
                 for t_ev in self._knock_times:
                     p.addItem(pg.InfiniteLine(
                         pos=t_ev, angle=90,
-                        pen=pg.mkPen((220, 70, 60, 150), width=1,
+                        pen=pg.mkPen(theme.pen_rgb("plot-knock", 150), width=1,
                                      style=Qt.DashLine)), ignoreBounds=True)
                 for t_ev in self._shift_times:
                     p.addItem(pg.InfiniteLine(
                         pos=t_ev, angle=90,
-                        pen=pg.mkPen((80, 200, 220, 130), width=1,
+                        pen=pg.mkPen(theme.pen_rgb("plot-shift", 130), width=1,
                                      style=Qt.DashLine)), ignoreBounds=True)
                 for t_ev, label in self._marker_times:
                     p.addItem(pg.InfiniteLine(
                         pos=t_ev, angle=90,
-                        pen=pg.mkPen((235, 170, 60, 200), width=1.5),
+                        pen=pg.mkPen(theme.pen_rgb("plot-marker", 200),
+                                     width=1.5),
                         label=label if i == 0 else None,
                         labelOpts={"position": 0.92,
-                                   "color": (235, 170, 60)}),
+                                   "color": theme.pen_rgb("plot-marker")}),
                         ignoreBounds=True)
             vline = pg.InfiniteLine(
                 angle=90, movable=False,
-                pen=pg.mkPen((235, 235, 235, 120), width=1))
+                pen=pg.mkPen(theme.pen_rgb("plot-cursor", 120), width=1))
             vline.setVisible(False)
             p.addItem(vline, ignoreBounds=True)
             self._vlines.append(vline)
@@ -2306,21 +2567,25 @@ class MainWindow(QMainWindow):
         if not self._plots or not self.log or not self._log_times:
             return
         x = self._plots[0].vb.mapSceneToView(scene_pos).x()
+        self.show_cursor_at(x)
+
+    def show_cursor_at(self, x: float):
+        """Move the chart cursor to time x (s) and refresh the readout."""
         import bisect
+        keys = self._checked_channels()
         i = bisect.bisect_right(self._log_times, x) - 1
         if i < 0 or i >= self.log.n_samples:
             for vl in self._vlines:
                 vl.setVisible(False)
-            self.cursor_label.setText("")
+            self.cursor_readout.set_channels(keys)
             return
         for vl in self._vlines:
             vl.setPos(x); vl.setVisible(True)
-        parts = [f"t={self._log_times[i]:.2f}s"]
-        for key in self._checked_channels():
+        rows = []
+        for key in keys:
             ser = self.log.series(key)
-            v = ser[i] if i < len(ser) else None
-            parts.append(f"{key}={v:g}" if v is not None else f"{key}=—")
-        self.cursor_label.setText("   ".join(parts))
+            rows.append((key, ser[i] if i < len(ser) else None))
+        self.cursor_readout.show_values(self._log_times[i], rows)
 
     def _render_report(self, rep=None):
         if not self.log:
@@ -2638,6 +2903,7 @@ class MainWindow(QMainWindow):
         self._populate_channels()
         self._rebuild_plots()
         self._refresh_channel_combos()
+        self._update_log_crumb()
 
 
 def load_default_cal() -> tuple[Calibration, Optional[str]]:
@@ -2661,31 +2927,9 @@ def load_default_cal() -> tuple[Calibration, Optional[str]]:
 
 
 def apply_dark_theme(app: QApplication) -> None:
-    """App-wide dark Fusion palette (dark mode is the primary theme)."""
-    app.setStyle("Fusion")
-    p = QPalette()
-    window = QColor(37, 39, 43)
-    base = QColor(28, 30, 34)
-    text = QColor(222, 224, 228)
-    disabled = QColor(120, 124, 130)
-    highlight = QColor(53, 106, 195)
-    p.setColor(QPalette.Window, window)
-    p.setColor(QPalette.WindowText, text)
-    p.setColor(QPalette.Base, base)
-    p.setColor(QPalette.AlternateBase, window)
-    p.setColor(QPalette.ToolTipBase, QColor(48, 50, 56))
-    p.setColor(QPalette.ToolTipText, text)
-    p.setColor(QPalette.Text, text)
-    p.setColor(QPalette.PlaceholderText, disabled)
-    p.setColor(QPalette.Button, QColor(45, 48, 53))
-    p.setColor(QPalette.ButtonText, text)
-    p.setColor(QPalette.BrightText, QColor(255, 120, 110))
-    p.setColor(QPalette.Link, QColor(120, 170, 240))
-    p.setColor(QPalette.Highlight, highlight)
-    p.setColor(QPalette.HighlightedText, QColor(245, 246, 248))
-    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
-        p.setColor(QPalette.Disabled, role, disabled)
-    app.setPalette(p)
+    """App-wide dark Fusion palette (dark mode is the primary theme), built
+    from the theme tokens."""
+    theme.apply_dark_palette(app)
 
 
 def app_icon_path() -> Optional[str]:
