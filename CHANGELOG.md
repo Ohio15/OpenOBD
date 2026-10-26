@@ -51,6 +51,10 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   up to the hold. The table's Value column is marked "Value · held" in the
   held colour; a carried tile reads "held · carried" instead of a frozen
   age.
+- **Incomplete traces say so.** If loading a newly graphed field's history
+  fails, its Min / Max / Avg read "not loaded" in the read-failed colour and
+  the chart stays captioned "read failed" until a later read loads the
+  whole history; the trace is never shown silently partial.
 - **Fixes.** Losing the truck-mcp data root now unbinds the session (the
   chart no longer stays captioned "live" with an open reader). An archived
   drive with no fresh numeric samples paints without a time axis instead of

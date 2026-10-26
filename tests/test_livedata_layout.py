@@ -91,8 +91,10 @@ def test_picker_does_not_size_to_longest_label(page):
 def test_full_session_label_still_readable(page):
     text = page._picker.itemText(0)
     from PySide6.QtCore import Qt
-    assert page._picker.toolTip() == text
-    assert page._picker.itemData(0, Qt.ToolTipRole) == text
+    from openobd.tuningui import plain_tooltip
+    # Session-derived text renders literally (escaped, <qt>-wrapped).
+    assert page._picker.toolTip() == plain_tooltip(text)
+    assert page._picker.itemData(0, Qt.ToolTipRole) == plain_tooltip(text)
     view = page._picker.view()
     assert view.textElideMode() == Qt.ElideNone
     assert view.minimumWidth() >= view.sizeHintForColumn(0)

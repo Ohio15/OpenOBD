@@ -768,3 +768,89 @@ def test_g3_tampered_splitter_state_falls_back(env, bad):
     pg = env.make()
     assert pg._restore_split(bad) is False
     assert len(pg._split.sizes()) == 2
+
+
+# --------------------------------------------------------------------------- #
+# review round 2 / gate pass 2
+# --------------------------------------------------------------------------- #
+def _raise_series_after(reader, times):
+    """Make the reader's series_after raise for the next `times` calls."""
+    real = reader.series_after
+    left = [times]
+
+    def flaky(*a, **kw):
+        if left[0] > 0:
+            left[0] -= 1
+            raise sqlite3.OperationalError("database is locked")
+        return real(*a, **kw)
+    reader.series_after = flaky
+    return left
+
+
+def test_rr2_f1_failed_chart_read_then_held_relayout_has_no_gap(env):
+    path = _live(env)
+    pg = env.make()
+    pane = pg._chart
+    rpm0 = list(pane.chart.traces["rpm"].vs)
+    cursor0 = pane._cursor
+    _add_rpm(path, [3333])
+    _raise_series_after(pane._reader, 1)
+    pg._tick()                   # page range read sees 3333, chart read fails
+    assert pane._cursor == cursor0
+    assert pg._range_cursor > cursor0
+
+    pg.act_hold.setChecked(True)
+    pg._remove_from_graph("ect")             # layout edit while held
+    assert pane._cursor == cursor0, "held relayout skipped unread rows"
+    assert pane.chart.traces["rpm"].vs == rpm0
+
+    pg.act_hold.setChecked(False)
+    assert pane.chart.traces["rpm"].vs == rpm0 + [3333.0], \
+        "surviving trace lost the row its failed read missed"
+
+
+def test_rr2_f2_failed_frozen_backfill_is_marked_until_loaded(env):
+    path = _live(env)
+    pg = env.make()
+    pane = pg._chart
+    table = pane.table
+    pg._remove_from_graph("ect")
+    _add_sample(path, 2, 195.0)            # recorded BEFORE the hold
+    pg._tick()
+    pg.act_hold.setChecked(True)
+    _add_sample(path, 2, 222.0)            # recorded DURING the hold
+    # The held backfill fails, and so does the release tick's retry.
+    _raise_series_after(pane._reader, 2)
+    pg._on_channel_dropped("ect", None)
+
+    assert pane.chart.traces["ect"].vs == []
+    assert "ect" in table.incomplete()
+    for col in (table.COL_MIN, table.COL_MAX, table.COL_AVG):
+        assert table.text("ect", col) == table.NOT_LOADED
+    assert pane.chart.caption == "held"
+
+    pg.act_hold.setChecked(False)          # release tick: retry fails again
+    assert pane.chart.traces["ect"].vs == [], "partial trace after failure"
+    assert "ect" in table.incomplete()
+    assert table.text("ect", table.COL_MIN) == table.NOT_LOADED
+    assert pane.chart.caption == "read failed"
+
+    pg._tick()                             # next good tick loads it all
+    assert pane.chart.traces["ect"].vs == [195.0, 222.0]
+    assert table.incomplete() == set()
+    assert table.text("ect", table.COL_MIN) == "195"
+    assert pane.chart.caption == "live"
+
+
+def test_rr2_f3_session_names_in_tooltips_render_literally(env):
+    from openobd.livedata import TileGroup, ValueTile
+    from openobd.tuningui import plain_tooltip
+    hostile = "<a href='x'>rpm</a>"
+    escaped = "&lt;a href=&#x27;x&#x27;&gt;rpm&lt;/a&gt;"
+    tip = ValueTile(hostile, "rpm").toolTip()
+    assert tip.startswith("<qt>") and tip.endswith("</qt>")
+    assert escaped in tip and hostile not in tip
+    group = TileGroup(hostile)
+    head = group.header.toolTip()
+    assert head.startswith("<qt>") and escaped in head and hostile not in head
+    assert plain_tooltip("a & b") == "<qt>a &amp; b</qt>"

@@ -54,7 +54,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QDrag, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
@@ -70,7 +70,7 @@ from .stripchart import ChartPane, channel_mime, chartable_names, fmt_value
 from .tmstore import TmSessionReader, TmSessionError
 from .tuningui import (
     GROUP_ORDER, Breadcrumb, ElidedLabel, channel_group, empty_state_label,
-    make_toolbar,
+    make_toolbar, plain_tooltip, restore_splitter_state,
 )
 
 # The states, and the ONLY colors each may take. Each means exactly one thing.
@@ -126,8 +126,9 @@ class ValueTile(QFrame):
         self.setMinimumWidth(TILE_MIN_W)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.setCursor(Qt.OpenHandCursor)   # tiles drag onto the graph table
-        self.setToolTip(f"{name}: drag onto the graphed-channels table to "
-                        f"chart it; right-click for options")
+        self.setToolTip(plain_tooltip(
+            f"{name}: drag onto the graphed-channels table to chart it; "
+            f"right-click for options"))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 4, 8, 4)
         lay.setSpacing(0)
@@ -279,7 +280,7 @@ class TileGroup(QWidget):
         self.header.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.header.setArrowType(Qt.DownArrow)
         self.header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.header.setToolTip(f"Show / hide the {name} tiles")
+        self.header.setToolTip(plain_tooltip(f"Show / hide the {name} tiles"))
         self.header.toggled.connect(self._on_toggled)
         lay.addWidget(self.header)
         self.body = QWidget()
@@ -537,14 +538,7 @@ class LiveDataPage(QWidget):
         """Restore the splitter from a QSettings value. The INI is user-
         editable: anything that is not a byte blob, or that Qt rejects, falls
         back to the default sizes silently rather than raising."""
-        if isinstance(state, (bytes, bytearray)):
-            state = QByteArray(bytes(state))
-        if not isinstance(state, QByteArray):
-            return False
-        try:
-            return bool(self._split.restoreState(state))
-        except (TypeError, ValueError, RuntimeError):
-            return False
+        return restore_splitter_state(self._split, state)
 
     def shutdown(self):
         self._active = False
@@ -617,8 +611,8 @@ class LiveDataPage(QWidget):
             text = (f"{tag}{label}  ·  {started}  ·  "
                     f"{s.get('channel_count', 0)} ch{err}")
             self._picker.addItem(text, s["path"])
-            self._picker.setItemData(self._picker.count() - 1, text,
-                                     Qt.ToolTipRole)
+            self._picker.setItemData(self._picker.count() - 1,
+                                     plain_tooltip(text), Qt.ToolTipRole)
         idx = self._picker.findData(prev) if prev else 0
         self._picker.setCurrentIndex(max(0, idx))
         self._picker.blockSignals(False)
@@ -651,7 +645,7 @@ class LiveDataPage(QWidget):
                              + view.verticalScrollBar().sizeHint().width())
 
     def _sync_picker_tooltip(self, *_):
-        self._picker.setToolTip(self._picker.currentText())
+        self._picker.setToolTip(plain_tooltip(self._picker.currentText()))
 
     def _set_empty(self, text: str):
         self._empty.setText(text)

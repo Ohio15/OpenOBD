@@ -817,6 +817,7 @@ class ChannelTable(QTableWidget):
         self._live_texts: dict[str, str] = {}
         self._cursor_on = False
         self._held = False
+        self._incomplete: set[str] = set()
         self._show_empty_row()
 
     def set_droppable(self, names):
@@ -857,6 +858,7 @@ class ChannelTable(QTableWidget):
         self._lane_of = {r[0]: r[2] for r in rows}
         self._live_texts = {}
         self._cursor_on = False
+        self._incomplete = set()
         self.horizontalHeaderItem(self.COL_VALUE).setText(self._value_header())
         if not rows:
             self._show_empty_row()
@@ -944,8 +946,35 @@ class ChannelTable(QTableWidget):
         self.horizontalHeaderItem(self.COL_VALUE).setText("@ Cursor")
         self._write_values(texts)
 
+    #: Stats text of a graphed field whose history failed to load: the trace
+    #: is incomplete, so its window stats would be silently partial.
+    NOT_LOADED = "not loaded"
+
+    def set_incomplete(self, names):
+        """Mark the rows whose trace history has not loaded (a backfill read
+        failed): their Min / Max / Avg read "not loaded" in the read-failed
+        caption colour until set_incomplete clears them."""
+        self._incomplete = {n for n in names if n in self._names}
+        failed = theme.hex_qcolor(CAPTION_COLORS["read failed"])
+        muted = theme.qcolor("text-muted")
+        for i, name in enumerate(self._names):
+            for c in (self.COL_MIN, self.COL_MAX, self.COL_AVG):
+                it = self.item(i, c)
+                if it is None:
+                    continue
+                if name in self._incomplete:
+                    it.setText(self.NOT_LOADED)
+                    it.setForeground(failed)
+                else:
+                    it.setForeground(muted)
+
+    def incomplete(self) -> set[str]:
+        return set(self._incomplete)
+
     def set_stats(self, stats: dict[str, Optional[tuple[float, float, float]]]):
         for i, name in enumerate(self._names):
+            if name in self._incomplete:
+                continue
             st = stats.get(name)
             for c, k in ((self.COL_MIN, 0), (self.COL_MAX, 1),
                          (self.COL_AVG, 2)):
@@ -1010,6 +1039,14 @@ class ChartPane(QWidget):
         self._channels: list[str] = []
         self._cursor = 0
         self._min_ts: Optional[str] = None
+        # Channel -> hold bound whose history (ids 1..bound) has not been read:
+        # a frozen backfill failed. The next tick loads it before any newer
+        # row, and the table shows the channel "not loaded" until it does.
+        self._needs_backfill: dict[str, int] = {}
+        # Channel -> highest id already read for it past the shared cursor (a
+        # frozen backfill up to the hold): later reads skip those ids, so a
+        # row is never appended twice.
+        self._floor: dict[str, int] = {}
         self._events_ok = True
         self._own_bar = own_bar
 
@@ -1064,12 +1101,13 @@ class ChartPane(QWidget):
         itself what is selected; it only renders and reads.
 
         frozen_upto (the page is held and only the layout changed: the
-        store's highest sample id as of the last read before the hold):
-        rebuild the lanes and table, keep every surviving trace's samples,
-        the backfill bound, the note and the window, and read nothing newer
-        than that id. A channel newly added to the graph is backfilled only
-        up to it, so it lines up with the frozen traces, and the cursor moves
-        to it so release reads each later sample exactly once."""
+        store's highest sample id as of the page's last read before the
+        hold): rebuild the lanes and table, keep every surviving trace's
+        samples, the cursor, the backfill bound, the note and the window.
+        A channel newly added to the graph is backfilled up to the hold
+        instant (it matches the frozen tiles); the shared cursor does NOT
+        move, so release reads every surviving trace's unread rows, and each
+        sample lands exactly once."""
         if (frozen_upto is not None and self._reader is reader
                 and reader is not None):
             self._rebind_frozen(channel_meta, lanes, int(frozen_upto))
@@ -1115,11 +1153,14 @@ class ChartPane(QWidget):
 
     def _rebind_frozen(self, channel_meta: dict[str, dict],
                        lanes: list[list[str]], upto: int):
-        # Every graphed channel was read up to self._cursor, and the page's
-        # last read saw nothing past `upto`; graphed rows in between do not
-        # exist (the chart read after the page's bound), so the larger of
-        # the two is the frozen instant for every trace, old and new.
-        upto = max(self._cursor, upto)
+        # Every surviving trace was read exactly up to self._cursor (a failed
+        # chart read leaves the cursor where it was), so the cursor never
+        # moves here: rows past it were not read for those traces and release
+        # must read them. A newly graphed channel was never read at all; the
+        # hold instant for it is the later of the cursor and the page's last
+        # read bound (that channel's rows up to `upto` were recorded before
+        # the hold and are what its tile shows).
+        bound = max(self._cursor, upto)
         old = self.chart.traces
         caption = self.chart.caption
         names = [n for lane in lanes for n in lane]
@@ -1135,18 +1176,16 @@ class ChartPane(QWidget):
             tr.ts, tr.vs = prev.ts, prev.vs
             tr.lo, tr.hi = prev.lo, prev.hi
             tr._auto, tr._seeded = prev._auto, prev._seeded
-        if new_names and upto > 0:
-            try:
-                rows = self._reader.series_after(
-                    new_names, after_id=0, min_ts=self._min_ts)
-            except Exception as exc:
-                self.set_failed(str(exc))
-                rows = {}
-            self.chart.append_samples({
-                n: [s for s in samples
-                    if s.get("id") is not None and s["id"] <= upto]
-                for n, samples in rows.items()})
-        self._cursor = upto
+        # A channel still owing its history from an earlier failed backfill
+        # is retried with the newly graphed ones.
+        backfill = {n: bound for n in new_names}
+        backfill.update({n: b for n, b in self._needs_backfill.items()
+                         if n in self.chart.traces and n not in backfill})
+        self._floor = {n: f for n, f in self._floor.items()
+                       if n in self.chart.traces}
+        self._needs_backfill = {}
+        if backfill and not self._backfill(backfill):
+            self._needs_backfill = backfill
         ends = [tr.ts[-1] for tr in self.chart.traces.values() if tr.ts]
         self.chart.t_end = max(ends) if ends else None
         self.chart.set_caption(caption)
@@ -1154,14 +1193,39 @@ class ChartPane(QWidget):
             (n, units[n], li, self.chart.traces[n].color)
             for li, lane in enumerate(lanes) for n in lane])
         self._channels = names
+        self.table.set_incomplete(self._needs_backfill.keys())
         self.refresh_stats()
         self.chart.update()
+
+    def _backfill(self, bounds: dict[str, int]) -> bool:
+        """Load each channel's history up to its bound (ids 1..bound) and
+        record the bound as that channel's floor, so a later read past the
+        shared cursor skips what was loaded here. False (and the failure
+        shown) when the read raised; nothing is appended then."""
+        if not any(b > 0 for b in bounds.values()):
+            return True
+        try:
+            rows = self._reader.series_after(
+                list(bounds), after_id=0, min_ts=self._min_ts)
+        except Exception as exc:
+            self.set_failed(str(exc))
+            return False
+        self.chart.append_samples({
+            n: [s for s in samples
+                if s.get("id") is not None and s["id"] <= bounds.get(n, 0)]
+            for n, samples in rows.items()})
+        for n, b in bounds.items():
+            if b > self._cursor:
+                self._floor[n] = b
+        return True
 
     def unbind(self):
         self._reader = None
         self._channels = []
         self._cursor = 0
         self._min_ts = None
+        self._needs_backfill = {}
+        self._floor = {}
         self.chart.set_hover(None)
         self.chart.configure([], {})
         self.chart.set_caption("")
@@ -1223,6 +1287,17 @@ class ChartPane(QWidget):
     def tick(self, *, archived: bool, session_stale: bool):
         if self._reader is None or not self._channels:
             return
+        if self._needs_backfill:
+            # History first, so no row newer than the cursor is appended to a
+            # trace still missing its older ones; until it loads nothing
+            # advances and the failure stays shown.
+            pending = {n: b for n, b in self._needs_backfill.items()
+                       if n in self._channels}
+            if pending and not self._backfill(pending):
+                self.table.set_incomplete(pending.keys())
+                return
+            self._needs_backfill = {}
+            self.table.set_incomplete(())
         try:
             fresh = self._reader.series_after(
                 self._channels, after_id=self._cursor, min_ts=self._min_ts)
@@ -1234,6 +1309,14 @@ class ChartPane(QWidget):
                 sid = s.get("id")
                 if sid is not None and sid > self._cursor:
                     self._cursor = sid
+        if self._floor:
+            # Rows a frozen backfill already loaded for that channel.
+            fresh = {n: [s for s in samples
+                         if s.get("id") is None
+                         or s["id"] > self._floor.get(n, 0)]
+                     for n, samples in fresh.items()}
+            self._floor = {n: f for n, f in self._floor.items()
+                           if f > self._cursor}
         self.chart.append_samples(fresh)
         if archived:
             self.chart.set_time_mode(TIME_MODE_CLOCK)

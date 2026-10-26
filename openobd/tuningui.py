@@ -21,11 +21,12 @@ undo stack and the log; nothing here mutates a Calibration on its own.
 """
 from __future__ import annotations
 
+import html
 import json
 from typing import Iterable, Optional
 
 from PySide6.QtCore import (
-    QEvent, QRectF, QSize, QSortFilterProxyModel, Qt, QTimer,
+    QByteArray, QEvent, QRectF, QSize, QSortFilterProxyModel, Qt, QTimer,
     Signal,
 )
 from PySide6.QtGui import (
@@ -48,6 +49,29 @@ RECENT_MAX = 8
 RECENT_GROUP = "Recent"
 
 SEP = " › "
+
+
+def plain_tooltip(text: str) -> str:
+    """A tooltip that renders `text` literally. QToolTip auto-detects rich
+    text, so a session-derived name containing markup would render as HTML;
+    escaping it and wrapping it in <qt> makes Qt show the characters as
+    written. Route every tooltip that interpolates DB / session text here."""
+    return f"<qt>{html.escape(str(text))}</qt>"
+
+
+def restore_splitter_state(splitter, value) -> bool:
+    """Restore a QSplitter from a QSettings value. The INI is user-editable:
+    only a byte blob is accepted, and anything else (str, int, a blob Qt
+    rejects, a raising restore) returns False so the caller applies its
+    default sizes silently. The ONE restoreState call site in openobd."""
+    if isinstance(value, (bytes, bytearray)):
+        value = QByteArray(bytes(value))
+    if not isinstance(value, QByteArray):
+        return False
+    try:
+        return bool(splitter.restoreState(value))
+    except (TypeError, ValueError, RuntimeError):
+        return False
 
 
 def repolish(widget: QWidget) -> None:
