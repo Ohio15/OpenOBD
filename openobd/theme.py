@@ -429,7 +429,8 @@ def tree_qss() -> str:
     """Compact rows for the navigator, scalars and channel trees."""
     return f"""
 QTreeView#navigatorTree, QTreeView#scalarsTree, QTreeWidget#channelTree,
-QTableWidget#cursorReadout, QTreeView#dtcTree, QTableWidget#graphTable {{
+QTableWidget#cursorReadout, QTreeView#dtcTree, QTableWidget#graphTable,
+QTreeWidget#journalTree {{
     background: {_c('surface-sunken')}; border: 1px solid {_c('border')};
 }}
 QTableWidget#graphTable {{ gridline-color: {_c('surface-raised')}; color: {_c('text')}; }}
@@ -439,15 +440,17 @@ QTableWidget#graphTable QHeaderView::section {{
     padding: 2px {SPACING['md']}px;
 }}
 QTreeView#navigatorTree::item, QTreeView#scalarsTree::item,
-QTreeWidget#channelTree::item, QTreeView#dtcTree::item {{ min-height: {ROW_HEIGHT}px; }}
+QTreeWidget#channelTree::item, QTreeView#dtcTree::item,
+QTreeWidget#journalTree::item {{ min-height: {ROW_HEIGHT}px; }}
 QLineEdit#navSearch, QLineEdit#scalarSearch, QLineEdit#dtcSearch,
-QLineEdit#liveFilter {{
+QLineEdit#liveFilter, QLineEdit#journalFilter {{
     background: {_c('surface-sunken')}; color: {_c('text')};
     border: 1px solid {_c('border')}; border-radius: {RADIUS['sm']}px;
     padding: 3px {SPACING['sm']}px;
 }}
 QLineEdit#navSearch:focus, QLineEdit#scalarSearch:focus,
-QLineEdit#dtcSearch:focus, QLineEdit#liveFilter:focus {{ border-color: {_c('accent')}; }}
+QLineEdit#dtcSearch:focus, QLineEdit#liveFilter:focus,
+QLineEdit#journalFilter:focus {{ border-color: {_c('accent')}; }}
 """
 
 
@@ -858,17 +861,6 @@ LIVEDATA_STATE_COLORS: dict[str, tuple[str, str, str]] = {
 LIVEDATA_COLORS: dict[str, str] = {
     "secondary-text": "#9DA3AD",     # tile channel name, page status line
     "faint-text": "#7B8088",         # tile state caption, empty state, stamp
-    "info-bg": "#2B3138",            # Controls safety banner
-    "info-border": "#5A7EC3",
-    "info-text": "#C7D2E4",
-    "clean-text": "#8FD0A6",         # control state: nothing unreleased
-    "journal-activate": "#D6A93A",   # activate / fire_refused journal rows
-    "danger-text": "#E7A9A4",
-    "danger-bg": "#3B2B2B",
-    "danger-border": "#CD3C32",
-    "warn-text": "#E5C77A",
-    "warn-bg": "#3A3629",
-    "warn-border": "#D6A93A",
 }
 
 
@@ -889,21 +881,6 @@ def livedata_tile_qss(state: str) -> tuple[str, str]:
         state, LIVEDATA_STATE_COLORS["notread"])
     return (f"ValueTile {{ background:{bg}; border:1px solid {accent}; "
             f"border-radius:6px; }}", f"color:{text};")
-
-
-def livedata_banner_qss() -> str:
-    c = LIVEDATA_COLORS
-    return (f"background:{c['info-bg']}; border:1px solid {c['info-border']}; "
-            f"border-radius:6px; color:{c['info-text']}; padding:12px; "
-            f"font-size:12px;")
-
-
-def livedata_alert_qss(kind: str) -> str:
-    """Control-state alert box; kind is 'danger' or 'warn'."""
-    c = LIVEDATA_COLORS
-    return (f"color:{c[kind + '-text']}; background:{c[kind + '-bg']}; "
-            f"border:1px solid {c[kind + '-border']}; "
-            f"border-radius:6px; font-size:13px; padding:10px;")
 
 
 # -- Strip chart (stripchart.py) ------------------------------------------ #

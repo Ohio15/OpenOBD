@@ -36,15 +36,9 @@ Live Data
   reader cursors, and a frozen live value drops the live palette.
 
 Active Tests
-  A DISPLAY-ONLY reflection of vehicle-control state, polled on its own timer and
-  stamped with the time of the last read so a stale verdict cannot masquerade as
-  current. truck-mcp's registry of executable controls is empty by policy — a
-  supported CPID executes on first contact with whatever bytes were guessed, so
-  none may be scanned for — and this page states that as a decision, not a blank.
-  It reads truck-mcp's control journal across all roots and surfaces the one
-  thing that matters most: whether a control session ended without releasing an
-  actuator. A journal that cannot be located or read yields UNKNOWN (a warning),
-  never a green all-clear. There is deliberately NO arm/fire path in OpenOBD.
+  Moved to openobd/activetests.py (v0.38.0): a DISPLAY-ONLY audit of
+  truck-mcp's control journal. There is deliberately NO arm/fire path in
+  OpenOBD.
 """
 from __future__ import annotations
 
@@ -57,13 +51,12 @@ from typing import Optional
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QDrag, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QSizePolicy,
-    QSplitter, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout,
-    QWidget,
+    QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QLineEdit, QMenu, QScrollArea, QSizePolicy, QSplitter, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
-from . import chanlayout, ctljournal, theme, tmstore
+from . import chanlayout, theme, tmstore
 from .appsettings import app_settings
 from .chanlayout import ChannelLayout
 from .stripchart import ChartPane, channel_mime, chartable_names, fmt_value
@@ -82,7 +75,6 @@ STATE_CAPTION = {
 }
 POLL_MS = 1000
 SESSION_RESCAN_MS = 5000
-CONTROL_POLL_MS = 3000
 # Character budget the session picker reserves (it elides beyond this when the
 # window is narrow; the full label stays in its tooltip and its popup).
 PICKER_MIN_CHARS = 28
@@ -1181,153 +1173,3 @@ class LiveDataPage(QWidget):
         self._chart.update_table(latest, self._channel_meta,
                                  archived=self._archived,
                                  session_stale=session_stale)
-
-
-class ActiveTestsPage(QWidget):
-    """DISPLAY-ONLY vehicle-control state. Commands nothing; enables no control.
-
-    Reads truck-mcp's control journal across every root and reports one honest
-    verdict: clean, outstanding (an actuator may be held), or unknown (the
-    journal could not be located or trusted — a warning, never a green pass).
-    """
-
-    def __init__(self):
-        super().__init__()
-        self._active = False
-        root = QVBoxLayout(self)
-
-        banner = QLabel(
-            "No executable vehicle controls are known for this truck.\n"
-            "Enabling any active test requires a hardware CPID probe session "
-            "(operator + truck + console) and a per-exposure adversarial review "
-            "before the safety gate is flipped. Until then this page is "
-            "display-only: it commands nothing and holds no lease.")
-        banner.setWordWrap(True)
-        banner.setStyleSheet(theme.livedata_banner_qss())
-        root.addWidget(banner)
-
-        row = QHBoxLayout()
-        self._state_lbl = QLabel("")
-        self._state_lbl.setTextFormat(Qt.PlainText)   # journal / exception text
-        self._state_lbl.setWordWrap(True)
-        self._state_lbl.setStyleSheet("font-size:13px; padding:6px;")
-        row.addWidget(self._state_lbl, 1)
-        col = QVBoxLayout()
-        self._stamp = QLabel("")
-        self._stamp.setStyleSheet(
-            theme.livedata_text_qss("faint-text", "font-size:10px;"))
-        self._refresh_btn = QPushButton("↻ Refresh")
-        self._refresh_btn.clicked.connect(self.refresh)
-        col.addWidget(self._refresh_btn)
-        col.addWidget(self._stamp)
-        row.addLayout(col, 0)
-        root.addLayout(row)
-
-        root.addWidget(QLabel("Control journal (read-only audit tail):"))
-        self._table = QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(["when", "event", "module", "detail"])
-        self._table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        root.addWidget(self._table, 1)
-
-        self._poll = QTimer(self)
-        self._poll.timeout.connect(self.refresh)
-        self.refresh()
-
-    def showEvent(self, event):   # noqa: N802
-        super().showEvent(event)
-        if not self._active:
-            self._active = True
-            self.refresh()
-            self._poll.start(CONTROL_POLL_MS)
-
-    def hideEvent(self, event):   # noqa: N802
-        super().hideEvent(event)
-        self._active = False
-        self._poll.stop()
-
-    def shutdown(self):
-        self._active = False
-        self._poll.stop()
-
-    def closeEvent(self, event):   # noqa: N802
-        self.shutdown()
-        super().closeEvent(event)
-
-    def refresh(self):
-        try:
-            state = ctljournal.control_state()
-        except Exception as exc:   # the safety page must never fail to render
-            self._state_lbl.setText(f"⚠  Could not read control journal: {exc}")
-            self._warn_style()
-            self._table.setRowCount(0)
-            self._stamp.setText("read error")
-            return
-
-        if state.verdict == "outstanding":
-            lines = "\n".join(
-                f"  • module {o.get('module')} CPID {o.get('cpid')} — "
-                f"release bytes {o.get('release', '?')}  [{_short(o.get('_journal'))}]"
-                for o in state.outstanding)
-            self._state_lbl.setText(
-                "⚠  CONTROL LEFT ACTIVE. A control session ended without a "
-                "recorded release; the truck may be holding an actuator:\n"
-                + lines +
-                "\n\nRun truck-mcp recovery (it replays the exact release bytes "
-                "from the journal). OpenOBD will not send it.")
-            self._danger_style()
-        elif state.verdict == "unknown":
-            self._state_lbl.setText("⚠  CONTROL STATE UNKNOWN. " + state.detail)
-            self._warn_style()
-        else:  # clean
-            self._state_lbl.setText(
-                "✓  No unreleased activation is recorded across "
-                f"{len(state.reads)} journal(s), {state.total_entries} record(s). "
-                "No control is commanded on this truck.")
-            self._state_lbl.setStyleSheet(theme.livedata_text_qss(
-                "clean-text", "font-size:13px; padding:6px;"))
-
-        self._stamp.setText("as of " + datetime.now().strftime("%H:%M:%S"))
-        self._fill_table(state)
-
-    def _fill_table(self, state):
-        recent = []
-        for r in state.reads:
-            recent.extend(r.entries)
-        recent = list(reversed(recent))[:100]
-        self._table.setRowCount(len(recent))
-        for r, e in enumerate(recent):
-            when = _fmt_epoch(e.get("at"))
-            detail = ", ".join(
-                f"{k}={v}" for k, v in e.items()
-                if k not in ("at", "event", "module", "_journal"))
-            for c, text in enumerate((when, str(e.get("event", "")),
-                                      str(e.get("module", "")), detail)):
-                item = QTableWidgetItem(text)
-                ev = str(e.get("event", ""))
-                if ev == "activate" or ev.startswith("fire_refused"):
-                    item.setForeground(
-                        theme.livedata_qcolor("journal-activate"))
-                self._table.setItem(r, c, item)
-
-    def _danger_style(self):
-        self._state_lbl.setStyleSheet(theme.livedata_alert_qss("danger"))
-
-    def _warn_style(self):
-        self._state_lbl.setStyleSheet(theme.livedata_alert_qss("warn"))
-
-
-def _short(path) -> str:
-    if not path:
-        return "?"
-    try:
-        return "…/" + "/".join(str(path).replace("\\", "/").split("/")[-2:])
-    except Exception:
-        return str(path)
-
-
-def _fmt_epoch(at) -> str:
-    try:
-        return datetime.fromtimestamp(float(at)).strftime("%Y-%m-%d %H:%M:%S")
-    except (TypeError, ValueError, OSError):
-        return str(at) if at is not None else ""
