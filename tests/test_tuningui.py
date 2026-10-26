@@ -1015,3 +1015,24 @@ def test_parse_tsv_keeps_interior_blank_rows(win, qapp):
     assert t.values[1][0] == mid
     win.undo_stack.undo()
     restore_stock(win, t)
+
+
+def test_runtime_tooltips_render_markup_literally(qapp, tmp_path):
+    """DR-032 868953ce: table name/note, scalar note and the grid corner text
+    come from calibration files; markup in them must not render as HTML."""
+    from openobd.calspec import Scalar
+    from openobd.tuningui import CalTableView, Navigator, ScalarsTree
+    hostile = "<b>x</b>"
+    tables = tables_fixture()
+    tables[0].name = hostile
+    tables[0].note = "<i>note</i>"
+    nav = Navigator(tables, nav_settings(tmp_path))
+    assert nav._leaves[hostile][0].toolTip(0) == (
+        "<qt>&lt;b&gt;x&lt;/b&gt;\n&lt;i&gt;note&lt;/i&gt;</qt>")
+    tree = ScalarsTree([Scalar(name="s", value=1.0, note=hostile)])
+    assert tree._rows[0][0].toolTip() == "<qt>&lt;b&gt;x&lt;/b&gt;</qt>"
+    view = CalTableView()
+    view.set_corner_text(hostile)
+    assert view.corner_label.toolTip() == "<qt>&lt;b&gt;x&lt;/b&gt;</qt>"
+    view.set_corner_text("")
+    assert view.corner_label.toolTip() == ""

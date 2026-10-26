@@ -796,7 +796,7 @@ class ChannelTable(QTableWidget):
         self.setObjectName("graphTable")
         self.setHorizontalHeaderLabels(list(self.COLUMNS))
         for c, tip in enumerate(self.HEADER_TIPS):
-            self.horizontalHeaderItem(c).setToolTip(tip)
+            self.horizontalHeaderItem(c).setToolTip(tip)  # tooltip: literal
         self.verticalHeader().setVisible(False)
         self.verticalHeader().setDefaultSectionSize(theme.ROW_HEIGHT)
         self.setEditTriggers(QTableWidget.NoEditTriggers)

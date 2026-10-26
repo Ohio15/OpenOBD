@@ -329,7 +329,7 @@ class Navigator(QWidget):
         tip = t.name + (f"\n{t.note}" if t.note else "")
         if self.changed_state(t.name) == self.NO_STOCK:
             tip += "\nNo stock baseline: changes cannot be tracked"
-        leaf.setToolTip(0, tip)
+        leaf.setToolTip(0, plain_tooltip(tip))
         self._apply_state(leaf, self.changed_state(t.name))
         self._leaves.setdefault(t.name, []).append(leaf)
         return leaf
@@ -560,7 +560,7 @@ class CollapsiblePanel(QWidget):
         self.toggle.setText(title)
         self.toggle.setCheckable(True)
         self.toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.toggle.setToolTip(f"Show / hide {title}")
+        self.toggle.setToolTip(f"Show / hide {title}")  # tooltip: literal
         self.toggle.toggled.connect(self._on_toggle)
         lay.addWidget(self.toggle, 0, align)
         self.frame = QFrame()
@@ -763,7 +763,7 @@ class ScalarsTree(QWidget):
         try:
             row[0].setText(s.name)
             if s.note:
-                row[0].setToolTip(s.note)
+                row[0].setToolTip(plain_tooltip(s.note))
             row[1].setText(f"{s.value:g}")
             row[2].setText(clean_unit(s.unit))
             row[3].setText("" if s.stock_value is None
@@ -1011,7 +1011,8 @@ class CalTableView(QTableView):
 
     def set_corner_text(self, text: str) -> None:
         self._corner = text or ""
-        self.corner_label.setToolTip(self._corner)
+        self.corner_label.setToolTip(
+            plain_tooltip(self._corner) if self._corner else "")
         self._place_corner()
 
     def corner_text(self) -> str:

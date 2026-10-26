@@ -656,7 +656,7 @@ def dash(qapp, tmp_path):
 
 def test_marker_shortcut_is_registered_and_marks_while_recording(dash):
     d, src = dash
-    assert d.shortcut_tooltip(d.btn_mark).endswith("(M)")
+    assert d.shortcut_tooltip(d.btn_mark).endswith("(M)</qt>")
     assert not d.btn_mark.isEnabled()
     d.add_marker()
     assert "while recording" in d.status.text()
