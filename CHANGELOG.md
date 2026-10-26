@@ -3,7 +3,74 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
-## Unreleased
+## 0.34.0 — 2026-10-26
+
+### Changed (Dashboard controls redesign)
+- **GT auto-connect.** The Dashboard looks for the OBDX Pro GT's USB ID
+  (0483:5740, pyserial list_ports, GUI thread, no port opened) when it is
+  built and every 2 s while no live GT is bound, and connects through the
+  existing worker-thread connect when it appears. It does not scan while a
+  connect is in flight, while a GT is live (the poll thread re-opens a dropped
+  link itself), or while the user has bound a truck-mcp session or a log
+  replay. A failed connect shows in the status line and is retried on the
+  next scan, after a backoff of 5 s, then 15 s, then every 30 s (reset
+  when the port disappears or on Reconnect GT now), under one stable status
+  line "OBDX Pro GT found on COMx but it could not be opened (<reason>) ·
+  retrying". A 20 s watchdog marks a connect that never returns as failed
+  and drops its late result. While nothing is found the status reads
+  "Looking for OBDX Pro GT… (plug in the USB)". While a log or session is
+  bound, a GT that appears adds "· OBDX Pro GT detected — Settings →
+  Reconnect GT now to switch" to the status line instead of connecting. Any
+  connect (automatic or Reconnect GT now) that finishes after the user bound
+  another source, or chose Disconnect, is released, not bound.
+  The scan is injectable (`Dashboard(ports_provider=, scan_interval_ms=,
+  gt_factory=)`). The "Connect GT Pro" button is gone; **Settings → Reconnect
+  GT now** (Ctrl+G) forces a connect, and **Settings → Disconnect GT** stops
+  the GT (an active recording is finalized and its saved path stays in the
+  status line). After a Disconnect the GT is not re-opened while it stays
+  plugged in; unplugging it, or choosing Reconnect GT now, lifts that.
+- **One big Record/Stop button.** Its own row under the status line: 56 px
+  high, red "⏺  RECORD" when idle, "⏹  STOP  ·  1,234 samples  ·  02:14"
+  while recording (elapsed from the first recorded sample, on the source's
+  clock). Clicking it while recording stops and finalizes as before (offers
+  Log Analysis). Only a live GT records: the button is disabled, with the
+  reason as its tooltip, for nothing bound, a disconnected GT, a truck-mcp
+  session, or a log replay ("Recording needs a live GT; this is a replay").
+  Styled by a stylesheet on the button only.
+- **Mark beside it**, same height, shown only while recording (M still
+  marks).
+- **Replay transport.** Start and Stop moved into the replay strip with
+  Pause, Speed and the position slider. The strip shows for log replays and
+  truck-mcp sessions (Pause/Speed/slider only for seekable replays); the live
+  GT has no Stop button and F5 / Shift+F5 never touch it.
+- **Truck session picker** moved to **File → Open truck-mcp session…**
+  (Ctrl+T). Simulated sessions are prefixed "[SIM] "
+  (`tmstore.session_tag(entry, short=True)`), under a disabled header
+  "Stored sessions — not the truck; recording needs a live GT". The Record
+  refusal for a truck-mcp session now says to plug in the GT or choose
+  "Settings → Reconnect GT now".
+- **Keys:** R toggles record (Ctrl+R still works), M marks, Space toggles
+  pause on a replay (P still works), listed in the status line's tooltip.
+- **Fixed: samples lost at stop.** Every stop path (replay Stop,
+  Disconnect GT, binding another source, app close) finalized the recording
+  BEFORE stopping the source, and GtDataSource.stop() joins the poll thread
+  for up to 3 s while it keeps publishing; those samples never reached the
+  CSV. The source now stops first, then the final drain and close run
+  (`Dashboard._halt_source`). A recording-start vehicle read still in
+  flight is waited for (up to 3 s) and written into the recording before it
+  closes. GtDataSource.stop() never closes the port under a run_exclusive
+  holder: if the IO lock is not free within its bounded wait, the holder
+  closes the port as it lets go.
+- A connect worker that is still blocked after the watchdog fired holds off
+  any new connect ("previous GT open still hung; waiting for it to
+  return"), so hung opens never pile up. Unplugging during a connect cancels
+  it and resets the backoff; binding a log or session cancels a connect in
+  flight, and its failure or timeout never touches that source's status.
+- Tests: `tests/test_dashboard_controls.py` (fake ports provider, fake GT
+  factory, hand-driven scan ticks, virtual clock); `tests/conftest.py` makes
+  the default ports provider report no GT so no test can open real hardware;
+  the GUI smoke does the same and checks the new menu actions.
+
 
 ### Added (CI runs the test gate)
 - `.github/workflows/tests.yml` runs the docs/RELEASE.md step 3 gate,

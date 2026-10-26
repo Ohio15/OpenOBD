@@ -306,6 +306,12 @@ class GtDataSource(DataSource):
         # borrowing the link (run_exclusive).
         self._io_lock = threading.Lock()
         self._thread = None
+        # Set when stop() could not get the IO lock in time: the holder
+        # (run_exclusive) closes the port when it lets go.
+        self._closing = False
+        #: How long stop() waits for the IO lock before handing the close
+        #: to its holder.
+        self.stop_lock_wait_s = 5.0
         self._stop = threading.Event()
         self._t0 = None
         self.device = "OBDX Pro GT"
@@ -538,6 +544,7 @@ class GtDataSource(DataSource):
                 return out
 
     def start(self):
+        self._closing = False
         self._gt.open()
         try:
             self.device = getattr(self._gt, "device", "OBDX Pro GT")
@@ -582,9 +589,15 @@ class GtDataSource(DataSource):
 
     def run_exclusive(self, fn):
         """Run fn(gt) with gauge polling held off — lets Diagnostics reuse a
-        live dashboard connection without interleaving serial traffic."""
+        live dashboard connection without interleaving serial traffic. If
+        stop() gave up waiting for this holder, the port is closed here, as
+        the lock is released (never underneath fn)."""
         with self._io_lock:
-            return fn(self._gt)
+            try:
+                return fn(self._gt)
+            finally:
+                if self._closing:
+                    self._gt.close()
 
     def read_recording_context(self) -> dict:
         """What a recording's metadata needs from the vehicle, read with the
@@ -662,6 +675,10 @@ class GtDataSource(DataSource):
                 self.last_error = f"{type(exc).__name__}: {exc}"
             self._stop.wait(self._interval if self.fail_streak == 0
                             else max(self._interval, self.FAIL_PAUSE_S))
+        if self._closing:
+            # stop() timed out on the IO lock this thread held: close now.
+            with self._io_lock:
+                self._gt.close()
 
     def _reconnect(self) -> None:
         """Close and re-open the GT once, after the backoff for this attempt.
@@ -711,10 +728,17 @@ class GtDataSource(DataSource):
             self._thread.join(timeout=3.0)
             self._thread = None
         # Close under the IO lock so the port is never closed underneath a
-        # poll or a reopen. Bounded: a wedged thread must not hang the GUI.
-        locked = self._io_lock.acquire(timeout=5.0)
+        # poll, a reopen or a run_exclusive read. Bounded: a wedged holder
+        # must not hang the GUI, so on timeout the close is handed to it
+        # (_closing, honoured as run_exclusive releases the lock); the
+        # non-blocking retry covers a holder that let go just now.
+        locked = self._io_lock.acquire(timeout=self.stop_lock_wait_s)
+        if not locked:
+            self._closing = True
+            locked = self._io_lock.acquire(blocking=False)
         try:
-            self._gt.close()
+            if locked:
+                self._gt.close()
         finally:
             # The link is gone: nothing learned on it outlives it.
             with self._pedal_lock:

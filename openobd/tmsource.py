@@ -232,8 +232,9 @@ def build_replay_log(path: str | Path) -> tuple[Log, ResolvedMap]:
 
 def record_refusal_message(live: bool, provenance: str, connect_label: str) -> str:
     """Why Record is refused for a bound truck-mcp session, and how to record
-    the truck instead. `connect_label` is the GT connect button's own text so
-    the instruction names exactly what is on screen. `provenance` is a
+    the truck instead. `connect_label` names the GT connect control (the
+    Dashboard passes its menu path, "Settings → Reconnect GT now") so the
+    instruction names exactly what is on screen. `provenance` is a
     tmstore.PROVENANCE_* value.
 
     A truck-mcp session IS already a record — re-recording it would persist
@@ -243,7 +244,8 @@ def record_refusal_message(live: bool, provenance: str, connect_label: str) -> s
     that hint is kept only for a live session, where the store is the record
     being written right now. A session of unknown provenance is never called
     a replay or real data: the message says it could not be verified."""
-    how = f'To record from the truck, press "{connect_label}", then Record.'
+    how = ("To record from the truck, plug in the OBDX Pro GT (it connects "
+           f'by itself) or choose "{connect_label}", then Record.')
     if provenance == tmstore.PROVENANCE_SIMULATED:
         kind, what = "SIMULATED ", "demo data, not the truck"
     elif provenance == tmstore.PROVENANCE_UNKNOWN:

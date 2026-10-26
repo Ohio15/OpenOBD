@@ -95,6 +95,12 @@ for i in range(300):
 conn.commit()
 conn.close()
 
+# The Dashboard auto-connects the OBDX Pro GT when its USB ID shows up. The
+# smoke must never open a real GT on a workstation where one is plugged in:
+# its default ports provider reports none here.
+import openobd.app as _app_mod  # noqa: E402
+_app_mod.detect_gt_ports = lambda: []
+
 app = QApplication(sys.argv)
 cal, path = load_default_cal()
 win = MainWindow(cal, path)
@@ -344,7 +350,7 @@ from vclock import Clock as _VClock  # noqa: E402
 _hclock = _VClock(start=500.0)
 gsrc = GtDataSource(now=_hclock)
 gsrc._keys = ["rpm", "voltage"]
-win.dashboard._on_gt_ready(gsrc)
+win.dashboard._bind_gt(gsrc)
 win.dashboard.timer.stop()
 live_caption = win.dashboard.status.text()
 assert "live" in live_caption
@@ -371,7 +377,7 @@ print("GT poll health OK: failed state + reason shown, live caption restored")
 # constant on a whole drive). An unfiltered GT source must leave the Trans
 # gauge dimmed — never a live-looking number — and every other gauge intact.
 gfull = GtDataSource()
-win.dashboard._on_gt_ready(gfull)
+win.dashboard._bind_gt(gfull)
 win.dashboard.timer.stop()
 assert "tft" not in gfull.channels() and "tft" not in gfull.recordable_channels()
 assert win.dashboard.gauges["tft"].available is False
@@ -383,40 +389,49 @@ print("GT without trans temp OK: Trans gauge dimmed, cluster paints")
 # recording path, through the REAL toggle_record (the old hand-built recorder
 # bypassed it, which is how GT recording being refused went unnoticed): rows
 # stream drain-based into the final CSV in the log folder, no save dialog.
+# Only a live GT records (v0.34.0), so the source is a GtDataSource whose
+# poll thread is stood in for: the section queues the fixture log's rows as
+# the poll thread would, between ticks.
 import csv as _csv  # noqa: E402
-import openobd.transport as _transport  # noqa: E402
+from types import SimpleNamespace as _NS  # noqa: E402
+from openobd.transport import Sample as _Smp  # noqa: E402
 
 
-class _FakeClock:
-    """Replay time advances only when this section says so, so the 19.9 s log
-    cannot loop (a loop legitimately repeats timestamps) on a slow machine."""
-    now = 1000.0
+class _SmokeLiveGt(GtDataSource):
+    def __init__(self):
+        super().__init__(port="COM9")
+        self._gt = _NS(close=lambda: None, supported=set(), port_name="COM9",
+                       possible_keys=lambda: ["rpm", "vss", "app"])
+        self._thread = object()               # "running"
+        self.stopped = False
 
-    @classmethod
-    def monotonic(cls):
-        return cls.now
+    def stop(self):
+        self._thread = None
+        self.stopped = True
 
 
-_real_transport_time = _transport.time
-_transport.time = _FakeClock
 d = win.dashboard
 _rec_dir = os.path.join(_tmp_root, "logs")
 d._record_dirs = lambda: [_rec_dir]
-d.bind_source(LogReplaySource(win.log, speed=50.0))
-d.start()
+_live = _SmokeLiveGt()
+d.bind_source(_live)
 d.timer.stop()
+assert d.btn_record.isEnabled(), d.btn_record.toolTip()
 d.toggle_record()
 assert d.recording, d.status.text()
 rec_path = d.last_record_path
 assert os.path.dirname(rec_path) == _rec_dir and os.path.exists(rec_path)
+_rpm, _vss = win.log.series("rpm"), win.log.series("vss")
+_i = 0
 for _ in range(8):
-    _FakeClock.now += 0.02
+    for _ in range(10):
+        _live._queue.append(_Smp(_i * 0.1, {"rpm": _rpm[_i], "vss": _vss[_i]}))
+        _i += 1
     app.processEvents()
     d._tick()
-assert d.source.playing and d.source.position() < d.source.duration(),     "replay looped/finished during the recording section (precondition broken)"
 rec_n = d._recorder.count
 d._finalize_record()          # non-interactive: no dialog, file already final
-_transport.time = _real_transport_time
+assert rec_n == 80, rec_n
 assert not d.recording and d._recorder is None
 assert "Saved" in d.status.text() and rec_path in d.status.text()
 with open(rec_path, newline="", encoding="utf-8") as fh:
@@ -463,7 +478,8 @@ assert "SIMULATED" in d.status.text(), d.status.text()
 d.toggle_record()
 assert d.recording is False, "Record must stay refused for a truck-mcp session"
 _refusal = d.status.text()
-assert "archived SIMULATED" in _refusal and d.btn_connect.text() in _refusal, _refusal
+assert "archived SIMULATED" in _refusal and _app_mod.RECONNECT_GT_MENU_PATH in _refusal, _refusal
+assert not d.btn_record.isEnabled(), "Record must be disabled for a truck-mcp session"
 assert "session_export" not in _refusal, _refusal
 d.stop()
 d.bind_source(LogReplaySource(win.log, speed=1.0))
@@ -586,7 +602,8 @@ assert win.cursor_label.text().startswith("t="), "cursor readout empty"
 
 # replay transport controls
 d = win.dashboard
-assert d.replay_ctl.isVisible() or True  # offscreen: visibility not painted
+assert not d.replay_ctl.isHidden() and not d.btn_pause.isHidden()
+assert d.btn_start.parent() is d.replay_ctl and d.btn_stop.parent() is d.replay_ctl
 assert hasattr(d.source, "seek")
 d.start()
 d._toggle_pause()
@@ -639,7 +656,7 @@ def _cycle(t, vals):
 gsrc._publish(_cycle(0.0, {"rpm": 3000.0, "vss": 40.0, "maf": 12.34,
                            "voltage": 13.81}))
 _fclock.now = gsrc._t0 + 0.05          # cycle 1's last reply
-d._on_gt_ready(gsrc)
+d._bind_gt(gsrc)
 d.timer.stop()                      # tick by hand; the frame animator runs
 d._tick()
 rpm = d.gauges["rpm"]
@@ -705,16 +722,20 @@ assert d.gauges["ethanol"].isHidden()
 # was 1150 px (unwrapped status line); the toolbar buttons are now the floor
 assert d.minimumSizeHint().width() < 1000, d.minimumSizeHint().width()
 # shortcuts exist and are advertised in the tooltips
-assert "Ctrl+G" in d.shortcut_tooltip(d.btn_connect)
+# Connect GT / truck-mcp session moved from bar buttons to menu actions
+assert not hasattr(d, "btn_connect") and not hasattr(d, "btn_tm")
+assert win.act_reconnect_gt.shortcut().toString() == "Ctrl+G"
+assert win.act_reconnect_gt.text() == _app_mod.RECONNECT_GT_LABEL
 assert "F5" in d.shortcut_tooltip(d.btn_start)
 assert "Shift+F5" in d.shortcut_tooltip(d.btn_stop)
 # the recorder rewrites btn_record's tooltip with the log path; the key hint
 # is appended at display time and must survive that
 d.btn_record.setToolTip("Last recording: C:/x.csv")
-assert d.shortcut_tooltip(d.btn_record) == "Last recording: C:/x.csv (Ctrl+R)"
+assert d.shortcut_tooltip(d.btn_record) == "Last recording: C:/x.csv (R)"
 d.btn_record.setToolTip("")
-assert d.shortcut_tooltip(d.btn_record).endswith("datalog (Ctrl+R)")
-assert len(d._shortcuts) == 7
+assert d.shortcut_tooltip(d.btn_record).endswith("datalog (R)")
+assert len(d._shortcuts) == 7   # R, Ctrl+R, M, F5, Shift+F5, Space, P
+assert "(Space)" in d.shortcut_tooltip(d.btn_pause)
 assert "(M)" in d.shortcut_tooltip(d.btn_mark)
 print("gauge fluency OK: eased needle landed, held/stale/failed states, "
       "collapse + reflow, shortcuts")

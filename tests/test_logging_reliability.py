@@ -401,6 +401,7 @@ class FakeLiveGt(GtDataSource):
                                    port_name="COM5")
         self._keys = ["voltage"]           # first poll only had ATRV
         self.stopped = False
+        self._thread = object()            # live: only a live GT records
 
     def feed(self, t, **vals):
         s = Sample(t, vals)
@@ -479,7 +480,7 @@ def test_connect_while_connected_does_not_reopen_the_port(dash):
     d, src = dash
     src._thread = object()                     # looks connected
     d.connect_gt()
-    assert d.btn_connect.isEnabled() and "Already connected" in d.status.text()
+    assert not d._gt_connecting and "Already connected" in d.status.text()
     src.fail_streak = 3
     d.connect_gt()
     assert src._kick.is_set() and "Reconnecting" in d.status.text()

@@ -408,27 +408,27 @@ def test_live_source_drain_dedups_by_store_timestamp(tmp_path):
 
 
 # --- Record refusal: names what is bound and how to record the truck --------- #
-_CONNECT = "🔌 Connect GT Pro"
+_CONNECT = "Settings → Reconnect GT now"   # app.RECONNECT_GT_MENU_PATH
 
 
 def test_refusal_archived_real_session_points_at_gt_not_export():
     msg = tmsource.record_refusal_message(False, "real", _CONNECT)
     assert "archived" in msg and "not the truck" in msg
-    assert f'press "{_CONNECT}", then Record' in msg
+    assert f'choose "{_CONNECT}", then Record' in msg
     assert "session_export" not in msg and "SIMULATED" not in msg
 
 
 def test_refusal_archived_simulated_session_says_simulated():
     msg = tmsource.record_refusal_message(False, "simulated", _CONNECT)
     assert "archived SIMULATED" in msg and "demo data" in msg
-    assert f'press "{_CONNECT}", then Record' in msg
+    assert f'choose "{_CONNECT}", then Record' in msg
     assert "session_export" not in msg
 
 
 def test_refusal_live_session_keeps_export_hint_and_gt_path():
     msg = tmsource.record_refusal_message(True, "real", _CONNECT)
     assert "live truck-mcp session" in msg and "session_export" in msg
-    assert f'press "{_CONNECT}", then Record' in msg
+    assert f'choose "{_CONNECT}", then Record' in msg
     assert "SIMULATED" not in msg and "archived" not in msg
 
 
@@ -439,14 +439,15 @@ def test_refusal_live_simulated_session_flags_both():
 
 def test_refusal_names_the_button_it_is_given():
     msg = tmsource.record_refusal_message(False, "real", "Connect")
-    assert 'press "Connect", then Record' in msg
+    assert 'choose "Connect", then Record' in msg
+    assert "plug in the OBDX Pro GT (it connects by itself)" in msg
 
 
 def test_refusal_archived_unknown_session_says_unknown_not_replay():
     msg = tmsource.record_refusal_message(False, "unknown", _CONNECT)
     assert "archived UNKNOWN-PROVENANCE" in msg and "may not be the truck" in msg
     assert "replay" not in msg and "SIMULATED" not in msg
-    assert f'press "{_CONNECT}", then Record' in msg
+    assert f'choose "{_CONNECT}", then Record' in msg
     assert "session_export" not in msg
 
 
