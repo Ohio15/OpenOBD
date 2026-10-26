@@ -78,8 +78,33 @@ OPENED_ROLE = Qt.UserRole + 1
 
 
 def _same_file(a: str, b: str) -> bool:
-    return (os.path.normcase(os.path.abspath(a))
-            == os.path.normcase(os.path.abspath(b)))
+    """Do two paths name the same file? When both exist the filesystem
+    decides (os.path.samefile: same volume + file id, so 8.3 short names,
+    symlinks, junctions and relative paths all match); otherwise the fully
+    resolved, case-folded paths are compared."""
+    try:
+        if os.path.exists(a) and os.path.exists(b):
+            return os.path.samefile(a, b)
+    except (OSError, ValueError):
+        pass
+    return (os.path.normcase(os.path.realpath(a))
+            == os.path.normcase(os.path.realpath(b)))
+
+
+def as_of_text(newest_ts: Optional[str]) -> str:
+    """The note's freshness stamp, from the session's newest sample (never
+    the wall clock: a poll that read nothing new must not look newer).
+    Local time; the date is shown when it is not today. No sample yet ->
+    "no samples yet"; an unparseable stamp is shown as stored."""
+    if not newest_ts:
+        return "no samples yet"
+    dt = tmstore._parse_ts(newest_ts)
+    if dt is None:
+        return f"as of {newest_ts}"
+    local = dt.astimezone()
+    if local.date() == datetime.now().astimezone().date():
+        return f"as of {local:%H:%M:%S}"
+    return f"as of {local:%Y-%m-%d %H:%M:%S}"
 
 
 def load_recent_files(settings) -> list[str]:
@@ -541,13 +566,16 @@ class LiveDataPage(QWidget):
         return tb
 
     def _build_open_action(self, tb):
-        """Open session… (any folder, read-only) with the recent files as the
-        button's drop-down menu."""
+        """Open session… (any folder) with the recent files as the button's
+        drop-down menu."""
         self.act_open = self._action(
             "open", "Open session…",
-            "Open a truck-mcp session file from any folder, read-only. It is "
-            "shown as an archived drive, never as live. The arrow lists "
-            "recent files.", lambda: self.open_session_file())
+            "Open a truck-mcp session file from any folder. It is opened "
+            "without locking out a logger that is still writing it; OpenOBD "
+            "never writes rows, but SQLite may create WAL sidecar files "
+            "(-wal/-shm) next to the file. It reads live or archived from "
+            "its own data, like a discovered session. The arrow lists recent "
+            "files.", lambda: self.open_session_file())
         tb.addAction(self.act_open)
         self._recent_menu = QMenu(self)
         self._recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
@@ -557,7 +585,7 @@ class LiveDataPage(QWidget):
             self._open_btn.setPopupMode(QToolButton.MenuButtonPopup)
         self._rebuild_recent_menu()
 
-    # -- Open session… (a file from any path, read-only) -------------------- #
+    # -- Open session… (a file from any path; never writes rows) ------------ #
     def recent_files(self) -> list[str]:
         return load_recent_files(self._settings)
 
@@ -612,8 +640,21 @@ class LiveDataPage(QWidget):
             self._picker.setItemData(0, True, OPENED_ROLE)
             self._picker.setItemData(0, plain_tooltip(path), Qt.ToolTipRole)
 
+    def _picked_is_opened(self) -> bool:
+        return bool(self._picker.itemData(self._picker.currentIndex(),
+                                          OPENED_ROLE))
+
+    def _sync_bound_opened(self):
+        """Re-derive the "opened file" mark from the bound picker entry."""
+        opened = self._reader is not None and self._picked_is_opened()
+        if opened != self._bound_opened:
+            self._bound_opened = opened
+            self._refresh_chrome()
+
     def open_session_file(self, path: Optional[str] = None) -> bool:
-        """Open a *.tmsession.db from any path, read-only. Cancel is a no-op;
+        """Open a *.tmsession.db from any path (query_only + a write-denying
+        authorizer: no rows are written, though SQLite may create WAL
+        sidecars beside it — see tmstore). Cancel is a no-op;
         an unreadable file shows the danger banner and keeps the session that
         was bound. Opening a file already in the picker re-selects it."""
         if not path:
@@ -762,11 +803,12 @@ class LiveDataPage(QWidget):
             self._picker.setItemData(self._picker.count() - 1,
                                      plain_tooltip(text), Qt.ToolTipRole)
         self._add_opened_items()
-        idx = self._picker.findData(prev) if prev else 0
+        idx = self._picker_index_of(prev) if prev else 0
         self._picker.setCurrentIndex(max(0, idx))
         self._picker.blockSignals(False)
         self._fit_picker_popup()
         self._sync_picker_tooltip()
+        self._sync_bound_opened()
         if not sessions and not self._opened:
             self._close_reader()
             self._clear_grid()
@@ -848,7 +890,7 @@ class LiveDataPage(QWidget):
         self.crumb.set_chips(chips)
         veh = meta.get("vin") or "VIN unknown"
         src = meta.get("source") or "live"
-        stamp = f"as of {self._as_of}" if self._as_of else "not read yet"
+        stamp = self._as_of or "not read yet"
         note = f"{veh}  ·  source={src}  ·  {stamp}"
         if self._bound_opened:
             note = f"{self._reader_path}  ·  {note}"
@@ -860,7 +902,11 @@ class LiveDataPage(QWidget):
     def _on_pick(self, _idx: int):
         path = self._picker.currentData()
         if path and path == self._reader_path and self._tiles:
-            return   # same session already bound — don't rebuild the grid
+            # Same file already bound — don't rebuild the grid. Its picker
+            # entry may have changed kind (an opened file a rescan now
+            # discovers), so the "opened file" chip follows the entry.
+            self._sync_bound_opened()
+            return
         self._open_error = None
         self._close_reader()
         self._clear_grid()
@@ -884,12 +930,13 @@ class LiveDataPage(QWidget):
         self._meta = meta
         self._channel_meta = {c["name"]: c for c in chans}
         self._chartable = chartable_names(self._reader, self._channel_meta)
-        # A file opened from any path is a record being read, never a live
-        # feed: archived display semantics (and Hold ignored) like an ended
-        # drive. Discovered sessions keep their live polling semantics.
-        self._bound_opened = bool(self._picker.itemData(
-            self._picker.currentIndex(), OPENED_ROLE))
-        self._archived = bool(meta.get("ended_utc")) or self._bound_opened
+        # A file opened from any path is treated exactly like a discovered
+        # session: live / not advancing / archived come from its own data
+        # (ended_utc, the newest sample's age), never from how it was found —
+        # a file still being written reads live and can be held. Only the
+        # "opened file" chip and the path in the note mark it.
+        self._bound_opened = self._picked_is_opened()
+        self._archived = bool(meta.get("ended_utc"))
         self._clear_empty()
         # The channel set is fixed at bind from the session's channels. If a
         # LIVE drive discovers a new channel mid-session it won't get a tile
@@ -1328,7 +1375,7 @@ class LiveDataPage(QWidget):
         self._last_stale = session_stale
         self._chart.tick(archived=self._archived, session_stale=session_stale)
         self._render(latest, session_stale)
-        self._as_of = datetime.now().strftime("%H:%M:%S")
+        self._as_of = as_of_text(newest_ts)
         self._view_state = ("archived" if self._archived
                             else "not advancing" if session_stale else "live")
         self._refresh_chrome()

@@ -17,14 +17,27 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   (using default)" in the status line and the record button's tooltip. The
   tooltip and the post-Stop status name the folder the file was saved in.
 - **Live Data: Open session….** A toolbar action opens a truck-mcp session
-  file (*.tmsession.db) from any folder, read-only. It appears at the top of
+  file (*.tmsession.db) from any folder, without locking out a logger that
+  is still writing it: OpenOBD never writes rows, though SQLite may create
+  WAL sidecar files (-wal/-shm) next to the file. It appears at the top of
   the session picker as "file · <name>" (kept across Rescan while the file
-  exists; opening it again re-selects it) and always reads as an archived
-  drive with an "opened file" chip and its full path in the note; Hold does
-  not apply. The arrow on the button lists the 8 most recent files; files
-  that no longer exist drop off at startup. A file that is not a readable
-  session shows "could not open <name>: <reason>" and the bound session
-  stays. OpenOBD's own CSV recordings still open in Log Analysis.
+  exists; opening it again re-selects it; if a Rescan later discovers it,
+  the discovered entry replaces it). Opened files show live or archived
+  state honestly: the same live / not advancing / archived chips as a
+  discovered session, from the file's own data, plus an "opened file" chip
+  and the full path in the note; Hold works while it is live and is ignored
+  once it has ended. The arrow on the button lists the 8 most recent files;
+  files that no longer exist drop off at startup. A file that is not a
+  readable session shows "could not open <name>: <reason>" and the bound
+  session stays. OpenOBD's own CSV recordings still open in Log Analysis.
+- Live Data's "as of" time is the newest sample's time (the date too when it
+  is not today), for every session, not the time of the last poll; a
+  session with no samples yet says "no samples yet".
+- A log folder setting with environment variables ("%USERPROFILE%\Logs")
+  is expanded; one that is still not an absolute path is not used and the
+  status says "Log folder must be an absolute path: <value> (using
+  default)". The write check gives up after 3 s (a cloud-only OneDrive
+  folder or a stalled share) and reports "timed out", using the default.
 
 ## 0.38.1 — 2026-10-26
 

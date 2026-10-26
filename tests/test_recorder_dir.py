@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from openobd.recorder import (  # noqa: E402
     LOG_DIR_KEY, log_dir, log_dir_unavailable, probe_log_dir,
+    resolve_log_dir, used_configured_dir,
 )
 from tests.test_record_metadata import FakeGt  # noqa: E402
 
@@ -129,14 +130,197 @@ def test_unwritable_setting_falls_back_honestly(dash, tmp_path):
 
 
 def test_markup_in_the_folder_renders_literally(dash, tmp_path):
+    # A LEGAL Windows name that reads as markup/entities: the recording must
+    # really land there (success path) and the tooltip show it literally.
+    from openobd.tuningui import plain_tooltip
+    d, _src = dash
+    cfg = str(tmp_path / "a&b &lt;i&gt; x&amp;y")
+    _set_dir(cfg)
+    d.toggle_record()
+    assert d.recording and d._rec_dir_note is None
+    assert os.path.dirname(d._recorder.path) == cfg
+    tip = d.btn_record.toolTip()
+    assert tip == plain_tooltip(d._record_tip)
+    assert "a&amp;b &amp;lt;i&amp;gt; x&amp;amp;y" in tip
+    assert "<i>" not in tip
+
+
+def test_illegal_folder_name_fails_honestly_and_renders_literally(
+        dash, tmp_path):
+    # "<" is illegal in a Windows name: the folder cannot be used, the
+    # recording goes to the default, and the reason renders literally.
     from openobd.tuningui import plain_tooltip
     d, _src = dash
     cfg = str(tmp_path / "<b>x&amp")
     _set_dir(cfg)
     d.toggle_record()
+    if sys.platform == "win32":
+        assert os.path.dirname(d._recorder.path) == str(tmp_path / "Default")
+        assert d._rec_dir_note.startswith(log_dir_unavailable(cfg))
     tip = d.btn_record.toolTip()
     assert tip == plain_tooltip(d._record_tip)
     assert "<b>" not in tip and "&lt;b&gt;x&amp;amp" in tip
+
+
+# -- R5: env vars, relative paths, probe hygiene ------------------------------ #
+def test_env_vars_in_the_setting_are_expanded(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENOBD_TEST_LOGROOT", str(tmp_path / "root"))
+    raw = os.path.join("%OPENOBD_TEST_LOGROOT%", "Logs") \
+        if sys.platform == "win32" else "$OPENOBD_TEST_LOGROOT/Logs"
+    dirs, problem = log_dir(raw, [str(tmp_path / "d")])
+    want = str(tmp_path / "root" / "Logs")
+    assert problem is None and dirs[0] == want
+    assert os.path.isdir(want)
+    assert resolve_log_dir(raw) == (want, None)
+    assert used_configured_dir(raw, os.path.join(want, "x.csv"))
+
+
+def test_relative_or_unexpanded_setting_is_refused(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    defaults = [str(tmp_path / "d")]
+    for raw in ("Logs", os.path.join("%OPENOBD_NO_SUCH_VAR_X%", "Logs")):
+        dirs, problem = log_dir(raw, defaults)
+        assert dirs == defaults
+        assert problem == (f"Log folder must be an absolute path: {raw} "
+                           "(using default)")
+        assert not used_configured_dir(raw, os.path.join(raw, "x.csv"))
+    assert os.listdir(tmp_path) == []            # nothing created under CWD
+
+
+def test_relative_setting_is_reported_on_record(dash, tmp_path, monkeypatch):
+    d, _src = dash
+    monkeypatch.chdir(tmp_path)
+    _set_dir("Logs")
+    d.toggle_record()
+    assert d.recording
+    assert os.path.dirname(d._recorder.path) == str(tmp_path / "Default")
+    assert "Log folder must be an absolute path: Logs (using default)" \
+        in d.status.text()
+    assert not (tmp_path / "Logs").exists()
+
+
+def test_probe_file_removed_when_the_write_fails(tmp_path, monkeypatch):
+    import builtins
+    import openobd.recorder as R
+    monkeypatch.setattr(R, "_probe_name", lambda: ".probe_fixed")
+    real_open = builtins.open
+
+    class Failing:
+        def __init__(self, fh):
+            self.fh = fh
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.fh.close()
+            return False
+
+        def write(self, _data):
+            raise OSError(28, "No space left on device")
+
+    def fake_open(path, mode="r", *a, **k):
+        fh = real_open(path, mode, *a, **k)
+        if str(path).endswith(".probe_fixed"):
+            return Failing(fh)
+        return fh
+    monkeypatch.setattr(builtins, "open", fake_open)
+    why = probe_log_dir(str(tmp_path))
+    assert why and "No space left on device" in why
+    assert not (tmp_path / ".probe_fixed").exists()
+
+
+def test_probe_refuses_an_existing_file_at_its_name(tmp_path, monkeypatch):
+    import openobd.recorder as R
+    monkeypatch.setattr(R, "_probe_name", lambda: ".probe_planted")
+    planted = tmp_path / ".probe_planted"
+    planted.write_text("not yours")
+    why = probe_log_dir(str(tmp_path))
+    assert why and why.startswith("FileExistsError")
+    assert planted.read_text() == "not yours"    # neither written nor removed
+
+
+def test_probe_refuses_a_planted_symlink(tmp_path, monkeypatch):
+    import openobd.recorder as R
+    target = tmp_path / "target.txt"
+    target.write_text("keep")
+    link = tmp_path / ".probe_link"
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"cannot create a symlink here: {exc}")
+    monkeypatch.setattr(R, "_probe_name", lambda: ".probe_link")
+    why = probe_log_dir(str(tmp_path))
+    assert why and why.startswith("FileExistsError")
+    assert target.read_text() == "keep" and os.path.islink(link)
+
+
+def test_probe_name_is_unpredictable():
+    from openobd.recorder import _probe_name
+    a, b = _probe_name(), _probe_name()
+    assert a != b and a.startswith(f".openobd_write_probe_{os.getpid()}_")
+
+
+# -- R7: a stalled folder cannot hang the caller ------------------------------ #
+def test_stalled_probe_times_out_and_uses_the_default(tmp_path, monkeypatch):
+    import threading
+    import time
+    import openobd.recorder as R
+    release = threading.Event()
+    monkeypatch.setattr(R, "PROBE_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(R, "_probe_write", lambda folder: release.wait(10))
+    try:
+        t0 = time.monotonic()
+        why = probe_log_dir(str(tmp_path / "cloud"))
+        assert time.monotonic() - t0 < 2.0
+        assert why == "timed out after 0.3 s"
+        cfg = str(tmp_path / "cloud")
+        dirs, problem = log_dir(cfg, [str(tmp_path / "d")])
+        assert dirs == [str(tmp_path / "d")]
+        assert problem == (f"{log_dir_unavailable(cfg)} — "
+                           "timed out after 0.3 s")
+    finally:
+        release.set()
+
+
+def test_stalled_probe_on_record_falls_back_honestly(dash, tmp_path,
+                                                     monkeypatch):
+    import threading
+    import openobd.recorder as R
+    d, _src = dash
+    release = threading.Event()
+    monkeypatch.setattr(R, "PROBE_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(R, "_probe_write", lambda folder: release.wait(10))
+    cfg = str(tmp_path / "cloud")
+    _set_dir(cfg)
+    try:
+        d.toggle_record()
+        assert d.recording
+        assert os.path.dirname(d._recorder.path) == str(tmp_path / "Default")
+        assert (f"Log folder unavailable: {cfg} (using default) — timed out"
+                in d.status.text())
+    finally:
+        release.set()
+
+
+def test_stalled_probe_refuses_the_choice(win, monkeypatch, tmp_path):
+    import threading
+    import openobd.recorder as R
+    from openobd.app import QFileDialog, QMessageBox, configured_log_dir
+    release = threading.Event()
+    monkeypatch.setattr(R, "PROBE_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(R, "_probe_write", lambda folder: release.wait(10))
+    warned = []
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(tmp_path / "cloud")))
+    monkeypatch.setattr(QMessageBox, "warning",
+                        staticmethod(lambda *a, **k: warned.append(a)))
+    try:
+        assert not win.choose_log_folder()
+        assert warned and "timed out after 0.3 s" in warned[0][2]
+        assert configured_log_dir() == ""
+    finally:
+        release.set()
 
 
 # -- Settings UI -------------------------------------------------------------- #
