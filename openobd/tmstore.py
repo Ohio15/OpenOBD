@@ -584,6 +584,33 @@ class TmSessionReader:
                 out[row["name"]].append(_row_to_sample(row))
         return out
 
+    def range_after(self, channels: Sequence[str] | str, after_id: int = 0
+                    ) -> tuple[dict[str, tuple[float, float]], int]:
+        """Per-channel (min, max) over the fresh, finite numeric samples with
+        id > after_id, and the highest sample id those rows carried (the
+        caller's next cursor; after_id when nothing new). One aggregate read
+        per tick, so a running min/max never re-scans the drive. Carried
+        repeats and text sidecars never count, exactly as in series_after."""
+        names = [channels] if isinstance(channels, str) else list(channels)
+        out: dict[str, tuple[float, float]] = {}
+        cursor = int(after_id)
+        for chunk in _chunks(names, _MAX_BIND_VARS - 3):
+            sql = ("SELECT c.name, MIN(s.value_num), MAX(s.value_num), "
+                   "MAX(s.id) FROM sample s "
+                   "JOIN channel c ON c.id = s.channel_id "
+                   f"WHERE c.name IN ({','.join('?' * len(chunk))}) "
+                   "AND s.id > ? AND s.fresh = 1 "
+                   "AND s.value_num BETWEEN ? AND ? "
+                   "GROUP BY c.name")
+            params = list(chunk) + [int(after_id), -_FINITE_MAX, _FINITE_MAX]
+            for row in self._conn.execute(sql, params):
+                if row[1] is None or row[2] is None:
+                    continue
+                out[row[0]] = (float(row[1]), float(row[2]))
+                if row[3] is not None and row[3] > cursor:
+                    cursor = int(row[3])
+        return out, cursor
+
     def events(self, kinds: Optional[Sequence[str]] = None, limit: int = 200
                ) -> list[dict]:
         sql = "SELECT ts_utc, kind, label, detail FROM event"
@@ -600,6 +627,10 @@ class TmSessionReader:
             entry["detail"] = _load_json(entry.get("detail"), "detail")
             out.append(entry)
         return out
+
+
+#: Largest finite double: the range read's bound, so an inf never wins a MIN/MAX.
+_FINITE_MAX = 1.7976931348623157e308
 
 
 def _chunks(seq: Sequence, n: int) -> Iterable[list]:

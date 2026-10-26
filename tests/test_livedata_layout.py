@@ -69,8 +69,10 @@ def test_bound_session_with_long_label(page):
     # label and the full status sentence are actually on screen.
     assert page._picker.count() == 1
     assert LONG_LABEL in page._picker.itemText(0)
-    assert "3GCRKTE35AG150432" in page._status.text()
-    assert "as of" in page._status.text()
+    note = page.crumb.note.full_text()
+    assert "3GCRKTE35AG150432" in note
+    assert "as of" in note
+    assert LONG_LABEL in page.crumb.path_text()
 
 
 def test_livedata_min_width_within_budget(page):
@@ -96,8 +98,10 @@ def test_full_session_label_still_readable(page):
     assert view.minimumWidth() >= view.sizeHintForColumn(0)
 
 
-def test_status_wraps_instead_of_widening(page):
-    status = page._status
-    assert status.wordWrap()
-    one_line = status.fontMetrics().horizontalAdvance(status.text())
-    assert status.minimumSizeHint().width() < one_line
+def test_breadcrumb_elides_instead_of_widening(page):
+    # The status sentence moved into the breadcrumb (title + note): both
+    # elide to the width they are given and keep the full text as tooltip.
+    for lab in (page.crumb.title, page.crumb.note):
+        one_line = lab.fontMetrics().horizontalAdvance(lab.full_text())
+        assert lab.minimumSizeHint().width() < one_line
+        assert lab.toolTip() == lab.full_text()

@@ -802,6 +802,12 @@ CHANNEL_GROUPS: dict[str, str] = {
     "ambient": "Sensors", "voltage": "Sensors", "o2": "Sensors",
     "o2_b1s1": "Sensors", "o2_b1s2": "Sensors", "o2_b2s1": "Sensors",
     "o2_b2s2": "Sensors", "cat_b1s1": "Sensors", "cat_b2s1": "Sensors",
+    # truck-mcp drive-log store names (Live Data tile groups)
+    "engine_load": "Engine", "intake_map": "Engine", "throttle_pos": "Engine",
+    "stft_bank1": "Fuel", "ltft_bank1": "Fuel", "stft_bank2": "Fuel",
+    "ltft_bank2": "Fuel", "vehicle_speed": "Trans",
+    "trans_fluid_temp": "Trans", "coolant_temp": "Sensors",
+    "intake_air_temp": "Sensors", "control_voltage": "Sensors",
 }
 GROUP_ORDER = ["Engine", "Fuel", "Spark", "Trans", "Sensors", "Other"]
 
