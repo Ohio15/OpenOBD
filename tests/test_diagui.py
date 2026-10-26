@@ -940,3 +940,151 @@ def test_gtjob_refuses_a_second_concurrent_job(qapp):
     assert got[-1] == ("third", None)
     assert job._busy.acquire(timeout=5)
     job._busy.release()
+
+
+# --------------------------------------------------------------------------- #
+# Review round 2 (v0.36.0)
+# --------------------------------------------------------------------------- #
+def real_job_run(page):
+    """Undo the fixture's Recorder: the real GtJob.run, worker thread and
+    all (the transport is replaced by a call of fn with no GT)."""
+    from openobd.diagui import GtJob
+    page.job.run = GtJob.run.__get__(page.job)
+    page.job._call = lambda fn: fn(None)
+
+
+def wait_idle(page, qapp, timeout=5.0):
+    import time
+    end = time.monotonic() + timeout
+    while page.busy() is not None and time.monotonic() < end:
+        qapp.processEvents()
+        time.sleep(0.005)
+    qapp.processEvents()
+
+
+def test_thread_start_failure_emits_finished_and_frees_the_page(
+        page, qapp, monkeypatch):
+    import threading
+    real_job_run(page)
+
+    def no_thread(_self):
+        raise RuntimeError("can't start new thread")
+    monkeypatch.setattr(threading.Thread, "start", no_thread)
+    got = []
+    page.job.finished.connect(lambda r, e: got.append((r, e)))
+    page.read_codes()                                  # must not raise
+    assert got == [(None, "can't start new thread")]
+    assert page.busy() is None and page._pending is None
+    assert all(a.isEnabled() for a in
+               (page.act_scan, page.act_read, page.act_clear))
+    assert not page.codes_banner.isHidden()
+    assert "can't start new thread" in page.codes_banner.text()
+    assert page.job._busy.acquire(blocking=False)      # lock was released
+    page.job._busy.release()
+
+
+def test_empty_exception_message_names_the_type(page, qapp):
+    real_job_run(page)
+    def raises(_gt):
+        raise TimeoutError()
+    page._set_busy("read")
+    page.job.run(raises)
+    wait_idle(page, qapp)
+    assert page.busy() is None
+    assert "TimeoutError" in page.codes_banner.text()
+
+
+def test_busy_refusal_does_not_paint_the_scan_as_failed(page):
+    from openobd.diagui import GtJob
+    page.scan_modules()
+    page.job.finished.emit(vehnet.ScanResult(**SCAN), None)
+    before = (page._verdict, page._scan, page._scanned_at)
+    page._set_busy("scan")
+    page._on_job_done(None, GtJob.BUSY_ERROR)
+    after = (page._verdict, page._scan, page._scanned_at)
+    assert after == before
+    assert page.busy() is None and page.act_scan.isEnabled()
+    assert not page.map_banner.isHidden()
+    assert page.map_banner.property("banner") == "warning"
+    assert page.map_banner.text().startswith(
+        "Another GT job is still running")
+    assert "Scan failed" not in page.map_banner.text()
+
+
+def test_failed_reread_note_does_not_claim_a_read(page, monkeypatch):
+    calls = []
+    confirm_then_record(monkeypatch, page, calls)
+    page.populate_codes(DTCS, READY)
+    page.act_clear.trigger()
+    result = page.job.run.fns[-1](FakeGt(read_raises=IOError("no reply to 03"),
+                                         ready=CLEAN_READY))
+    page.job.finished.emit(result, None)
+    note = page.codes_crumb.note.full_text()
+    assert "read at" not in note
+    assert note.startswith("Codes not read — no reply to 03")
+    # a later good read restores the timestamp
+    page.populate_codes(DTCS, READY)
+    assert "Codes read at" in page.codes_crumb.note.full_text()
+
+
+def test_populate_failure_after_clear_keeps_the_clear_outcome(
+        page, monkeypatch):
+    from openobd import diagui
+    calls = []
+    confirm_then_record(monkeypatch, page, calls)
+    page.act_clear.trigger()
+    result = page.job.run.fns[-1](FakeGt(dtcs=DTCS, ready=READY))
+
+    def boom(*_a):
+        raise ValueError("populate exploded")
+    monkeypatch.setattr(diagui.DiagnosticsPage, "populate_codes", boom)
+    page.job.finished.emit(result, None)
+    text = page.codes_banner.text()
+    assert "Clear confirmed by 7E8" in text
+    assert "populate exploded" in text
+    assert page.busy() is None and page.act_read.isEnabled()
+
+
+def test_clear_step_raising_reports_outcome_unknown(page, monkeypatch):
+    from openobd.diagui import clear_and_reread
+
+    class RaisingClear(FakeGt):
+        def clear_dtcs(self):
+            raise IOError("link dropped mid-04")
+    result = clear_and_reread(RaisingClear(dtcs=DTCS, ready=READY))
+    assert result == {"clear": {"sent": None, "cleared": None,
+                                "acked_by": [],
+                                "error": "link dropped mid-04"}}
+    calls = []
+    confirm_then_record(monkeypatch, page, calls)
+    page.populate_codes(DTCS, READY)
+    page.act_clear.trigger()
+    page.job.finished.emit(result, None)
+    assert calls == []
+    assert page.codes_banner.text() == (
+        "Clear outcome unknown — the ECM may have acted: link dropped "
+        "mid-04. Rows below are from the previous read.")
+    assert "Couldn't reach the truck" not in page.codes_banner.text()
+    assert "P0300" in code_rows(page)                  # rows untouched
+    assert page.busy() is None
+
+
+def test_module_nodes_never_get_negative_width(qapp):
+    from openobd.diagui import ModuleMapView
+    for w in (300, 120, 40):
+        rects = ModuleMapView._layout_nodes(w, 400)
+        assert rects and all(r.width() > 0 for r in rects.values())
+
+
+def test_busy_is_held_through_the_clear_dialog(page, monkeypatch):
+    calls = []
+    confirm_then_record(monkeypatch, page, calls)
+    page.act_clear.trigger()
+    result = page.job.run.fns[-1](FakeGt(
+        clear={"sent": True, "cleared": False, "acked_by": [],
+               "error": "7E8 did not acknowledge"}, dtcs=DTCS, ready=READY))
+    page.job.finished.emit(result, None)
+    assert len(calls) == 1 and calls[0]["busy"] == "clear"
+    assert page.busy() is None and page._pending is None
+    assert all(a.isEnabled() for a in
+               (page.act_scan, page.act_read, page.act_clear))

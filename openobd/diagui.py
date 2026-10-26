@@ -161,22 +161,24 @@ class GtJob(QObject):
             return
 
         def work():
+            # Every outcome ends in finished: the page's busy state is only
+            # ever cleared by its result handler.
             try:
                 result, error = self._call(fn), None
-            except Exception as e:
-                result, error = None, str(e)
-            except BaseException:
-                self._busy.release()
-                raise
+            except BaseException as e:   # noqa: BLE001 — reported, not lost
+                result, error = None, str(e) or type(e).__name__
             # release BEFORE emitting: the queued result handler may start
             # the next job and must not find the lock still held
             self._busy.release()
             try:
                 self.finished.emit(result, error)
-            except RuntimeError:   # receiver already destroyed at shutdown
-                pass
+            except BaseException:   # noqa: BLE001 — receiver destroyed at
+                pass                # shutdown: nobody is left to tell
         try:
             threading.Thread(target=work, name="gt-diag", daemon=True).start()
+        except Exception as e:   # e.g. RuntimeError: can't start new thread
+            self._busy.release()
+            self.finished.emit(None, str(e) or type(e).__name__)
         except BaseException:
             self._busy.release()
             raise
@@ -200,8 +202,14 @@ def clear_and_reread(gt) -> dict:
     has accepted a clear, a failed re-read must not hide that outcome nor
     leave the pre-clear rows standing as current. A step that raised comes
     back as {"error": why}. If the clear itself raised, nothing after it is
-    attempted (whether the ECM acted is unknown) and the error propagates."""
-    out = {"clear": gt.clear_dtcs()}
+    attempted and the result is {"clear": {"sent": None, "cleared": None,
+    "error": why}}: sent=None means whether the ECM acted is UNKNOWN."""
+    try:
+        clear = gt.clear_dtcs()
+    except Exception as e:   # noqa: BLE001 — outcome unknown, reported so
+        return {"clear": {"sent": None, "cleared": None, "acked_by": [],
+                          "error": str(e) or type(e).__name__}}
+    out = {"clear": clear}
     for key, step in (("dtcs", gt.read_dtcs), ("ready", gt.readiness)):
         try:
             out[key] = step()
@@ -269,7 +277,9 @@ class ModuleMapView(QWidget):
         out: dict[str, QRectF] = {}
         for bus, rail_y, drop in ((HS, hs_y, +1), (SW, sw_y, -1)):
             mods = [m for m in vehnet.MODULES if m.bus == bus]
-            mw = min(120.0, span / max(1, len(mods)) - 10)
+            # never narrower than 24 px: at absurd widths nodes overlap,
+            # but a negative width would invert the rect (unhittable)
+            mw = max(24.0, min(120.0, span / max(1, len(mods)) - 10))
             for i, m in enumerate(mods):
                 cx = rail_x0 + span * (i + 0.5) / len(mods)
                 ny = rail_y + drop * 26
@@ -648,6 +658,7 @@ class DiagnosticsPage(QWidget):
         self._dtcs: Optional[dict] = None
         self._ready: Optional[dict] = None
         self._read_at: Optional[str] = None
+        self._read_error: Optional[str] = None   # why the last read failed
         self._splits: list[tuple[QSplitter, str]] = []
 
         lay = QVBoxLayout(self)
@@ -1056,7 +1067,11 @@ class DiagnosticsPage(QWidget):
 
     def _refresh_codes_chrome(self) -> None:
         self.codes_crumb.set_chips(self._codes_chips())
-        if self._read_at is None:
+        if self._read_error is not None:
+            self.codes_crumb.set_note(
+                f"Codes not read — {self._read_error}. Clear Codes also "
+                "resets every readiness monitor.")
+        elif self._read_at is None:
             self.codes_crumb.set_note(
                 "Read Codes (F5) reads stored, pending and permanent codes "
                 "and the readiness monitors. Clear Codes also resets every "
@@ -1119,8 +1134,15 @@ class DiagnosticsPage(QWidget):
     def populate_codes(self, dtcs: dict, ready: dict):
         self._dtcs = dtcs or {}
         self._ready = ready or {}
-        self._read_at = time.strftime("%H:%M:%S")
         dtcs, ready = self._dtcs, self._ready
+        # "read at" only when codes were actually read; a failed read says
+        # so instead of passing for a fresh one
+        if dtcs.get("examined"):
+            self._read_at, self._read_error = time.strftime("%H:%M:%S"), None
+        else:
+            self._read_at = None
+            self._read_error = (str(dtcs["error"]) if dtcs.get("error")
+                                else "no module answered")
         self.dtc_model.removeRows(0, self.dtc_model.rowCount())
         root = self.dtc_model.invisibleRootItem()
         unexamined = []
@@ -1300,6 +1322,14 @@ class DiagnosticsPage(QWidget):
     # -- shared result dispatch ----------------------------------------------
     def _on_job_done(self, result, error):
         pending = self._pending
+        if error == GtJob.BUSY_ERROR:
+            # a synchronous refusal: nothing ran, so nothing is repainted
+            self._set_busy(None)
+            self._show_banner(
+                self.map_banner if pending == "scan" else self.codes_banner,
+                "Another GT job is still running — try again when it "
+                "finishes.", "warning")
+            return
         try:
             if pending == "scan":
                 # restore busy FIRST: a handler exception must never leave
@@ -1329,6 +1359,15 @@ class DiagnosticsPage(QWidget):
                    f"{self._read_at}." if self._read_at else ""))
             return
         result = result or {}
+        clr = result.get("clear") if pending == "clear" else None
+        if clr is not None and clr.get("sent") is None:
+            # clear_dtcs raised: the ECM may or may not have acted
+            self._show_banner(
+                self.codes_banner, "Clear outcome unknown — the ECM may have "
+                f"acted: {clr.get('error')}."
+                + (" Rows below are from the previous read."
+                   if self._dtcs is not None else ""))
+            return
         dtcs, ready = result.get("dtcs") or {}, result.get("ready") or {}
         # A step that failed comes back as {"error": why}: populate_codes
         # renders that as not-examined rows / banners — never old rows.
@@ -1336,21 +1375,30 @@ class DiagnosticsPage(QWidget):
                                           ("readiness", ready))
                   if isinstance(part, dict) and part.get("error")
                   and not part.get("examined")]
-        # Populate BEFORE any dialog, still busy, so the table is current
-        # while a modal is up and no Read can be started underneath it.
-        self.populate_codes(dtcs, ready)
-        clr = result.get("clear") if pending == "clear" else None
+        # Decided BEFORE populating: a populate failure must not drop it.
+        outcome = None if clr is None else (
+            f"Clear confirmed by "
+            f"{', '.join(clr.get('acked_by') or []) or 'the ECM'}"
+            if clr.get("cleared") else
+            "Clear NOT sent" if not clr.get("sent") else
+            "Clear sent, not confirmed")
+        # Populate BEFORE any dialog and keep busy through the dialogs
+        # (_on_job_done's finally clears it), so the table is current while
+        # a modal is up and no job can be started underneath it.
+        try:
+            self.populate_codes(dtcs, ready)
+        except Exception as e:   # noqa: BLE001 — keep the clear outcome
+            if outcome is None:
+                raise
+            self._show_banner(
+                self.codes_banner, f"{outcome}. Couldn't show the result: "
+                f"{type(e).__name__}: {e}")
+            return
         if clr is not None and failed:
             why = "; ".join(f"{n} re-read failed: "
                             + str((dtcs if n == "codes" else ready)["error"])
                             for n in failed)
-            outcome = (f"Clear confirmed by "
-                       f"{', '.join(clr.get('acked_by') or []) or 'the ECM'}"
-                       if clr.get("cleared") else
-                       "Clear NOT sent" if not clr.get("sent") else
-                       "Clear sent, not confirmed")
             self._show_banner(self.codes_banner, f"{outcome}; {why}")
-        self._set_busy(None)
         if clr is None:
             return
         if not clr.get("sent"):

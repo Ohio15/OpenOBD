@@ -63,6 +63,30 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   job is still running"), so one-job-at-a-time no longer depends only on the
   Diagnostics page's own busy flag.
 
+### Fixed (review round 2)
+- If the GT worker thread could not be started (e.g. "can't start new
+  thread"), the error escaped the slot without a result and the page stayed
+  busy forever. The start failure now releases the link and is delivered as
+  the job's result, so it shows as a banner with every action re-enabled; the
+  worker delivers a result for every outcome, including a non-`Exception`
+  raise.
+- A job error with an empty message (e.g. `TimeoutError()`) shows the
+  exception type instead of a blank reason.
+- A "another GT job is still running" refusal no longer paints every module
+  failed ("Scan failed at the tool link"); it shows a warning banner and
+  leaves the map and codes as they were.
+- A failed codes read no longer says "Codes read at HH:MM:SS"; the note says
+  "Codes not read — <why>" until a read succeeds.
+- If showing the re-read after a clear fails, the banner still carries the
+  clear outcome ("Clear confirmed by 7E8. Couldn't show the result: …").
+- If the clear request itself raised, the banner says "Clear outcome
+  unknown — the ECM may have acted: …" instead of implying nothing changed.
+- Module-map nodes never get a negative width at narrow sizes (they could
+  invert and become unclickable); minimum 24 px.
+- The page stays busy while a Clear-codes outcome dialog is open, so no job
+  can start underneath it (the busy flag was being cleared before the
+  dialogs, contradicting the code's own comment).
+
 ## 0.35.0 — 2026-10-26
 
 ### Changed (Tuning tab UX overhaul; cues from HP Tuners VCM Editor, EFILive, TunerStudio)
