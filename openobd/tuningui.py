@@ -21,7 +21,6 @@ undo stack and the log; nothing here mutates a Calibration on its own.
 """
 from __future__ import annotations
 
-import html
 import json
 from typing import Iterable, Optional
 
@@ -41,6 +40,9 @@ from PySide6.QtWidgets import (
 
 from . import theme
 from .model import clean_unit
+# Re-exported: the escaping helper lives in theme so model.py (which
+# tuningui imports) can use it too.
+from .theme import plain_tooltip  # noqa: F401
 
 #: QSettings key holding the navigator's recently opened tables (JSON list:
 #: an INI-backed QSettings returns a one-element list as a bare string).
@@ -49,17 +51,6 @@ RECENT_MAX = 8
 RECENT_GROUP = "Recent"
 
 SEP = " › "
-
-
-def plain_tooltip(text: str) -> str:
-    """A tooltip that renders `text` literally. QToolTip auto-detects rich
-    text, so a session-derived name containing markup would render as HTML;
-    escaping it and wrapping it in <qt> makes Qt show the characters as
-    written. Rich text collapses newlines, so each becomes <br> after
-    escaping (a literal "<br>" in the text is escaped and shows as text).
-    Route every tooltip that interpolates DB / session text here."""
-    escaped = html.escape(str(text)).replace("\n", "<br>")
-    return f"<qt>{escaped}</qt>"
 
 
 def restore_splitter_state(splitter, value) -> bool:

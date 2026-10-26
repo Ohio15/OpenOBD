@@ -18,9 +18,22 @@ stock) / red (above stock) scale.
 """
 from __future__ import annotations
 
+import html
 from typing import Optional, Sequence
 
 RGB = tuple[int, int, int]
+
+
+def plain_tooltip(text: str) -> str:
+    """A tooltip that renders `text` literally. QToolTip auto-detects rich
+    text, so a session-derived name containing markup would render as HTML;
+    escaping it and wrapping it in <qt> makes Qt show the characters as
+    written. Rich text collapses newlines, so each becomes <br> after
+    escaping (a literal "<br>" in the text is escaped and shows as text).
+    Route every tooltip that interpolates DB / session text here."""
+    escaped = html.escape(str(text)).replace("\n", "<br>")
+    return f"<qt>{escaped}</qt>"
+
 
 # --------------------------------------------------------------------------- #
 # Colour tokens

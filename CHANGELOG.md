@@ -52,7 +52,8 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
 
 ### Fixed
 - Tooltips that show calibration, session or file text render it literally
-  (no rich-text injection); a guard test keeps every runtime tooltip escaped.
+  (no rich-text injection); a guard test keeps runtime tooltips (widget
+  tooltips, model tooltip roles) escaped.
 
 ## 0.37.0 — 2026-10-26
 
