@@ -26,25 +26,25 @@ from PySide6.QtWidgets import (
     QSplitter,
 )
 
-from . import vehnet
+from . import theme, vehnet
 from .gt import DTC_DESCRIPTIONS
 from .vehnet import HS, SW, ScanResult, SegStatus, Status, Verdict
 
 
 STATUS_COLORS = {
-    Status.OK: QColor(60, 170, 95),
-    Status.SILENT: QColor(205, 60, 50),
-    Status.UNREACHABLE: QColor(205, 150, 45),
+    Status.OK: theme.diag_qcolor("status-ok"),
+    Status.SILENT: theme.diag_qcolor("status-silent"),
+    Status.UNREACHABLE: theme.diag_qcolor("status-unreachable"),
     # grey family: no finding either way. NOT_EXAMINED is a cooler grey so a
     # refused header reads differently from "never scanned" at a glance.
-    Status.NOT_EXAMINED: QColor(110, 118, 140),
-    Status.UNKNOWN: QColor(95, 100, 110),
+    Status.NOT_EXAMINED: theme.diag_qcolor("status-not-examined"),
+    Status.UNKNOWN: theme.diag_qcolor("status-unknown"),
 }
 SEG_COLORS = {
-    SegStatus.OK: QColor(60, 170, 95),
-    SegStatus.FAILED: QColor(205, 60, 50),
-    SegStatus.UNREACHABLE: QColor(205, 150, 45),
-    SegStatus.UNKNOWN: QColor(95, 100, 110),
+    SegStatus.OK: theme.diag_qcolor("status-ok"),
+    SegStatus.FAILED: theme.diag_qcolor("status-silent"),
+    SegStatus.UNREACHABLE: theme.diag_qcolor("status-unreachable"),
+    SegStatus.UNKNOWN: theme.diag_qcolor("status-unknown"),
 }
 
 
@@ -118,7 +118,7 @@ class ModuleMapView(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        p.fillRect(0, 0, w, h, QColor(24, 26, 30))
+        p.fillRect(0, 0, w, h, theme.diag_qcolor("map-canvas"))
         self._node_rects.clear()
 
         f = QFont(); f.setPointSizeF(8.5); p.setFont(f)
@@ -127,12 +127,14 @@ class ModuleMapView(QWidget):
 
         def draw_node(rect, title, sub, color, key=None, selected=False):
             p.setPen(QPen(color.lighter(130) if selected else color, 2.2))
-            p.setBrush(QColor(color.red(), color.green(), color.blue(), 46))
+            fill = QColor(color)
+            fill.setAlpha(theme.DIAG_NODE_FILL_ALPHA)
+            p.setBrush(fill)
             p.drawRoundedRect(rect, 6, 6)
-            p.setPen(QColor(228, 230, 234))
+            p.setPen(theme.diag_qcolor("node-title"))
             p.drawText(rect.adjusted(4, 3, -4, -rect.height() / 2),
                        Qt.AlignCenter, title)
-            p.setPen(QColor(165, 170, 178))
+            p.setPen(theme.diag_qcolor("node-sub"))
             p.drawText(rect.adjusted(4, rect.height() / 2 - 3, -4, -3),
                        Qt.AlignCenter, sub)
             if key:
@@ -145,14 +147,14 @@ class ModuleMapView(QWidget):
             p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
             if status == SegStatus.FAILED:
                 mx, my = (x1 + x2) / 2, (y1 + y2) / 2
-                p.setPen(QPen(QColor(235, 80, 70), 2.5))
+                p.setPen(QPen(theme.diag_qcolor("segment-failed-mark"), 2.5))
                 fb = QFont(); fb.setPointSizeF(13); fb.setBold(True)
                 p.setFont(fb)
                 p.drawText(QRectF(mx - 30, my - 26, 60, 20),
                            Qt.AlignCenter, "⚠")
                 p.setFont(f)
             if label:
-                p.setPen(QColor(140, 146, 156))
+                p.setPen(theme.diag_qcolor("segment-label"))
                 p.drawText(QRectF((x1 + x2) / 2 - 55, min(y1, y2) - 34,
                                   110, 14), Qt.AlignCenter, label)
 
@@ -166,14 +168,14 @@ class ModuleMapView(QWidget):
                  gt_r.center().y(), gt_ok, "USB")
         seg_line(gt_r.right(), gt_r.center().y(), dlc_r.left(),
                  dlc_r.center().y(), self._seg("gt_dlc"), "OBD cable")
-        draw_node(pc_r, "PC", "OpenOBD", QColor(90, 130, 200))
+        draw_node(pc_r, "PC", "OpenOBD", theme.diag_qcolor("node-tool"))
         draw_node(gt_r, "OBDX Pro GT", "interface",
                   SEG_COLORS[gt_ok] if gt_ok != SegStatus.UNKNOWN
-                  else QColor(90, 130, 200))
+                  else theme.diag_qcolor("node-tool"))
         draw_node(dlc_r, "DLC", "OBD-II port",
                   SEG_COLORS[self._seg("gt_dlc")]
                   if self._seg("gt_dlc") != SegStatus.UNKNOWN
-                  else QColor(90, 130, 200))
+                  else theme.diag_qcolor("node-tool"))
 
         # bus rails
         rail_x0 = dlc_r.right() + 40
@@ -187,7 +189,7 @@ class ModuleMapView(QWidget):
         seg_line(rail_x0, hs_y, rail_x1, hs_y, self._seg("dlc_hs"), HS)
         seg_line(rail_x0, sw_y, rail_x1, sw_y, self._seg("dlc_sw"))
         # SW modules hang ABOVE their rail, so its label goes below the line
-        p.setPen(QColor(140, 146, 156))
+        p.setPen(theme.diag_qcolor("segment-label"))
         p.drawText(QRectF((rail_x0 + rail_x1) / 2 - 70, sw_y + 8, 140, 14),
                    Qt.AlignCenter, SW)
 
@@ -222,7 +224,7 @@ class ModuleMapView(QWidget):
                 lx, ly = 14, ly - 18
             p.setBrush(STATUS_COLORS[st]); p.setPen(Qt.NoPen)
             p.drawRect(QRectF(lx, ly, 10, 10))
-            p.setPen(QColor(170, 175, 183))
+            p.setPen(theme.diag_qcolor("legend-text"))
             p.drawText(QRectF(lx + 14, ly - 3, tw, 16),
                        Qt.AlignLeft | Qt.AlignVCenter, txt)
             lx += tw + 26
@@ -398,7 +400,7 @@ class DiagnosticsPage(QWidget):
             self.dtc_table.setItem(r, 0, QTableWidgetItem(kind))
             self.dtc_table.setItem(r, 1, QTableWidgetItem("?"))
             ni = QTableWidgetItem(text)
-            ni.setForeground(QColor(150, 158, 180))
+            ni.setForeground(theme.diag_qcolor("not-examined-text"))
             self.dtc_table.setItem(r, 2, ni)
 
         for kind, key in (("Stored", "stored"), ("Pending", "pending"),
@@ -423,7 +425,7 @@ class DiagnosticsPage(QWidget):
                 self.dtc_table.setItem(r, 0, QTableWidgetItem(kind))
                 ci = QTableWidgetItem(code)
                 if kind == "Stored":
-                    ci.setForeground(QColor(235, 110, 100))
+                    ci.setForeground(theme.diag_qcolor("dtc-stored"))
                 self.dtc_table.setItem(r, 1, ci)
                 self.dtc_table.setItem(
                     r, 2, QTableWidgetItem(DTC_DESCRIPTIONS.get(code, "")))
@@ -442,20 +444,22 @@ class DiagnosticsPage(QWidget):
             self.ready_table.insertRow(r)
             self.ready_table.setItem(r, 0, QTableWidgetItem(name))
             si = QTableWidgetItem("Ready" if complete else "Not ready")
-            si.setForeground(QColor(96, 190, 120) if complete
-                             else QColor(225, 165, 60))
+            si.setForeground(theme.diag_qcolor("monitor-ready") if complete
+                             else theme.diag_qcolor("monitor-not-ready"))
             self.ready_table.setItem(r, 1, si)
         if not ready or ready.get("error"):
             self.mil_label.setText(
                 "MIL: not examined"
                 + (f" — {ready['error']}" if ready.get("error") else ""))
-            self.mil_label.setStyleSheet("color:#969eb4;")
+            self.mil_label.setStyleSheet(
+                f"color:{theme.DIAG_COLORS['not-examined-text']};")
         else:
             mil = "ON" if ready.get("mil") else "off"
             self.mil_label.setText(
                 f"MIL: {mil}   ·   {ready.get('dtc_count', 0)} code(s)")
             self.mil_label.setStyleSheet(
-                "color:#e06c60;" if ready.get("mil") else "color:#60be78;")
+                f"color:{theme.DIAG_COLORS['mil-on']};" if ready.get("mil")
+                else f"color:{theme.DIAG_COLORS['monitor-ready']};")
 
     # -- shared result dispatch ----------------------------------------------
     def _on_job_done(self, result, error):

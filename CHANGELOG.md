@@ -3,6 +3,84 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.35.0 — 2026-10-26
+
+### Changed (Tuning tab UX overhaul; cues from HP Tuners VCM Editor, EFILive, TunerStudio)
+- **Design tokens (`openobd/theme.py`).** Colours, spacing and control heights
+  (toolbar 36 px, Dashboard primary row 56 px) plus QSS helpers live in one
+  module; the dark palette, Dashboard Record/Mark buttons, Diagnostics, Live
+  Data and the strip chart read them. Outside `theme.py`, no module in
+  `openobd/` other than `gauges.py` holds a raw colour literal (`#rrggbb` or
+  `QColor(r, g, b)`); `gauges.py` keeps its dial artwork colours, and a test
+  scans every other module for both spellings.
+- **Navigator.** Search-as-you-type (Ctrl+F focuses, Esc clears, Down/Enter
+  navigate), collapsible categories with counts, a changed-vs-stock dot per
+  table and a persisted "Recent" group (8 tables). A breadcrumb header
+  ("Category › Table") carries unit, HPT id and changed-cells chips and the
+  table note.
+- **Editor.** One 36 px toolbar replaces both control rows: Amount, = + − × ÷ %
+  (grid keys too), Interp ↔ / ↕ / 2D, Smooth (3×3 mean, undoable), Revert
+  selection to stock, Next Δ (F3), Copy / Paste as Excel TSV (one undo step,
+  clipped to the grid, any non-numeric field rejects the paste), Heatmap and
+  Diff vs stock (Off / Absolute / Percent). Log-overlay controls moved to a
+  collapsible right panel whose state persists.
+- **Grid.** Axis headers show breakpoints with units and the corner reads
+  "Y \ X"; full-spectrum heatmap (blue-cyan-green-yellow-red, per table min..max)
+  with contrast-aware text; diff mode shows the delta on a diverging
+  blue/grey/red scale with the real value in the tooltip; a corner triangle
+  marks changed cells in every mode; the tooltip gives X, Y, value, stock and
+  Δ %; a readout strip shows n, min, max, mean and changed count for the
+  selection.
+- **Scalars.** Grouped by category (collapsible), searchable, category filter,
+  Δ chip, the same numeric validation, undoable edits and revert, and the
+  safety note as a muted banner.
+- **Log Analysis.** Same breadcrumb + toolbar chrome, channels in a checkable
+  tree grouped Engine / Fuel / Spark / Trans / Sensors / Other, a cursor
+  readout column beside the plots and an empty state before a log is loaded.
+- The Tuning page's minimum width is now under 1000 px (was 1136).
+
+### Tests
+- New `tests/test_theme.py` and `tests/test_tuningui.py` (colour-scale
+  endpoints, navigator filter + Recent persistence, Ctrl+F / Esc, Smooth
+  undo/redo, TSV round trip / clipping / rejection, diff colouring and
+  tooltip, changed-cell marker, selection stats, scalar undo, minimum width).
+
+### Fixed (review round 1 + security gate pass 1)
+- nan / inf / -inf can no longer enter a calibration: one finite-number gate
+  (`editops.parse_number`) backs paste (the whole paste is refused and the
+  status bar says why), in-cell edits and scalar edits.
+- Log overlay grids and their scale are built once per change instead of per
+  cell per role (a 16x16 repaint rebuilt them over a thousand times).
+- Copy / Paste only act while Tuning > Editor is showing; Ctrl+V on Scalars,
+  Log Analysis or another page no longer writes into the hidden table.
+- Undoing back to the saved state clears the unsaved-changes flag (the undo
+  stack's clean index tracks save and load).
+- Holding a grid math key (+, -, ...) no longer pushes one undo step per
+  key repeat.
+- Clicking a Recent table rebuilds the Recent group after the click is
+  delivered, not while Qt still holds the clicked item.
+- Opening another calibration with unsaved edits asks about (and saves) the
+  OLD file before loading the new one; previously Save wrote the new file and
+  the old edits were lost.
+- A table with no stock baseline reads as such: no navigator dot, a muted
+  "no stock baseline" chip and "n/a" diff text, never "0 cells changed".
+- Diff colour scale tolerates a stock grid whose shape differs from the
+  values grid. Dead `CalTableModel.revert_cell` (bypassed undo) removed.
+
+### Fixed (review round 2 + security gate pass 2)
+- Non-finite RESULTS are refused too: every table write (cell edit, math,
+  smooth, interpolate, paste, revert) passes through `BulkEditCommand`, which
+  rejects any non-finite new value before it becomes an undoable edit
+  (repeated x1e9 overflowing to inf now reports "edit refused: non-finite
+  result"); `ScalarEditCommand` applies the same `editops.parse_number`
+  gate, and the scalar editor parses with it instead of its own check.
+- The selection readout and the Scalars breadcrumb say "no stock baseline"
+  instead of "0 changed" when there is nothing to compare against.
+- The navigator icon is three-valued: changed dot, blank for unchanged, and
+  a hollow muted ring for a table with no stock baseline.
+- Pasting a TSV with an interior blank line (Excel's empty cell in a
+  one-column range) keeps that row as blanks; rows below no longer shift up.
+
 ## 0.34.1 — 2026-10-26
 
 ### Fixed (release tooling, discovery 455efc83)

@@ -97,3 +97,18 @@ def test_paste_clipping():
     grid = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
     ch = editops.paste_grid(t, 2, 3, grid)  # bottom-right corner
     assert ch == {(2, 3): (39.0, 1.0)}
+
+
+def test_parse_number_refuses_non_finite():
+    assert editops.parse_number("1.5") == 1.5
+    assert editops.parse_number(" -2 ") == -2.0
+    for bad in ("nan", "NaN", "inf", "-inf", "Infinity", "", "abc", None,
+                float("nan"), float("inf")):
+        assert editops.parse_number(bad) is None, bad
+
+
+def test_parse_tsv_checked_rejects_nan_and_inf():
+    grid, rejects = editops.parse_tsv_checked("1\tnan\n inf \t-inf\n")
+    assert [(r, c) for r, c, _ in rejects] == [(0, 1), (1, 0), (1, 1)]
+    # parse_tsv never yields a non-finite float (they read as blanks).
+    assert grid == [[1.0, None]]

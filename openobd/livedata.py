@@ -46,31 +46,21 @@ import sqlite3
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QDrag, QFont
+from PySide6.QtGui import QDrag, QFont
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
     QLabel, QMenu, QPushButton, QScrollArea, QSizePolicy, QSplitter,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import chanlayout, ctljournal, tmstore
+from . import chanlayout, ctljournal, theme, tmstore
 from .appsettings import app_settings
 from .chanlayout import ChannelLayout
 from .stripchart import ChartPane, channel_mime, chartable_names
 from .tmstore import TmSessionReader, TmSessionError
 
 # The states, and the ONLY colors each may take. Each means exactly one thing.
-STATE_COLORS = {
-    "fresh":    ("#2E3B31", "#5FD08A", "#DEE0E4"),   # measured now — live
-    "stale":    ("#3A3629", "#D6A93A", "#D6C9A0"),   # live view, but not advancing
-    "archive":  ("#2B3138", "#5A7EC3", "#AEBBD0"),   # finished drive (not live)
-    "carried":  ("#3A3629", "#D6A93A", "#D6C9A0"),   # measured earlier, carried
-    "error":    ("#3B2B2B", "#CD3C32", "#E7A9A4"),   # module returned an error
-    "unavail":  ("#2B3138", "#5A7EC3", "#9FB0C8"),   # answered with nothing
-    "notread":  ("#25272B", "#5F646E", "#7B8088"),   # nobody ever asked
-    "badvalue": ("#3B2B33", "#C0568F", "#E3A9C6"),   # tool-side format fault
-    "failed":   ("#3B2B2B", "#CD3C32", "#E7A9A4"),   # the read itself failed
-}
+STATE_COLORS = theme.LIVEDATA_STATE_COLORS
 STATE_CAPTION = {
     "fresh": "live", "stale": "not advancing", "archive": "archived drive",
     "error": "module error", "unavail": "no data", "notread": "not read",
@@ -101,12 +91,14 @@ class ValueTile(QFrame):
         lay.setContentsMargins(8, 4, 8, 4)
         lay.setSpacing(0)
         self._label = QLabel(name)
-        self._label.setStyleSheet("color:#9DA3AD; font-size:10px;")
+        self._label.setStyleSheet(
+            theme.livedata_text_qss("secondary-text", "font-size:10px;"))
         self._value = QLabel("— not read")
         vf = QFont(); vf.setPointSize(13); vf.setBold(True)
         self._value.setFont(vf)
         self._state = QLabel("")
-        self._state.setStyleSheet("color:#7B8088; font-size:9px;")
+        self._state.setStyleSheet(
+            theme.livedata_text_qss("faint-text", "font-size:9px;"))
         lay.addWidget(self._label)
         lay.addWidget(self._value)
         lay.addWidget(self._state)
@@ -167,11 +159,9 @@ class ValueTile(QFrame):
         super().mouseMoveEvent(event)
 
     def _apply(self, state: str):
-        bg, accent, text = STATE_COLORS.get(state, STATE_COLORS["notread"])
-        self.setStyleSheet(
-            f"ValueTile {{ background:{bg}; border:1px solid {accent}; "
-            f"border-radius:6px; }}")
-        self._value.setStyleSheet(f"color:{text};")
+        frame_qss, value_qss = theme.livedata_tile_qss(state)
+        self.setStyleSheet(frame_qss)
+        self._value.setStyleSheet(value_qss)
 
 
 class LiveDataPage(QWidget):
@@ -228,7 +218,7 @@ class LiveDataPage(QWidget):
         self._fields_btn.clicked.connect(self._show_fields_menu)
         bar.addWidget(self._fields_btn)
         self._status = QLabel("")
-        self._status.setStyleSheet("color:#9DA3AD;")
+        self._status.setStyleSheet(theme.livedata_text_qss("secondary-text"))
         self._status.setWordWrap(True)
         self._status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self._status.setSizePolicy(QSizePolicy.Expanding,
@@ -253,7 +243,8 @@ class LiveDataPage(QWidget):
         self._empty = QLabel()
         self._empty.setAlignment(Qt.AlignCenter)
         self._empty.setWordWrap(True)
-        self._empty.setStyleSheet("color:#7B8088; font-size:13px; padding:24px;")
+        self._empty.setStyleSheet(theme.livedata_text_qss(
+            "faint-text", "font-size:13px; padding:24px;"))
 
         tiles_host = QWidget()
         tiles_lay = QVBoxLayout(tiles_host)
@@ -748,9 +739,7 @@ class ActiveTestsPage(QWidget):
             "before the safety gate is flipped. Until then this page is "
             "display-only: it commands nothing and holds no lease.")
         banner.setWordWrap(True)
-        banner.setStyleSheet(
-            "background:#2B3138; border:1px solid #5A7EC3; border-radius:6px; "
-            "color:#C7D2E4; padding:12px; font-size:12px;")
+        banner.setStyleSheet(theme.livedata_banner_qss())
         root.addWidget(banner)
 
         row = QHBoxLayout()
@@ -760,7 +749,8 @@ class ActiveTestsPage(QWidget):
         row.addWidget(self._state_lbl, 1)
         col = QVBoxLayout()
         self._stamp = QLabel("")
-        self._stamp.setStyleSheet("color:#7B8088; font-size:10px;")
+        self._stamp.setStyleSheet(
+            theme.livedata_text_qss("faint-text", "font-size:10px;"))
         self._refresh_btn = QPushButton("↻ Refresh")
         self._refresh_btn.clicked.connect(self.refresh)
         col.addWidget(self._refresh_btn)
@@ -829,8 +819,8 @@ class ActiveTestsPage(QWidget):
                 "✓  No unreleased activation is recorded across "
                 f"{len(state.reads)} journal(s), {state.total_entries} record(s). "
                 "No control is commanded on this truck.")
-            self._state_lbl.setStyleSheet(
-                "color:#8FD0A6; font-size:13px; padding:6px;")
+            self._state_lbl.setStyleSheet(theme.livedata_text_qss(
+                "clean-text", "font-size:13px; padding:6px;"))
 
         self._stamp.setText("as of " + datetime.now().strftime("%H:%M:%S"))
         self._fill_table(state)
@@ -851,18 +841,15 @@ class ActiveTestsPage(QWidget):
                 item = QTableWidgetItem(text)
                 ev = str(e.get("event", ""))
                 if ev == "activate" or ev.startswith("fire_refused"):
-                    item.setForeground(QColor("#D6A93A"))
+                    item.setForeground(
+                        theme.livedata_qcolor("journal-activate"))
                 self._table.setItem(r, c, item)
 
     def _danger_style(self):
-        self._state_lbl.setStyleSheet(
-            "color:#E7A9A4; background:#3B2B2B; border:1px solid #CD3C32; "
-            "border-radius:6px; font-size:13px; padding:10px;")
+        self._state_lbl.setStyleSheet(theme.livedata_alert_qss("danger"))
 
     def _warn_style(self):
-        self._state_lbl.setStyleSheet(
-            "color:#E5C77A; background:#3A3629; border:1px solid #D6A93A; "
-            "border-radius:6px; font-size:13px; padding:10px;")
+        self._state_lbl.setStyleSheet(theme.livedata_alert_qss("warn"))
 
 
 def _short(path) -> str:
