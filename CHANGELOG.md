@@ -40,7 +40,25 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   the table's Value column ("@ Cursor") until the mouse leaves, and session
   events as faint markers. Fonts are built once instead of per paint.
 - **Persistence.** Splitter (livedata/split) and the window span for live
-  sessions (livedata/span); archived drives still open on "All".
+  sessions (livedata/span); archived drives still open on "All". A window
+  chosen on an archived drive applies to that drive only and is not saved
+  as the live default. A tampered splitter value falls back to the default
+  sizes.
+- **Hold is honest everywhere.** A layout edit while held (dropping a tile
+  on the table, hiding / moving a field) rebuilds the tiles, table and
+  lanes from the frozen snapshot: no trace, tile or table value advances
+  until Release, and a field newly added to the graph is backfilled only
+  up to the hold. The table's Value column is marked "Value · held" in the
+  held colour; a carried tile reads "held · carried" instead of a frozen
+  age.
+- **Fixes.** Losing the truck-mcp data root now unbinds the session (the
+  chart no longer stays captioned "live" with an open reader). An archived
+  drive with no fresh numeric samples paints without a time axis instead of
+  aborting the paint (clock labels never raise on out-of-range times).
+  Hover repaints reuse cached decimated trace points; tiles restyle only on
+  a state change; the min / max cursor advances past carried-only rows.
+  Labels showing session-DB or error text (tile unit / value / caption,
+  chart note, breadcrumb title / note / chips) render as plain text.
 
 ## 0.36.0 — 2026-10-26
 

@@ -549,3 +549,222 @@ def test_span_and_splitter_persist(env):
     pg2.rescan_sessions()
     _pick(pg2, env.sessions / "done.tmsession.db")
     assert pg2._chart.span_text() == "All"
+
+
+# --------------------------------------------------------------------------- #
+# review round 1 + security-gate pass 1 regressions
+# --------------------------------------------------------------------------- #
+def _add_sample(path, channel_id, value, fresh=1, ts=None, latest=True):
+    conn = sqlite3.connect(str(path))
+    stamp = ts or _now_iso()
+    stale = 0.0 if fresh else 2.0
+    cur = conn.execute(
+        "INSERT INTO sample (ts_utc, channel_id, value_num, fresh, stale_s, "
+        "quality) VALUES (?,?,?,?,?,'ok')",
+        (stamp, channel_id, float(value), fresh, stale))
+    sid = cur.lastrowid
+    if latest:
+        conn.execute("UPDATE channel_latest SET sample_id=?, ts_utc=?, "
+                     "value_num=?, fresh=?, stale_s=? WHERE channel_id=?",
+                     (sid, stamp, float(value), fresh, stale, channel_id))
+    conn.commit()
+    conn.close()
+    return sid
+
+
+def test_r1_data_root_gone_unbinds_reader_and_chart(env, monkeypatch):
+    from openobd import tmstore
+    _live(env)
+    pg = env.make()
+    assert pg._reader is not None and pg._chart.chart.caption == "live"
+    monkeypatch.setattr(tmstore, "sessions_dirs", lambda: [])
+    pg.rescan_sessions()
+    assert pg._reader is None
+    assert pg._chart.chart.caption == ""
+    assert pg._tiles == {} and pg._chart._channels == []
+    assert "data root not found" in pg._empty.text()
+    pg._tick()   # nothing bound: must not read or raise
+
+
+def test_r2_layout_edit_while_held_does_not_advance(env):
+    path = _live(env)
+    pg = env.make()
+    pane = pg._chart
+    # ect off the graph first (unheld), so the held edit adds a NEW trace.
+    pg._remove_from_graph("ect")
+    assert "ect" not in pane.chart.traces
+    _add_sample(path, 2, 195.0)            # fresh ect, recorded BEFORE hold
+    pg._tick()
+    pg.act_hold.setChecked(True)
+    cursor0 = pane._cursor
+    rpm_pts = len(pane.chart.traces["rpm"].ts)
+    table_rpm = pane.table.text("rpm", pane.table.COL_VALUE)
+    tile_rpm = pg._tiles["rpm"].value_text()
+
+    _add_rpm(path, [4321])                 # recorded DURING the hold
+    _add_sample(path, 2, 222.0)
+    pg._on_channel_dropped("ect", None)    # drop a tile onto the table
+
+    assert pg.is_held()
+    assert cursor0 <= pane._cursor <= pg._range_cursor, \
+        "held relayout read past the hold"
+    assert len(pane.chart.traces["rpm"].ts) == rpm_pts
+    assert pane.chart.traces["ect"].vs == [195.0], \
+        "new trace backfilled past the hold"
+    assert pane.table.text("rpm", pane.table.COL_VALUE) == table_rpm
+    assert pg._tiles["rpm"].value_text() == tile_rpm
+    assert pane.chart.caption == "held"
+    assert pane.table.is_held()
+    assert pane.table.horizontalHeaderItem(
+        pane.table.COL_VALUE).text() == pane.table.HELD_HEADER
+    assert "held" in pg._tiles["rpm"].caption_text()
+
+    pg.act_hold.setChecked(False)
+    assert not pane.table.is_held()
+    assert pane.table.horizontalHeaderItem(
+        pane.table.COL_VALUE).text() == "Value"
+    assert pane.chart.traces["ect"].vs == [195.0, 222.0]
+    assert len(pane.chart.traces["rpm"].ts) == rpm_pts + 1
+
+
+def test_r3_tile_stylesheet_only_on_state_transition(env):
+    _live(env)
+    pg = env.make()
+    tile = pg._tiles["rpm"]
+    assert tile.state == "fresh"
+    calls = []
+    tile.setStyleSheet = lambda qss: calls.append(("frame", qss))
+    tile._value.setStyleSheet = lambda qss: calls.append(("value", qss))
+    pg._tick()
+    pg._tick()
+    assert calls == [], "unchanged state re-applied the stylesheet"
+    pg.act_hold.setChecked(True)           # fresh -> held palette
+    assert len(calls) == 2
+
+
+def test_r4_hover_repaint_reuses_decimated_points(env, monkeypatch):
+    from openobd import stripchart
+    _live(env, values=list(range(1000, 1400, 10)))
+    pg = env.make()
+    chart = pg._chart.chart
+    chart.resize(900, 400)
+    n = []
+    real = stripchart.window_points
+
+    def counting(*a, **k):
+        n.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(stripchart, "window_points", counting)
+    chart.grab()
+    first = len(n)
+    assert first >= 1
+    x0, x1 = chart.plot_bounds()
+    chart.set_hover((x0 + x1) / 2)
+    chart.grab()
+    chart.set_hover(x0 + 5)
+    chart.grab()
+    assert len(n) == first, "hover repaint recomputed window_points"
+
+
+def test_r5_clock_formatting_never_raises():
+    from openobd.stripchart import (
+        CLOCK_UNKNOWN, TIME_MODE_CLOCK, fmt_clock, time_ticks)
+    assert time_ticks(-60, 0, 4, TIME_MODE_CLOCK) == []
+    assert time_ticks(float("nan"), 10, 4, TIME_MODE_CLOCK) == []
+    for bad in (-60, float("nan"), float("inf"), 1e18):
+        assert fmt_clock(bad) == CLOCK_UNKNOWN
+
+
+def test_r5_archived_no_fresh_samples_paints(env, monkeypatch):
+    path = _session(env, ended="2026-08-21T10:30:00Z")
+    conn = sqlite3.connect(str(path))
+    conn.execute("UPDATE sample SET fresh=0")
+    conn.commit()
+    conn.close()
+    errors = []
+    monkeypatch.setattr(sys, "excepthook", lambda *exc: errors.append(exc))
+    pg = env.make()
+    chart = pg._chart.chart
+    assert chart.lanes and not any(tr.ts for tr in chart.traces.values())
+    assert chart.time_mode == "clock"
+    chart.resize(900, 400)
+    chart.grab()
+    t0, t1 = chart._window()
+    assert chart.axis_ticks(t0, t1, 600) == []
+    assert errors == []
+
+
+def test_r6_range_after_cursor_passes_carried_rows(env):
+    from openobd.tmstore import TmSessionReader
+    path = _live(env, values=(1000, 3000))
+    with TmSessionReader(path) as r:
+        _out, cursor = r.range_after(["rpm"])
+    last_carried = None
+    for v in (9999.0, 9998.0, 9997.0):
+        last_carried = _add_sample(path, 1, v, fresh=0)
+    with TmSessionReader(path) as r:
+        out, c2 = r.range_after(["rpm"], cursor)
+        assert out == {}, "carried rows counted toward min / max"
+        assert c2 == last_carried, "cursor stalled behind carried rows"
+        again, c3 = r.range_after(["rpm"], c2)
+        assert again == {} and c3 == c2
+    fresh_id = _add_sample(path, 1, 1234.0)
+    with TmSessionReader(path) as r:
+        out, c4 = r.range_after(["rpm", "ect"], c2)
+        assert out == {"rpm": (1234.0, 1234.0)} and c4 == fresh_id
+
+
+def test_r7_archived_span_choice_not_persisted(env):
+    from openobd.appsettings import app_settings
+    from openobd.livedata import SPAN_KEY
+    _session(env, ended="2026-08-21T10:30:00Z")
+    pg = env.make()
+    combo = pg._chart.span_combo
+    idx = combo.findText("5 min")
+    combo.setCurrentIndex(idx)
+    combo.activated.emit(idx)
+    assert pg._chart.span_text() == "5 min"   # applied to the archived view
+    assert app_settings().value(SPAN_KEY) is None
+
+
+def test_r8_held_carried_tile_drops_its_age(env):
+    _live(env)
+    pg = env.make()
+    tile = pg._tiles["ect"]
+    assert tile.state == "carried" and "old" in tile.caption_text()
+    pg.act_hold.setChecked(True)
+    assert tile.caption_text() == "held · carried"
+    assert tile.shown_state != "fresh"
+    pg.act_hold.setChecked(False)
+    assert "old" in tile.caption_text()
+
+
+def test_g1_db_text_labels_are_plain_text(env):
+    from PySide6.QtCore import Qt
+    from openobd.livedata import ValueTile
+    from openobd.stripchart import ChartPane
+    from openobd.tuningui import Breadcrumb, ElidedLabel
+    tile = ValueTile("x", "<b>x</b>")
+    for lab in (tile._unit_lbl, tile._value, tile._state, tile._range,
+                tile._label):
+        assert lab.textFormat() == Qt.PlainText
+    assert tile._unit_lbl.text() == "<b>x</b>"
+    assert ChartPane()._note.textFormat() == Qt.PlainText
+    assert ElidedLabel("<i>n</i>").textFormat() == Qt.PlainText
+    crumb = Breadcrumb()
+    crumb.set_chips([("<a href='x'>c</a>", "neutral")])
+    assert all(lab.textFormat() == Qt.PlainText for lab in crumb._chips)
+    assert crumb.title.textFormat() == Qt.PlainText
+    assert crumb.note.textFormat() == Qt.PlainText
+
+
+@pytest.mark.parametrize("bad", ["garbage", "1,2,3", 42])
+def test_g3_tampered_splitter_state_falls_back(env, bad):
+    from openobd.appsettings import app_settings
+    from openobd.livedata import SPLIT_KEY
+    app_settings().setValue(SPLIT_KEY, bad)
+    app_settings().sync()
+    pg = env.make()
+    assert pg._restore_split(bad) is False
+    assert len(pg._split.sizes()) == 2

@@ -54,7 +54,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QDrag, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
@@ -119,6 +119,9 @@ class ValueTile(QFrame):
         self._press_pos = None
         self.state = "notread"         # last display_state (or failed)
         self.shown_state = "notread"   # the palette on screen (held -> stale)
+        # The palette last pushed to the style engine: setStyleSheet re-polishes
+        # the widget, so it runs on a state TRANSITION only, never per tick.
+        self._applied_state: Optional[str] = None
         self.setFrameShape(QFrame.StyledPanel)
         self.setMinimumWidth(TILE_MIN_W)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
@@ -132,18 +135,25 @@ class ValueTile(QFrame):
         top.setSpacing(theme.SPACING["sm"])
         self._label = ElidedLabel(name)
         self._label.setObjectName("tileName")
+        # Unit, value, caption and range text come from the session DB (or an
+        # exception message): PlainText, so a hostile store cannot inject
+        # rich text / links into the page.
         self._unit_lbl = QLabel(unit)
+        self._unit_lbl.setTextFormat(Qt.PlainText)
         self._unit_lbl.setObjectName("tileUnit")
         self._unit_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         top.addWidget(self._label, 1)
         top.addWidget(self._unit_lbl)
         self._value = QLabel("— not read")
+        self._value.setTextFormat(Qt.PlainText)
         vf = QFont(); vf.setPointSize(13); vf.setBold(True)
         self._value.setFont(vf)
         self._state = QLabel("")
+        self._state.setTextFormat(Qt.PlainText)
         self._state.setStyleSheet(
             theme.livedata_text_qss("faint-text", "font-size:9px;"))
         self._range = QLabel("min — · max —")
+        self._range.setTextFormat(Qt.PlainText)
         self._range.setObjectName("tileRange")
         self._range.setToolTip("Lowest / highest measured (fresh) value "
                                "since this session was opened")
@@ -195,10 +205,15 @@ class ValueTile(QFrame):
         """Hold freezes the display: a value that was live is no longer being
         refreshed, so it may not keep the live palette. It takes the
         not-advancing palette and says why; the next tick after release
-        restores the real state."""
-        if on and self.state == "fresh":
+        restores the real state. A carried value's age would freeze too and
+        read as current, so it drops the age and says it is held."""
+        if not on:
+            return
+        if self.state == "fresh":
             self._state.setText("held · not updating")
             self._apply("stale")
+        elif self.state == "carried":
+            self._state.setText("held · carried")
 
     def set_failed(self, message: str):
         self._value.setText("—")
@@ -235,6 +250,9 @@ class ValueTile(QFrame):
 
     def _apply(self, state: str):
         self.shown_state = state
+        if state == self._applied_state:
+            return
+        self._applied_state = state
         frame_qss, value_qss = theme.livedata_tile_qss(state)
         self.setStyleSheet(frame_qss)
         self._value.setStyleSheet(value_qss)
@@ -328,6 +346,11 @@ class LiveDataPage(QWidget):
         # by an incremental aggregate read (TmSessionReader.range_after).
         self._ranges: dict[str, tuple[float, float]] = {}
         self._range_cursor = 0
+        # The last successful read (latest per channel + whether the drive
+        # was advancing): a layout edit while held re-renders from this
+        # snapshot instead of reading newer data under a "held" caption.
+        self._last_latest: dict[str, dict] = {}
+        self._last_stale = False
 
         # The ONE selection+grouping model both views derive from. Global, not
         # per-session: truck-mcp store channel names are stable across drives,
@@ -401,8 +424,7 @@ class LiveDataPage(QWidget):
         self._split.addWidget(self._chart)
         self._split.setStretchFactor(0, 1)
         self._split.setStretchFactor(1, 2)
-        state = self._settings.value(SPLIT_KEY)
-        if state is None or not self._split.restoreState(state):
+        if not self._restore_split(self._settings.value(SPLIT_KEY)):
             self._split.setSizes([250, 430])
         self._split.splitterMoved.connect(lambda *_a: self.save_state())
         body.addWidget(self._split, 1)
@@ -511,6 +533,19 @@ class LiveDataPage(QWidget):
     def save_state(self):
         self._settings.setValue(SPLIT_KEY, self._split.saveState())
 
+    def _restore_split(self, state) -> bool:
+        """Restore the splitter from a QSettings value. The INI is user-
+        editable: anything that is not a byte blob, or that Qt rejects, falls
+        back to the default sizes silently rather than raising."""
+        if isinstance(state, (bytes, bytearray)):
+            state = QByteArray(bytes(state))
+        if not isinstance(state, QByteArray):
+            return False
+        try:
+            return bool(self._split.restoreState(state))
+        except (TypeError, ValueError, RuntimeError):
+            return False
+
     def shutdown(self):
         self._active = False
         self._poll.stop()
@@ -544,6 +579,11 @@ class LiveDataPage(QWidget):
             self._picker.blockSignals(False)
             self._fit_picker_popup()
             self._sync_picker_tooltip()
+            # The data root vanished: nothing is bound any more, exactly as
+            # when no sessions are found (the chart must not stay "live" with
+            # an open reader the poll keeps reading).
+            self._close_reader()
+            self._clear_grid()
             self._set_empty(
                 "truck-mcp data root not found.\n\nSet the TRUCK_MCP_DATA "
                 "environment variable, or place truck-mcp at "
@@ -820,6 +860,8 @@ class LiveDataPage(QWidget):
         self._meta = {}
         self._ranges = {}
         self._range_cursor = 0
+        self._last_latest = {}
+        self._last_stale = False
         self._view_state = ""
         self._as_of = None
         self._archived = False
@@ -837,7 +879,12 @@ class LiveDataPage(QWidget):
 
     # -- window span (persisted for live sessions) --------------------------- #
     def _on_span_chosen(self, idx: int):
-        """A USER choice of window (activated, not programmatic changes)."""
+        """A USER choice of window (activated, not programmatic changes).
+        Only a live session's choice becomes the next live session's default;
+        an archived drive applies it to its own view without persisting (an
+        archived "All" must not leak into every live session's window)."""
+        if self._archived:
+            return
         self._settings.setValue(SPAN_KEY, self._chart.span_combo.itemText(idx))
 
     # -- hold ------------------------------------------------------------------ #
@@ -857,19 +904,29 @@ class LiveDataPage(QWidget):
             return
         self._held = on
         if on:
-            for tile in self._tiles.values():
-                tile.set_held(True)
-            self._chart.chart.set_caption(HELD_CAPTION)
+            self._apply_held_display()
             self._refresh_chrome()
         else:
+            self._chart.table.set_held(False)
             self._tick()
             self._refresh_chrome()
 
+    def _apply_held_display(self):
+        """Mark every frozen surface as held: tiles drop the live palette,
+        the chart is captioned and the table's Value column says so."""
+        for tile in self._tiles.values():
+            tile.set_held(True)
+        self._chart.chart.set_caption(HELD_CAPTION)
+        self._chart.table.set_held(True)
+
     # -- field selection + grouping (ONE model drives BOTH views) ----------- #
-    def _bind_chart(self):
-        """(Re)bind chart + graphed-channels table from the shared layout."""
+    def _bind_chart(self, frozen: bool = False):
+        """(Re)bind chart + graphed-channels table from the shared layout.
+        frozen (a layout edit while held) rebuilds structure only: the pane
+        keeps its traces and cursor and reads nothing newer than the hold."""
         self._chart.bind(self._reader, self._channel_meta, self._archived,
-                         self._layout.chart_lanes(self._chartable))
+                         self._layout.chart_lanes(self._chartable),
+                         frozen_upto=self._range_cursor if frozen else None)
         self._chart.table.set_droppable(self._chartable)
         self._chart.chart.empty_text = (
             "No chartable channels in this session." if not self._chartable
@@ -889,11 +946,16 @@ class LiveDataPage(QWidget):
         self._clear_tiles()
         self._build_tiles(self._layout.tile_names(self._channel_meta))
         span = self._chart.span_text()   # keep the user's window across rebind
-        self._bind_chart()
+        self._bind_chart(frozen=self._held)
         self._chart.set_span_text(span)
-        # A layout edit is the user's own action: render the new tiles now,
-        # even while held (a held page would otherwise show "not read").
-        self._tick(ignore_hold=True)
+        if self._held:
+            # Held: render the new structure from the last read, never from a
+            # newer one, and keep every surface marked held.
+            self._render(self._last_latest, self._last_stale)
+            self._apply_held_display()
+            self._refresh_chrome()
+        else:
+            self._tick()
 
     def _save_layout(self):
         if self._layout.is_default():
@@ -1050,10 +1112,10 @@ class LiveDataPage(QWidget):
     def tile_range(self, name: str) -> Optional[tuple[float, float]]:
         return self._ranges.get(name)
 
-    def _tick(self, ignore_hold: bool = False):
+    def _tick(self):
         if self._reader is None or not self._tiles:
             return
-        if self._held and not ignore_hold:
+        if self._held:
             # Frozen: read nothing but whether the drive ended — an ended
             # drive cannot be held (it no longer advances), so it releases.
             try:
@@ -1066,7 +1128,9 @@ class LiveDataPage(QWidget):
             self._set_hold(False)   # re-enters _tick unheld
             return
         try:
-            latest = self._reader.latest(list(self._tiles))
+            # Every session channel, not only the visible tiles, so the
+            # held-relayout snapshot can render a tile that was just unhidden.
+            latest = self._reader.latest(list(self._channel_meta))
             newest_ts = self._reader.latest_ts()
             # Re-check each tick: a drive that ENDS while still bound must stop
             # rendering as live immediately, not stay green until it goes stale.
@@ -1104,25 +1168,25 @@ class LiveDataPage(QWidget):
             age = tmstore.sample_age_s({"ts_utc": newest_ts}) if newest_ts else None
             session_stale = age is not None and age > tmstore.STALE_SESSION_LIMIT_S
 
+        self._last_latest = latest
+        self._last_stale = session_stale
+        self._chart.tick(archived=self._archived, session_stale=session_stale)
+        self._render(latest, session_stale)
+        self._as_of = datetime.now().strftime("%H:%M:%S")
+        self._view_state = ("archived" if self._archived
+                            else "not advancing" if session_stale else "live")
+        self._refresh_chrome()
+
+    def _render(self, latest: dict, session_stale: bool):
+        """Tiles + the table's Value column from one read, every value
+        through display_state. Reads nothing itself."""
         for name, tile in self._tiles.items():
             tile.update_from(latest.get(name), self._channel_meta.get(name),
                              archived=self._archived, session_stale=session_stale)
             tile.set_range(self._ranges.get(name))
-        self._chart.tick(archived=self._archived, session_stale=session_stale)
         self._chart.update_table(latest, self._channel_meta,
                                  archived=self._archived,
                                  session_stale=session_stale)
-        self._as_of = datetime.now().strftime("%H:%M:%S")
-        self._view_state = ("archived" if self._archived
-                            else "not advancing" if session_stale else "live")
-        if self._archived and self._held:
-            self._set_hold(False)
-        elif self._held:
-            # A layout edit rendered fresh values while held: re-freeze them.
-            for tile in self._tiles.values():
-                tile.set_held(True)
-            self._chart.chart.set_caption(HELD_CAPTION)
-        self._refresh_chrome()
 
 
 class ActiveTestsPage(QWidget):
@@ -1150,6 +1214,7 @@ class ActiveTestsPage(QWidget):
 
         row = QHBoxLayout()
         self._state_lbl = QLabel("")
+        self._state_lbl.setTextFormat(Qt.PlainText)   # journal / exception text
         self._state_lbl.setWordWrap(True)
         self._state_lbl.setStyleSheet("font-size:13px; padding:6px;")
         row.addWidget(self._state_lbl, 1)

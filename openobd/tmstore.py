@@ -587,29 +587,36 @@ class TmSessionReader:
     def range_after(self, channels: Sequence[str] | str, after_id: int = 0
                     ) -> tuple[dict[str, tuple[float, float]], int]:
         """Per-channel (min, max) over the fresh, finite numeric samples with
-        id > after_id, and the highest sample id those rows carried (the
-        caller's next cursor; after_id when nothing new). One aggregate read
-        per tick, so a running min/max never re-scans the drive. Carried
-        repeats and text sidecars never count, exactly as in series_after."""
+        id > after_id, and the caller's next cursor: the highest sample id in
+        the store at read time (after_id when nothing new). The cursor is
+        UNFILTERED — carried repeats and text rows advance it too — so a
+        stretch of carried-only rows is scanned once, not on every tick. The
+        upper bound is taken first and the aggregate is capped at it, so a
+        row committed between the two reads is left for the next call rather
+        than skipped. Carried repeats and text sidecars never count toward
+        the min / max, exactly as in series_after."""
         names = [channels] if isinstance(channels, str) else list(channels)
         out: dict[str, tuple[float, float]] = {}
-        cursor = int(after_id)
-        for chunk in _chunks(names, _MAX_BIND_VARS - 3):
-            sql = ("SELECT c.name, MIN(s.value_num), MAX(s.value_num), "
-                   "MAX(s.id) FROM sample s "
+        after = int(after_id)
+        row = self._conn.execute(
+            "SELECT MAX(id) FROM sample WHERE id > ?", (after,)).fetchone()
+        if row is None or row[0] is None:
+            return out, after
+        upper = int(row[0])
+        for chunk in _chunks(names, _MAX_BIND_VARS - 4):
+            sql = ("SELECT c.name, MIN(s.value_num), MAX(s.value_num) "
+                   "FROM sample s "
                    "JOIN channel c ON c.id = s.channel_id "
                    f"WHERE c.name IN ({','.join('?' * len(chunk))}) "
-                   "AND s.id > ? AND s.fresh = 1 "
+                   "AND s.id > ? AND s.id <= ? AND s.fresh = 1 "
                    "AND s.value_num BETWEEN ? AND ? "
                    "GROUP BY c.name")
-            params = list(chunk) + [int(after_id), -_FINITE_MAX, _FINITE_MAX]
-            for row in self._conn.execute(sql, params):
-                if row[1] is None or row[2] is None:
+            params = list(chunk) + [after, upper, -_FINITE_MAX, _FINITE_MAX]
+            for agg in self._conn.execute(sql, params):
+                if agg[1] is None or agg[2] is None:
                     continue
-                out[row[0]] = (float(row[1]), float(row[2]))
-                if row[3] is not None and row[3] > cursor:
-                    cursor = int(row[3])
-        return out, cursor
+                out[agg[0]] = (float(agg[1]), float(agg[2]))
+        return out, upper
 
     def events(self, kinds: Optional[Sequence[str]] = None, limit: int = 200
                ) -> list[dict]:

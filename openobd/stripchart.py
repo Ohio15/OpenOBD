@@ -233,9 +233,22 @@ def fmt_relative(seconds_back: float) -> str:
     return "-" + body
 
 
+#: What a time that is not a real wall-clock instant renders as.
+CLOCK_UNKNOWN = "—"
+
+
 def fmt_clock(t: float, tz=None) -> str:
-    """Wall-clock HH:MM:SS of an epoch second (local time unless tz)."""
-    return datetime.fromtimestamp(t, tz).strftime("%H:%M:%S")
+    """Wall-clock HH:MM:SS of an epoch second (local time unless tz). Never
+    raises: it runs inside paintEvent, and a negative, non-finite or out-of-
+    range time (Windows' fromtimestamp rejects negatives) renders as
+    CLOCK_UNKNOWN instead of aborting the paint."""
+    try:
+        t = float(t)
+        if not math.isfinite(t) or t < 0:
+            return CLOCK_UNKNOWN
+        return datetime.fromtimestamp(t, tz).strftime("%H:%M:%S")
+    except (OverflowError, OSError, ValueError, TypeError):
+        return CLOCK_UNKNOWN
 
 
 def time_ticks(t0: float, t1: float, max_ticks: int,
@@ -247,6 +260,9 @@ def time_ticks(t0: float, t1: float, max_ticks: int,
     time (an archived drive reads as when it happened)."""
     if not (t1 > t0) or max_ticks < 1:
         return []
+    if mode != TIME_MODE_RELATIVE and not (
+            math.isfinite(t0) and math.isfinite(t1) and t0 >= 0):
+        return []   # not a wall-clock window (e.g. the no-data placeholder)
     step = tick_step(t1 - t0, max_ticks)
     if mode == TIME_MODE_RELATIVE:
         n = int((t1 - t0) // step + 1e-9)
@@ -329,6 +345,19 @@ class _Trace:
         self._seeded = False
         self._stats_key = None
         self._stats = None
+        self._pts_key = None
+        self._pts: tuple[list[float], list[float]] = ([], [])
+
+    def points(self, t0: float, t1: float, max_pts: int
+               ) -> tuple[list[float], list[float]]:
+        """window_points over [t0, t1], cached until the window, the plot
+        width or the data changes: a hover repaint (mouse-move rate) redraws
+        the cached points instead of re-decimating a whole archived drive."""
+        key = (t0, t1, int(max_pts), len(self.ts))
+        if key != self._pts_key:
+            self._pts_key = key
+            self._pts = window_points(self.ts, self.vs, t0, t1, max_pts)
+        return self._pts
 
     def stats(self, t0: float, t1: float
               ) -> Optional[tuple[float, float, float]]:
@@ -567,7 +596,9 @@ class StripChart(QWidget):
         lanes_h = self.lanes_height()
         lane_h = lanes_h / len(self.lanes)
         have_data = any(tr.ts for tr in self.traces.values())
-        ticks = self.axis_ticks(t0, t1, plot_w)
+        # No data means no real window (_window falls back to a placeholder
+        # around epoch 0): draw no time axis rather than invent one.
+        ticks = self.axis_ticks(t0, t1, plot_w) if have_data else []
         tick_xs = [plot_x0 + plot_w * (t - t0) / (t1 - t0) for t, _l in ticks]
         time_grid_pen = QPen(theme.strip_qcolor("time-grid"), 1)
         grid_pen = QPen(theme.strip_qcolor("gridline"), 1)
@@ -620,8 +651,7 @@ class StripChart(QWidget):
                                Qt.AlignLeft | Qt.AlignVCenter, _fmt_scale(val))
                 p.setFont(self._lane_font)
 
-                pts_t, pts_v = window_points(
-                    tr.ts, tr.vs, t0, t1, int(plot.width()) * 2)
+                pts_t, pts_v = tr.points(t0, t1, int(plot.width()) * 2)
                 if len(pts_t) >= 2:
                     span_v = (tr.hi - tr.lo) or 1.0
                     poly = []
@@ -786,6 +816,7 @@ class ChannelTable(QTableWidget):
         self._droppable: set[str] = set()
         self._live_texts: dict[str, str] = {}
         self._cursor_on = False
+        self._held = False
         self._show_empty_row()
 
     def set_droppable(self, names):
@@ -826,7 +857,7 @@ class ChannelTable(QTableWidget):
         self._lane_of = {r[0]: r[2] for r in rows}
         self._live_texts = {}
         self._cursor_on = False
-        self.horizontalHeaderItem(self.COL_VALUE).setText("Value")
+        self.horizontalHeaderItem(self.COL_VALUE).setText(self._value_header())
         if not rows:
             self._show_empty_row()
             return
@@ -841,6 +872,7 @@ class ChannelTable(QTableWidget):
             val = QTableWidgetItem("—")
             val.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.setItem(i, self.COL_VALUE, val)
+            self._style_value(val)
             unit_it = QTableWidgetItem(unit)
             unit_it.setForeground(muted)
             self.setItem(i, self.COL_UNIT, unit_it)
@@ -852,6 +884,38 @@ class ChannelTable(QTableWidget):
             lane_it = QTableWidgetItem(f"Lane {lane_i + 1}")
             lane_it.setData(CHIP_KIND_ROLE, "neutral")
             self.setItem(i, self.COL_LANE, lane_it)
+
+    #: Value column header while the page is held.
+    HELD_HEADER = "Value · held"
+
+    def _value_header(self) -> str:
+        return self.HELD_HEADER if self._held else "Value"
+
+    def _style_value(self, item: QTableWidgetItem):
+        """A held value takes the held caption colour; otherwise the
+        default foreground (a frozen value must never read as live)."""
+        if self._held:
+            item.setForeground(theme.hex_qcolor(CAPTION_COLORS["held"]))
+        else:
+            item.setData(Qt.ForegroundRole, None)
+
+    def set_held(self, on: bool):
+        """Mark (or unmark) the Value column as held: header text and the
+        held colour on every value cell."""
+        on = bool(on)
+        if on == self._held:
+            return
+        self._held = on
+        if not self._cursor_on:
+            self.horizontalHeaderItem(self.COL_VALUE).setText(
+                self._value_header())
+        for i in range(len(self._names)):
+            it = self.item(i, self.COL_VALUE)
+            if it is not None:
+                self._style_value(it)
+
+    def is_held(self) -> bool:
+        return self._held
 
     def _write_values(self, texts: dict[str, str]):
         for i, name in enumerate(self._names):
@@ -872,7 +936,8 @@ class ChannelTable(QTableWidget):
         if texts is None:
             if self._cursor_on:
                 self._cursor_on = False
-                self.horizontalHeaderItem(self.COL_VALUE).setText("Value")
+                self.horizontalHeaderItem(self.COL_VALUE).setText(
+                    self._value_header())
                 self._write_values(self._live_texts)
             return
         self._cursor_on = True
@@ -958,6 +1023,7 @@ class ChartPane(QWidget):
         self._span_combo.setCurrentText("1 min")
         self._span_combo.currentIndexChanged.connect(self._on_span)
         self._note = QLabel("")
+        self._note.setTextFormat(Qt.PlainText)   # carries exception text
         self._note.setObjectName("chartNote")
         self._note.setStyleSheet(
             f"color:{theme.STRIP_COLORS['secondary-text']}; font-size:11px;")
@@ -991,11 +1057,23 @@ class ChartPane(QWidget):
     # -- binding -------------------------------------------------------------- #
     def bind(self, reader: tmstore.TmSessionReader,
              channel_meta: dict[str, dict], archived: bool,
-             lanes: list[list[str]]):
+             lanes: list[list[str]], frozen_upto: Optional[int] = None):
         """Configure the given lanes and backfill. The lanes come from the
         page's shared ChannelLayout (chanlayout) — the ONE model both the tile
         grid and this chart derive from — so this pane never decides for
-        itself what is selected; it only renders and reads."""
+        itself what is selected; it only renders and reads.
+
+        frozen_upto (the page is held and only the layout changed: the
+        store's highest sample id as of the last read before the hold):
+        rebuild the lanes and table, keep every surviving trace's samples,
+        the backfill bound, the note and the window, and read nothing newer
+        than that id. A channel newly added to the graph is backfilled only
+        up to it, so it lines up with the frozen traces, and the cursor moves
+        to it so release reads each later sample exactly once."""
+        if (frozen_upto is not None and self._reader is reader
+                and reader is not None):
+            self._rebind_frozen(channel_meta, lanes, int(frozen_upto))
+            return
         self.unbind()
         names = [n for lane in lanes for n in lane]
         units = {n: (channel_meta.get(n) or {}).get("unit") or "" for n in names}
@@ -1034,6 +1112,50 @@ class ChartPane(QWidget):
         # follows the last minute. The combo stays user-adjustable after bind.
         self._span_combo.setCurrentText("All" if archived else "1 min")
         self.tick(archived=archived, session_stale=False)
+
+    def _rebind_frozen(self, channel_meta: dict[str, dict],
+                       lanes: list[list[str]], upto: int):
+        # Every graphed channel was read up to self._cursor, and the page's
+        # last read saw nothing past `upto`; graphed rows in between do not
+        # exist (the chart read after the page's bound), so the larger of
+        # the two is the frozen instant for every trace, old and new.
+        upto = max(self._cursor, upto)
+        old = self.chart.traces
+        caption = self.chart.caption
+        names = [n for lane in lanes for n in lane]
+        units = {n: (channel_meta.get(n) or {}).get("unit") or "" for n in names}
+        self.chart.set_hover(None)
+        self.chart.configure(lanes, units)
+        new_names = []
+        for name, tr in self.chart.traces.items():
+            prev = old.get(name)
+            if prev is None:
+                new_names.append(name)
+                continue
+            tr.ts, tr.vs = prev.ts, prev.vs
+            tr.lo, tr.hi = prev.lo, prev.hi
+            tr._auto, tr._seeded = prev._auto, prev._seeded
+        if new_names and upto > 0:
+            try:
+                rows = self._reader.series_after(
+                    new_names, after_id=0, min_ts=self._min_ts)
+            except Exception as exc:
+                self.set_failed(str(exc))
+                rows = {}
+            self.chart.append_samples({
+                n: [s for s in samples
+                    if s.get("id") is not None and s["id"] <= upto]
+                for n, samples in rows.items()})
+        self._cursor = upto
+        ends = [tr.ts[-1] for tr in self.chart.traces.values() if tr.ts]
+        self.chart.t_end = max(ends) if ends else None
+        self.chart.set_caption(caption)
+        self.table.set_rows([
+            (n, units[n], li, self.chart.traces[n].color)
+            for li, lane in enumerate(lanes) for n in lane])
+        self._channels = names
+        self.refresh_stats()
+        self.chart.update()
 
     def unbind(self):
         self._reader = None

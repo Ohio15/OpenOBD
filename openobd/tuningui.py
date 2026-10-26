@@ -121,6 +121,8 @@ class ElidedLabel(QLabel):
     def __init__(self, text: str = "", parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._full = ""
+        # Session / table names can come from files on disk: never rich text.
+        self.setTextFormat(Qt.PlainText)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.setText(text)
 
@@ -202,6 +204,7 @@ class Breadcrumb(QFrame):
         chips = list(chips)
         while len(self._chips) < len(chips):
             lab = QLabel()
+            lab.setTextFormat(Qt.PlainText)
             lab.setProperty("chip", "neutral")
             self._chip_row.addWidget(lab)
             self._chips.append(lab)
