@@ -43,6 +43,7 @@ Active Tests
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -55,6 +56,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QMenu, QScrollArea, QSizePolicy, QSplitter, QToolButton,
     QVBoxLayout, QWidget,
 )
+from PySide6.QtWidgets import QFileDialog
 
 from . import chanlayout, theme, tmstore
 from .appsettings import app_settings
@@ -65,6 +67,36 @@ from .tuningui import (
     GROUP_ORDER, Breadcrumb, ElidedLabel, channel_group, empty_state_label,
     make_toolbar, plain_tooltip, restore_splitter_state,
 )
+
+#: Persisted recent "Open session…" files: newest first, de-duplicated.
+RECENT_FILES_KEY = "livedata/recent_files"
+RECENT_FILES_MAX = 8
+OPEN_SESSION_FILTER = "truck-mcp session (*.tmsession.db);;All files (*)"
+OPENED_FILE_CHIP = ("opened file", "neutral")
+#: Picker item role marking an entry opened from a file (not discovered).
+OPENED_ROLE = Qt.UserRole + 1
+
+
+def _same_file(a: str, b: str) -> bool:
+    return (os.path.normcase(os.path.abspath(a))
+            == os.path.normcase(os.path.abspath(b)))
+
+
+def load_recent_files(settings) -> list[str]:
+    """The persisted recent list, normalised (a one-entry INI list reads back
+    as a plain string; anything else non-string is dropped)."""
+    raw = settings.value(RECENT_FILES_KEY, [])
+    if isinstance(raw, str):
+        raw = [raw] if raw else []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item and not any(
+                _same_file(item, o) for o in out):
+            out.append(item)
+    return out[:RECENT_FILES_MAX]
+
 
 # The states, and the ONLY colors each may take. Each means exactly one thing.
 STATE_COLORS = theme.LIVEDATA_STATE_COLORS
@@ -344,6 +376,13 @@ class LiveDataPage(QWidget):
         # snapshot instead of reading newer data under a "held" caption.
         self._last_latest: dict[str, dict] = {}
         self._last_stale = False
+        # Session files opened via "Open session…" (newest first): picker
+        # entries "file · <name>" that a Rescan keeps while the file exists.
+        self._opened: list[str] = []
+        self._bound_opened = False
+        # A failed "Open session…": stays on the danger banner until the next
+        # pick or open (a successful poll must not wipe it).
+        self._open_error: Optional[str] = None
 
         # The ONE selection+grouping model both views derive from. Global, not
         # per-session: truck-mcp store channel names are stable across drives,
@@ -351,6 +390,7 @@ class LiveDataPage(QWidget):
         self._settings = app_settings()
         self._layout = ChannelLayout.from_json(
             self._settings.value(chanlayout.SETTINGS_KEY))
+        self._prune_recent_files()
         self._collapsed = self._load_collapsed()
 
         root = QVBoxLayout(self)
@@ -464,6 +504,7 @@ class LiveDataPage(QWidget):
             "refresh", "Rescan", "Rescan the truck-mcp session folders  (F5)",
             self.rescan_sessions)
         tb.addAction(self.act_rescan)
+        self._build_open_action(tb)
         self.act_fields = self._action(
             "fields", "Fields…",
             "Add or subtract fields — the tiles and the chart always show "
@@ -498,6 +539,117 @@ class LiveDataPage(QWidget):
         self._refresh_btn = tb.widgetForAction(self.act_rescan)
         self._fields_btn = tb.widgetForAction(self.act_fields)
         return tb
+
+    def _build_open_action(self, tb):
+        """Open session… (any folder, read-only) with the recent files as the
+        button's drop-down menu."""
+        self.act_open = self._action(
+            "open", "Open session…",
+            "Open a truck-mcp session file from any folder, read-only. It is "
+            "shown as an archived drive, never as live. The arrow lists "
+            "recent files.", lambda: self.open_session_file())
+        tb.addAction(self.act_open)
+        self._recent_menu = QMenu(self)
+        self._recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
+        self._open_btn = tb.widgetForAction(self.act_open)
+        if isinstance(self._open_btn, QToolButton):
+            self._open_btn.setMenu(self._recent_menu)
+            self._open_btn.setPopupMode(QToolButton.MenuButtonPopup)
+        self._rebuild_recent_menu()
+
+    # -- Open session… (a file from any path, read-only) -------------------- #
+    def recent_files(self) -> list[str]:
+        return load_recent_files(self._settings)
+
+    def _save_recent_files(self, files: list[str]):
+        self._settings.setValue(RECENT_FILES_KEY, files[:RECENT_FILES_MAX])
+        self._settings.sync()
+
+    def _prune_recent_files(self):
+        """Startup check: drop recent files that no longer exist."""
+        stored = self.recent_files()
+        kept = [f for f in stored if os.path.isfile(f)]
+        if kept != stored:
+            self._save_recent_files(kept)
+
+    def _remember_recent(self, path: str):
+        files = [f for f in self.recent_files() if not _same_file(f, path)]
+        self._save_recent_files([path] + files)
+
+    def _rebuild_recent_menu(self):
+        menu = self._recent_menu
+        menu.clear()
+        files = self.recent_files()
+        if not files:
+            none = menu.addAction("No recent session files")
+            none.setEnabled(False)
+            return
+        for f in files:
+            # Menu text is plain, but "&" would become a mnemonic.
+            text = f"{Path(f).name}  —  {os.path.dirname(f)}".replace("&", "&&")
+            act = menu.addAction(text)
+            act.setData(f)
+            act.triggered.connect(
+                lambda _checked=False, f=f: self.open_session_file(f))
+
+    def _picker_index_of(self, path: str) -> int:
+        for i in range(self._picker.count()):
+            data = self._picker.itemData(i)
+            if isinstance(data, str) and _same_file(data, path):
+                return i
+        return -1
+
+    def _add_opened_items(self):
+        """Put the opened files at the top of the picker (newest first),
+        skipping any a scan now discovers itself (that entry, with live
+        semantics, wins)."""
+        for path in reversed(list(self._opened)):
+            if self._picker_index_of(path) >= 0:
+                self._opened.remove(path)
+                continue
+            text = f"file · {Path(path).name}"
+            self._picker.insertItem(0, text, path)
+            self._picker.setItemData(0, True, OPENED_ROLE)
+            self._picker.setItemData(0, plain_tooltip(path), Qt.ToolTipRole)
+
+    def open_session_file(self, path: Optional[str] = None) -> bool:
+        """Open a *.tmsession.db from any path, read-only. Cancel is a no-op;
+        an unreadable file shows the danger banner and keeps the session that
+        was bound. Opening a file already in the picker re-selects it."""
+        if not path:
+            recent = self.recent_files()
+            start = os.path.dirname(recent[0]) if recent else ""
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Open session", start, OPEN_SESSION_FILTER)
+            if not path:
+                return False
+        path = os.path.normpath(os.path.abspath(path))
+        name = Path(path).name
+        try:
+            with TmSessionReader(path, timeout=0.5) as probe:
+                probe.metadata()
+                probe.channels()
+        except (TmSessionError, sqlite3.Error, OSError, ValueError) as exc:
+            self._open_error = f"could not open {name}: {exc}"
+            self._show_banner(self._open_error)
+            return False
+        self._open_error = None
+        self._remember_recent(path)
+        idx = self._picker_index_of(path)
+        if idx < 0:
+            self._opened.insert(0, path)
+            self._picker.blockSignals(True)
+            self._add_opened_items()
+            self._picker.blockSignals(False)
+            self._fit_picker_popup()
+            idx = self._picker_index_of(path)
+        if self._picker.currentIndex() != idx:
+            self._picker.setCurrentIndex(idx)   # binds via _on_pick
+        else:
+            self._sync_picker_tooltip()
+            self._on_pick(idx)
+        self._show_banner(None)
+        return True
 
     def _action(self, glyph: str, text: str, tip: str, slot) -> QAction:
         a = QAction(theme.glyph_icon(glyph), text, self)
@@ -557,8 +709,12 @@ class LiveDataPage(QWidget):
 
     # -- session list ------------------------------------------------------- #
     def rescan_sessions(self):
+        # An opened file leaves the picker only when it no longer exists.
+        kept = [f for f in self._opened if os.path.isfile(f)]
+        pruned = kept != self._opened
+        self._opened = kept
         dirs = tmstore.sessions_dirs()
-        if not dirs:
+        if not dirs and not self._opened:
             self._sessions = []
             self._picker.blockSignals(True)
             self._picker.clear()
@@ -579,7 +735,7 @@ class LiveDataPage(QWidget):
             self._refresh_chrome()
             return
         try:
-            sessions = tmstore.list_sessions()
+            sessions = tmstore.list_sessions() if dirs else []
         except OSError as exc:
             self._show_banner(f"Could not scan sessions: {exc}")
             return
@@ -589,7 +745,7 @@ class LiveDataPage(QWidget):
         new_paths = [s["path"] for s in sessions]
         old_paths = [s["path"] for s in self._sessions]
         self._sessions = sessions
-        if new_paths == old_paths and self._picker.count():
+        if new_paths == old_paths and self._picker.count() and not pruned:
             return
 
         prev = self._picker.currentData()
@@ -605,12 +761,13 @@ class LiveDataPage(QWidget):
             self._picker.addItem(text, s["path"])
             self._picker.setItemData(self._picker.count() - 1,
                                      plain_tooltip(text), Qt.ToolTipRole)
+        self._add_opened_items()
         idx = self._picker.findData(prev) if prev else 0
         self._picker.setCurrentIndex(max(0, idx))
         self._picker.blockSignals(False)
         self._fit_picker_popup()
         self._sync_picker_tooltip()
-        if not sessions:
+        if not sessions and not self._opened:
             self._close_reader()
             self._clear_grid()
             self._set_empty(
@@ -649,6 +806,7 @@ class LiveDataPage(QWidget):
         self._scroll.setVisible(True)
 
     def _show_banner(self, text: Optional[str]):
+        text = text or self._open_error
         if not text:
             self._banner.hide()
             return
@@ -675,6 +833,8 @@ class LiveDataPage(QWidget):
         if self._view_state:
             chips.append((self._view_state,
                           VIEW_STATE_CHIP.get(self._view_state, "neutral")))
+        if self._bound_opened:
+            chips.append(OPENED_FILE_CHIP)
         if self._held:
             chips.append((HELD_CAPTION, "warning"))
         prov = tmstore.session_provenance(meta)
@@ -689,7 +849,10 @@ class LiveDataPage(QWidget):
         veh = meta.get("vin") or "VIN unknown"
         src = meta.get("source") or "live"
         stamp = f"as of {self._as_of}" if self._as_of else "not read yet"
-        self.crumb.set_note(f"{veh}  ·  source={src}  ·  {stamp}")
+        note = f"{veh}  ·  source={src}  ·  {stamp}"
+        if self._bound_opened:
+            note = f"{self._reader_path}  ·  {note}"
+        self.crumb.set_note(note)
         self.act_hold.setEnabled(not self._archived)
         self.act_fields.setEnabled(bool(self._channel_meta))
 
@@ -698,6 +861,7 @@ class LiveDataPage(QWidget):
         path = self._picker.currentData()
         if path and path == self._reader_path and self._tiles:
             return   # same session already bound — don't rebuild the grid
+        self._open_error = None
         self._close_reader()
         self._clear_grid()
         self._fail_streak = 0
@@ -720,7 +884,12 @@ class LiveDataPage(QWidget):
         self._meta = meta
         self._channel_meta = {c["name"]: c for c in chans}
         self._chartable = chartable_names(self._reader, self._channel_meta)
-        self._archived = bool(meta.get("ended_utc"))
+        # A file opened from any path is a record being read, never a live
+        # feed: archived display semantics (and Hold ignored) like an ended
+        # drive. Discovered sessions keep their live polling semantics.
+        self._bound_opened = bool(self._picker.itemData(
+            self._picker.currentIndex(), OPENED_ROLE))
+        self._archived = bool(meta.get("ended_utc")) or self._bound_opened
         self._clear_empty()
         # The channel set is fixed at bind from the session's channels. If a
         # LIVE drive discovers a new channel mid-session it won't get a tile
@@ -862,6 +1031,7 @@ class LiveDataPage(QWidget):
                 pass
         self._reader = None
         self._reader_path = None
+        self._bound_opened = False
 
     # -- window span (persisted for live sessions) --------------------------- #
     def _on_span_chosen(self, idx: int):

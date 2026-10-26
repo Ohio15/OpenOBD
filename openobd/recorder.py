@@ -94,6 +94,60 @@ def default_log_dirs(documents: Optional[str], app_data: Optional[str]) -> list[
     return out
 
 
+#: QSettings key for a user-chosen log folder (empty/unset = the default).
+LOG_DIR_KEY = "logs/dir"
+
+
+def log_dir_unavailable(folder: str) -> str:
+    """The honest status for a configured folder the recording could not use."""
+    return f"Log folder unavailable: {folder} (using default)"
+
+
+def probe_log_dir(folder: str) -> Optional[str]:
+    """None when a real file can be created and deleted in `folder` (made,
+    with parents, if missing); otherwise why not. A real write, not
+    os.access: a OneDrive folder can be a placeholder / reparse point that
+    os.access reports writable while a create fails, or the reverse."""
+    if not folder:
+        return "no folder"
+    try:
+        os.makedirs(folder, exist_ok=True)
+        probe = os.path.join(folder, f".openobd_write_probe_{os.getpid()}")
+        with open(probe, "w", encoding="utf-8") as fh:
+            fh.write("probe")
+        os.unlink(probe)
+    except OSError as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def log_dir(configured: Optional[str], defaults: Sequence[str]
+            ) -> tuple[list[str], Optional[str]]:
+    """Where the next recording goes: (candidate folders, problem).
+
+    Unset -> the defaults, no problem. A configured folder that passes a real
+    write probe goes first (the defaults stay behind it only as a last
+    resort, which the caller reports as unavailable if it is used). A
+    configured folder that fails the probe is NOT tried and the problem says
+    so — never a silent fallback."""
+    configured = (configured or "").strip()
+    if not configured:
+        return list(defaults), None
+    why = probe_log_dir(configured)
+    if why is not None:
+        return list(defaults), f"{log_dir_unavailable(configured)} — {why}"
+    return [configured] + [d for d in defaults
+                           if os.path.normcase(os.path.abspath(d))
+                           != os.path.normcase(os.path.abspath(configured))], None
+
+
+def used_configured_dir(configured: Optional[str], path: str) -> bool:
+    """Did the recording at `path` land in the configured folder?"""
+    return bool(configured) and (
+        os.path.normcase(os.path.abspath(os.path.dirname(path)))
+        == os.path.normcase(os.path.abspath(configured)))
+
+
 def _fmt(v) -> str:
     return "" if v is None else f"{v:g}"
 

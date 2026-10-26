@@ -3,6 +3,29 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.39.0 — 2026-10-26
+
+### Added
+- **Log folder setting.** Settings → Log folder… picks the folder Dashboard
+  recordings go to (created if missing, and checked with a real test write so
+  a OneDrive folder that refuses files is caught when you choose it);
+  Settings → Reset log folder to default goes back to Documents\OpenOBD\Logs.
+  Settings → Preferences… shows the current folder with Change… / Reset to
+  default. Load log opens in the log folder.
+- If the chosen folder is unavailable when a recording starts, the recording
+  goes to the default folder and says so: "Log folder unavailable: <path>
+  (using default)" in the status line and the record button's tooltip. The
+  tooltip and the post-Stop status name the folder the file was saved in.
+- **Live Data: Open session….** A toolbar action opens a truck-mcp session
+  file (*.tmsession.db) from any folder, read-only. It appears at the top of
+  the session picker as "file · <name>" (kept across Rescan while the file
+  exists; opening it again re-selects it) and always reads as an archived
+  drive with an "opened file" chip and its full path in the note; Hold does
+  not apply. The arrow on the button lists the 8 most recent files; files
+  that no longer exist drop off at startup. A file that is not a readable
+  session shows "could not open <name>: <reason>" and the bound session
+  stays. OpenOBD's own CSV recordings still open in Log Analysis.
+
 ## 0.38.1 — 2026-10-26
 
 ### Fixed

@@ -854,3 +854,159 @@ def test_rr2_f3_session_names_in_tooltips_render_literally(env):
     head = group.header.toolTip()
     assert head.startswith("<qt>") and escaped in head and hostile not in head
     assert plain_tooltip("a & b") == "<qt>a &amp; b</qt>"
+
+
+# --------------------------------------------------------------------------- #
+# v0.39.0: Open session… (a session file from any path, read-only)
+# --------------------------------------------------------------------------- #
+def _outside(env, name="elsewhere", **kw):
+    """A session file outside every discovered sessions folder."""
+    folder = env.root / "picked"
+    folder.mkdir(exist_ok=True)
+    path = folder / f"{name}.tmsession.db"
+    kw.setdefault("uid", f"uid-{name}")
+    _make_session(path, **kw)
+    return path
+
+
+def test_open_file_binds_read_only_with_chip_and_note(env):
+    from openobd.livedata import OPENED_FILE_CHIP
+    _live(env)                                   # a discovered live drive
+    outside = _outside(env)
+    _add_rpm(outside, [900, 1000])               # advancing, not ended
+    pg = env.make()
+    assert pg.open_session_file(str(outside))
+    assert pg._picker.currentIndex() == 0
+    assert pg._picker.currentText() == f"file · {outside.name}"
+    chips = pg.crumb.chips()
+    # Never read as live: archived semantics even though it is advancing.
+    assert chips[0] == ("archived", "muted")
+    assert OPENED_FILE_CHIP in chips
+    assert pg.crumb.note.full_text().startswith(str(outside))
+    assert pg.crumb.note.textFormat() == pg.crumb.note.textFormat().PlainText
+    assert pg._tiles["rpm"].state == "archive"
+    assert pg.banner_text() is None
+    # Picking the discovered drive keeps its live semantics.
+    _pick(pg, env.sessions / "drive.tmsession.db")
+    assert pg.crumb.chips()[0] == ("live", "ok")
+    assert OPENED_FILE_CHIP not in pg.crumb.chips()
+
+
+def test_open_same_file_twice_reselects_it(env):
+    _session(env)
+    outside = _outside(env)
+    pg = env.make()
+    pg.open_session_file(str(outside))
+    _pick(pg, env.sessions / "drive.tmsession.db")
+    assert pg.open_session_file(str(outside))
+    texts = [pg._picker.itemText(i) for i in range(pg._picker.count())]
+    assert texts.count(f"file · {outside.name}") == 1
+    assert pg._picker.currentIndex() == 0
+
+
+def test_hold_ignored_for_an_opened_file(env):
+    outside = _outside(env)
+    _add_rpm(outside, [900, 1000])
+    pg = env.make()
+    pg.open_session_file(str(outside))
+    assert not pg.act_hold.isEnabled()
+    pg._set_hold(True)
+    assert not pg.is_held() and not pg.act_hold.isChecked()
+
+
+def test_bad_file_shows_banner_and_keeps_previous_session(env):
+    _live(env)
+    bad = env.root / "bad.tmsession.db"
+    bad.write_bytes(b"not a database" * 64)
+    pg = env.make()
+    before = pg._reader_path
+    assert before
+    assert not pg.open_session_file(str(bad))
+    banner = pg.banner_text()
+    assert banner and banner.startswith(f"could not open {bad.name}: ")
+    assert pg._banner.property("banner") == "danger"
+    assert pg._reader_path == before and pg._reader is not None
+    pg._tick()                                   # a good poll keeps it shown
+    assert pg.banner_text() == banner
+    assert str(bad) not in pg.recent_files()
+
+
+def test_file_dialog_cancel_is_a_noop(env, monkeypatch):
+    from openobd import livedata
+    _live(env)
+    pg = env.make()
+    before = (pg._reader_path, pg._picker.count(), pg.recent_files())
+    monkeypatch.setattr(livedata.QFileDialog, "getOpenFileName",
+                        staticmethod(lambda *a, **k: ("", "")))
+    pg.act_open.trigger()
+    assert (pg._reader_path, pg._picker.count(), pg.recent_files()) == before
+    assert pg.banner_text() is None
+
+
+def test_dialog_filter_and_open_via_action(env, monkeypatch):
+    from openobd import livedata
+    outside = _outside(env)
+    pg = env.make()
+    seen = {}
+
+    def fake(parent, title, start, flt):
+        seen["filter"] = flt
+        return str(outside), flt
+    monkeypatch.setattr(livedata.QFileDialog, "getOpenFileName",
+                        staticmethod(fake))
+    pg.act_open.trigger()
+    assert seen["filter"] == ("truck-mcp session (*.tmsession.db);;"
+                              "All files (*)")
+    assert pg._bound_opened
+
+
+def test_recent_files_persisted_deduped_capped_and_pruned(env):
+    from openobd.livedata import RECENT_FILES_MAX
+    paths = [_outside(env, f"s{i}") for i in range(RECENT_FILES_MAX + 2)]
+    pg = env.make()
+    for p in paths:
+        pg.open_session_file(str(p))
+    pg.open_session_file(str(paths[0]))          # again: moves to the front
+    recent = pg.recent_files()
+    assert len(recent) == RECENT_FILES_MAX
+    assert recent[0] == os.path.normpath(str(paths[0]))
+    assert len({os.path.normcase(r) for r in recent}) == len(recent)
+    pg._rebuild_recent_menu()
+    assert [a.data() for a in pg._recent_menu.actions()] == recent
+    assert pg._open_btn.menu() is pg._recent_menu
+    # Persisted across pages; a file gone by startup is dropped.
+    gone = recent[1]
+    os.remove(gone)
+    pg2 = env.make()
+    assert pg2.recent_files() == [r for r in recent if r != gone]
+
+
+def test_rescan_keeps_opened_file_until_it_is_gone(env):
+    _session(env)
+    outside = _outside(env)
+    pg = env.make()
+    pg.open_session_file(str(outside))
+    pg.rescan_sessions()
+    assert pg._picker.itemText(0) == f"file · {outside.name}"
+    _session(env, "second")                      # set changes: full rebuild
+    pg.rescan_sessions()
+    assert pg._picker.itemText(0) == f"file · {outside.name}"
+    assert pg._bound_opened
+    pg._close_reader()
+    os.remove(outside)
+    pg.rescan_sessions()
+    assert not any(pg._picker.itemText(i).startswith("file · ")
+                   for i in range(pg._picker.count()))
+
+
+def test_opened_entry_tooltip_is_plain(env):
+    # Windows forbids <> in names; an entity in the path must stay literal.
+    folder = env.root / "a&lt;b"
+    folder.mkdir(parents=True)
+    path = folder / "x.tmsession.db"
+    _make_session(path, uid="uid-x")
+    pg = env.make()
+    pg.open_session_file(str(path))
+    from PySide6.QtCore import Qt
+    tip = pg._picker.itemData(0, Qt.ToolTipRole)
+    assert "&amp;lt;b" in tip and tip.startswith("<qt>")
