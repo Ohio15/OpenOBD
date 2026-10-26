@@ -54,9 +54,12 @@ No Qt here, so the headless suite exercises it directly.
 """
 from __future__ import annotations
 
+import contextlib
 import csv
 import json
 import os
+import secrets
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Callable, Iterable, Optional, Sequence
@@ -92,6 +95,140 @@ def default_log_dirs(documents: Optional[str], app_data: Optional[str]) -> list[
     if app_data:
         out.append(os.path.join(app_data, "Logs"))
     return out
+
+
+#: QSettings key for a user-chosen log folder (empty/unset = the default).
+LOG_DIR_KEY = "logs/dir"
+
+
+def log_dir_unavailable(folder: str) -> str:
+    """The honest status for a configured folder the recording could not use."""
+    return f"Log folder unavailable: {folder} (using default)"
+
+
+#: A probe that has not finished after this long is a failed probe: a
+#: cloud-only OneDrive folder or a stalled network share can block a create
+#: for minutes, and the probe runs on the GUI thread's behalf (Record toggle,
+#: Settings → Log folder…). The blocked worker is a daemon thread left to
+#: finish (or not) on its own; it removes its probe file if it ever creates it.
+PROBE_TIMEOUT_S = 3.0
+
+
+def _probe_name() -> str:
+    """The probe file's name: per process AND unpredictable, so a probe that
+    timed out and is still running never collides with the next one, and a
+    file planted in advance cannot sit at the name (it is also created
+    exclusively, so one that does is refused rather than followed)."""
+    return f".openobd_write_probe_{os.getpid()}_{secrets.token_hex(6)}"
+
+
+def _probe_write(folder: str) -> None:
+    """Create `folder` (with parents), create a NEW file in it, write, close
+    and delete it. Raises OSError on any failure; the probe file never
+    outlives the call when this process created it."""
+    os.makedirs(folder, exist_ok=True)
+    probe = os.path.join(folder, _probe_name())
+    created = False
+    try:
+        # "x" = O_CREAT|O_EXCL: an existing file or symlink at the name is
+        # FileExistsError, never opened or followed.
+        with open(probe, "x", encoding="utf-8") as fh:
+            created = True
+            fh.write("probe")
+        os.unlink(probe)
+        created = False
+    finally:
+        if created:
+            with contextlib.suppress(OSError):
+                os.unlink(probe)
+
+
+def probe_log_dir(folder: str, timeout: Optional[float] = None
+                  ) -> Optional[str]:
+    """None when a real file can be created and deleted in `folder` (made,
+    with parents, if missing); otherwise why not. A real write, not
+    os.access: a OneDrive folder can be a placeholder / reparse point that
+    os.access reports writable while a create fails, or the reverse.
+
+    Bounded: the write runs on a daemon worker thread and a probe still
+    running after `timeout` seconds (default PROBE_TIMEOUT_S) is reported as
+    timed out, so a stalled folder blocks the caller for at most that long."""
+    if not folder:
+        return "no folder"
+    limit = PROBE_TIMEOUT_S if timeout is None else timeout
+    outcome: dict[str, Optional[str]] = {}
+
+    def run():
+        try:
+            _probe_write(folder)
+            outcome["why"] = None
+        except OSError as exc:
+            outcome["why"] = f"{type(exc).__name__}: {exc}"
+        except Exception as exc:   # never let a probe die without a verdict
+            outcome["why"] = f"{type(exc).__name__}: {exc}"
+
+    worker = threading.Thread(target=run, name="openobd-log-dir-probe",
+                              daemon=True)
+    worker.start()
+    worker.join(limit)
+    if worker.is_alive() or "why" not in outcome:
+        return f"timed out after {limit:g} s"
+    return outcome["why"]
+
+
+def resolve_log_dir(configured: Optional[str]
+                    ) -> tuple[Optional[str], Optional[str]]:
+    """The configured folder as a usable absolute path: (folder, problem).
+
+    Environment variables and ~ are expanded ("%USERPROFILE%\\Logs" means
+    the user's folder, not a literal "%USERPROFILE%" folder under the
+    working directory). A value that is still not absolute afterwards is
+    refused with a problem — a relative folder would land wherever the
+    process happened to start. On Windows it must also carry a drive or UNC
+    prefix: "\\Logs" (e.g. "%FOO%\\Logs" with FOO empty) is rooted on
+    whatever drive is current, and Python <= 3.12 calls it absolute.
+    Unset -> (None, None)."""
+    raw = (configured or "").strip()
+    if not raw:
+        return None, None
+    folder = os.path.normpath(os.path.expanduser(os.path.expandvars(raw)))
+    absolute = os.path.isabs(folder)
+    if absolute and os.name == "nt":
+        absolute = bool(os.path.splitdrive(folder)[0])
+    if not absolute:
+        return None, f"Log folder must be an absolute path: {raw} (using default)"
+    return folder, None
+
+
+def _same_dir(a: str, b: str) -> bool:
+    return (os.path.normcase(os.path.realpath(a))
+            == os.path.normcase(os.path.realpath(b)))
+
+
+def log_dir(configured: Optional[str], defaults: Sequence[str]
+            ) -> tuple[list[str], Optional[str]]:
+    """Where the next recording goes: (candidate folders, problem).
+
+    Unset -> the defaults, no problem. A configured folder that passes a real
+    write probe goes first (the defaults stay behind it only as a last
+    resort, which the caller reports as unavailable if it is used). A
+    configured folder that is not absolute, or fails (or times out) the
+    probe, is NOT tried and the problem says so — never a silent fallback."""
+    folder, problem = resolve_log_dir(configured)
+    if problem is not None:
+        return list(defaults), problem
+    if folder is None:
+        return list(defaults), None
+    why = probe_log_dir(folder)
+    if why is not None:
+        return list(defaults), f"{log_dir_unavailable(folder)} — {why}"
+    return [folder] + [d for d in defaults if not _same_dir(d, folder)], None
+
+
+def used_configured_dir(configured: Optional[str], path: str) -> bool:
+    """Did the recording at `path` land in the configured folder?"""
+    folder, _problem = resolve_log_dir(configured)
+    return folder is not None and _same_dir(os.path.dirname(path), folder)
 
 
 def _fmt(v) -> str:

@@ -3,6 +3,58 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.39.0 — 2026-10-26
+
+### Added
+- **Log folder setting.** Settings → Log folder… picks the folder Dashboard
+  recordings go to (created if missing, and checked with a real test write so
+  a OneDrive folder that refuses files is caught when you choose it);
+  Settings → Reset log folder to default goes back to Documents\OpenOBD\Logs.
+  Settings → Preferences… shows the current folder with Change… / Reset to
+  default. Load log opens in the log folder.
+- If the chosen folder is unavailable when a recording starts, the recording
+  goes to the default folder and says so: "Log folder unavailable: <path>
+  (using default)" in the status line and the record button's tooltip. The
+  tooltip and the post-Stop status name the folder the file was saved in.
+- **Live Data: Open session….** A toolbar action opens a truck-mcp session
+  file (*.tmsession.db) from any folder, without locking out a logger that
+  is still writing it: OpenOBD never writes rows, though SQLite may create
+  WAL sidecar files (-wal/-shm) next to the file. It appears at the top of
+  the session picker as "file · <name>" (kept across Rescan while the file
+  exists; opening it again re-selects it; if a Rescan later discovers it,
+  the discovered entry replaces it). Opened files show live or archived
+  state honestly: the same live / not advancing / archived chips as a
+  discovered session, from the file's own data, plus an "opened file" chip
+  and the full path in the note; Hold works while it is live and is ignored
+  once it has ended. The arrow on the button lists the 8 most recent files;
+  files that no longer exist drop off at startup. A file that is not a
+  readable session shows "could not open <name>: <reason>" and the bound
+  session stays. OpenOBD's own CSV recordings still open in Log Analysis.
+- Live Data's "as of" time is the newest sample's time (the date too when it
+  is not today), for every session, not the time of the last poll; a
+  session with no samples yet says "no samples yet".
+- A log folder setting with environment variables ("%USERPROFILE%\Logs")
+  is expanded; one that is still not an absolute path is not used and the
+  status says "Log folder must be an absolute path: <value> (using
+  default)". The write check gives up after 3 s (a cloud-only OneDrive
+  folder or a stalled share) and reports "timed out", using the default.
+
+### Fixed (review round 2)
+- Opening a second session file no longer drops the first from the picker:
+  both stay across Rescan, and the one you picked stays bound with the
+  picker showing it.
+- A session with no samples yet (opened or discovered) reads "not
+  advancing", never "live", until a sample arrives.
+- On Windows a log folder without a drive or \\server\share prefix (e.g.
+  "%FOO%\Logs" with FOO empty, which becomes "\Logs") is refused as not
+  absolute instead of landing on whatever drive is current.
+- Settings shows the log folder as it resolves (variables expanded), and an
+  unusable setting shows the default folder plus why; Log folder… starts in
+  the resolved folder.
+- The log folder setting and Live Data's recent-files list are written
+  through the checked settings writer from 0.38.2 (retried, and "NOT SAVED"
+  in the status line if the store refuses), never a bare QSettings write.
+
 ## 0.38.2 — 2026-10-26
 
 ### Fixed (transient Windows write failures lost settings silently; brain 8d13ce7f, found in 129af1c0)

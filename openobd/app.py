@@ -85,6 +85,10 @@ from .recorder import (
     DriveRecorder, default_log_dirs, meta_path, read_meta, sidecar_path,
 )
 from PySide6.QtCore import QStandardPaths
+from .recorder import (  # noqa: E402  (log folder setting, v0.39.0)
+    LOG_DIR_KEY, log_dir, log_dir_unavailable, probe_log_dir,
+    resolve_log_dir, used_configured_dir,
+)
 
 # Gauge widgets, cluster layouts and the dashboard style registry live in
 # gauges.py; the names are re-exported here for existing importers.
@@ -228,6 +232,13 @@ def save_pedal_cal(vin: str, cal: PedalCal) -> None:
     write_settings(apply, what=f"pedal calibration for VIN {vin}")
 
 
+def configured_log_dir() -> str:
+    """The ONE read of the Settings log folder (QSettings logs/dir): the
+    user-chosen folder, or "" for the default (Documents\\OpenOBD\\Logs)."""
+    value = app_settings().value(LOG_DIR_KEY, "")
+    return value.strip() if isinstance(value, str) else ""
+
+
 #: How often the Dashboard looks for the OBDX Pro GT while none is bound.
 GT_SCAN_INTERVAL_MS = 2000
 #: A connect that has not finished after this long is marked failed (and its
@@ -248,6 +259,7 @@ RECONNECT_GT_LABEL = "Reconnect GT now"
 DISCONNECT_GT_LABEL = "Disconnect GT"
 OPEN_TM_SESSION_LABEL = "Open truck-mcp session…"
 RECONNECT_GT_MENU_PATH = f"Settings → {RECONNECT_GT_LABEL}"
+LOG_FOLDER_LABEL = "Log folder…"
 LOOKING_FOR_GT = "Looking for OBDX Pro GT… (plug in the USB)"
 TM_PICKER_HEADER = ("Stored sessions — not the truck; recording needs a "
                     "live GT")
@@ -401,6 +413,8 @@ class Dashboard(QWidget):
         self._auto_connect_suppressed = False
         self._shut_down = False
         self._record_tip = ""
+        # Why this recording is not in the configured log folder (or None).
+        self._rec_dir_note: Optional[str] = None
 
         root = QVBoxLayout(self)
         self.status = QLabel(LOOKING_FOR_GT)
@@ -1349,21 +1363,28 @@ class Dashboard(QWidget):
             # answered so far, so a channel that comes alive mid-drive is kept.
             avail = set(self.source.recordable_channels())
             keys = [k for k in RECORD_ORDER if k in avail]
+            dirs, dir_problem = self._record_target()
             try:
                 # The final file, in a durable folder, from the first sample:
                 # there is no temp file to move and no save dialog to cancel.
                 self._recorder = DriveRecorder(
-                    keys, RECORD_LABELS, self._record_dirs(),
+                    keys, RECORD_LABELS, dirs,
                     meta=self._recording_meta(keys))
             except Exception as e:
-                self.status.setText(f"Can't start recording: {e}")
+                self.status.setText(f"Can't start recording: {e}"
+                                    + (f" — {dir_problem}" if dir_problem
+                                       else ""))
                 return
+            self._rec_dir_note = self._log_dir_note(dir_problem,
+                                                    self._recorder.path)
             self.last_record_path = self._recorder.path
             self.source.drain()  # discard the pre-record backlog
             self.recording = True
-            self._record_tip = f"Recording to {self._recorder.path}"
+            self._record_tip = self._with_dir_note(
+                f"Recording to {self._recorder.path}", "\n")
             self._sync_controls()
-            self.status.setText(f"Recording → {self._recorder.path}")
+            self.status.setText(self._with_dir_note(
+                f"Recording → {self._recorder.path}", " — "))
             if isinstance(self.source, GtDataSource):
                 self._read_record_context(self.source, self._recorder)
         else:
@@ -1504,6 +1525,27 @@ class Dashboard(QWidget):
         return default_log_dirs(docs or None,
                                 os.path.join(data, "OpenOBD") if data else None)
 
+    def _record_target(self) -> tuple[list[str], Optional[str]]:
+        """(folders to try, problem) for the next recording: the Settings log
+        folder when set and writable, else the default folders with the
+        reason the configured one was skipped."""
+        return log_dir(configured_log_dir(), self._record_dirs())
+
+    @staticmethod
+    def _log_dir_note(problem: Optional[str], path: str) -> Optional[str]:
+        """The honest status when a recording did not land in the configured
+        folder (probe failed, or the create there failed and a default took
+        it); None when it did, or when no folder is configured."""
+        if problem:
+            return problem
+        configured = configured_log_dir()
+        if configured and not used_configured_dir(configured, path):
+            return log_dir_unavailable(configured)
+        return None
+
+    def _with_dir_note(self, text: str, sep: str) -> str:
+        return f"{self._rec_dir_note}{sep}{text}" if self._rec_dir_note else text
+
     def _finalize_record(self, interactive: bool = False):
         """Close the recording. Every caller gets the same durable result; only
         a user-initiated stop (interactive) offers to open it in Log Analysis —
@@ -1532,14 +1574,17 @@ class Dashboard(QWidget):
             self._set_record_tooltip(self._record_tip)
             self.status.setText("Nothing recorded.")
             return
-        self._record_tip = f"Last recording: {path}"
+        folder = os.path.dirname(path)
+        self._record_tip = self._with_dir_note(
+            f"Last recording: {path}\nLog folder: {folder}", "\n")
         self._set_record_tooltip(self._record_tip)
         if rec.error:
-            self.status.setText(
+            self.status.setText(self._with_dir_note(
                 f"Recording stopped on an error ({rec.error}) — {n} samples "
-                f"saved → {path}")
+                f"saved → {path}", " — "))
             return
-        self.status.setText(f"Saved {n} samples → {path}")
+        self.status.setText(self._with_dir_note(
+            f"Saved {n} samples → {path}  ·  log folder: {folder}", " — "))
         win = self.window()
         if interactive and hasattr(win, "load_log_path") and QMessageBox.question(
                 self, "Datalog saved",
@@ -1877,6 +1922,12 @@ class MainWindow(QMainWindow):
         pref.setShortcut("Ctrl+,")
         pref.triggered.connect(self._open_settings)
         s.addAction(pref)
+        self.act_log_folder = QAction(LOG_FOLDER_LABEL, self)
+        self.act_log_folder.triggered.connect(self.choose_log_folder)
+        s.addAction(self.act_log_folder)
+        self.act_log_folder_reset = QAction("Reset log folder to default", self)
+        self.act_log_folder_reset.triggered.connect(self.reset_log_folder)
+        s.addAction(self.act_log_folder_reset)
         s.addSeparator()
         # The GT connects by itself when plugged in (Dashboard auto-connect);
         # these are the manual overrides. The Dashboard is built after the
@@ -1913,6 +1964,7 @@ class MainWindow(QMainWindow):
             combo.addItem(label, key)
         combo.setCurrentIndex(max(0, combo.findData(self.dashboard.style)))
         form.addRow("Dashboard visual:", combo)
+        form.addRow("Log folder:", self._log_folder_row())
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
@@ -1929,6 +1981,94 @@ class MainWindow(QMainWindow):
                 f"Dashboard visual: {DASHBOARD_STYLES[style]} applied for "
                 f"this session, NOT SAVED (preference dashboard/style could "
                 f"not be written; see the log)", 10000)
+
+    # -- log folder (Settings → Log folder…) -------------------------------- #
+    def log_folder_text(self) -> str:
+        """The folder recordings go to, as shown in Settings: the configured
+        folder as it resolves (variables and ~ expanded), or the default
+        marked "(default)". A configured value that cannot resolve shows the
+        default it falls back to plus why, never the raw setting as if it
+        were where recordings land."""
+        defaults = self.dashboard._record_dirs()
+        default_text = (f"{defaults[0]} (default)" if defaults
+                        else "default (no Documents folder found)")
+        folder, problem = resolve_log_dir(configured_log_dir())
+        if folder:
+            return folder
+        return f"{default_text} — {problem}" if problem else default_text
+
+    def _resolved_log_folder(self) -> str:
+        """The configured log folder as it resolves, or "" when unset or
+        unusable (callers then use a default)."""
+        folder, _problem = resolve_log_dir(configured_log_dir())
+        return folder or ""
+
+    def _log_folder_row(self) -> QWidget:
+        """Preferences row: the current log folder (elided, plain text, full
+        path in the tooltip) with Change… / Reset to default, which apply
+        immediately like the Settings menu items."""
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        label = ElidedLabel(self.log_folder_text())
+        label.setObjectName("logFolderLabel")
+        label.setMinimumWidth(240)
+        change = QPushButton("Change…")
+        reset = QPushButton("Reset to default")
+
+        def on_change():
+            if self.choose_log_folder():
+                label.setText(self.log_folder_text())
+
+        def on_reset():
+            self.reset_log_folder()
+            label.setText(self.log_folder_text())
+
+        change.clicked.connect(on_change)
+        reset.clicked.connect(on_reset)
+        lay.addWidget(label, 1)
+        lay.addWidget(change)
+        lay.addWidget(reset)
+        return row
+
+    def choose_log_folder(self) -> bool:
+        """Pick the folder new recordings go to. Cancel changes nothing. The
+        folder is created if missing and must pass a real write probe (a
+        OneDrive placeholder can look writable and still refuse a file)."""
+        start = self._resolved_log_folder() or next(
+            iter(self.dashboard._record_dirs()), "")
+        chosen = QFileDialog.getExistingDirectory(self, "Log folder", start)
+        if not chosen:
+            return False
+        chosen = os.path.normpath(chosen)
+        why = probe_log_dir(chosen)
+        if why is not None:
+            QMessageBox.warning(
+                self, "Log folder",
+                f"Recordings cannot be written to:\n{chosen}\n\n{why}\n\n"
+                "The log folder is unchanged.")
+            return False
+        try:
+            write_settings(lambda st: st.setValue(LOG_DIR_KEY, chosen),
+                           self.settings, what="log folder")
+        except SettingsError as exc:
+            self.statusBar().showMessage(
+                f"Log folder NOT SAVED: {exc.reason or exc}", 8000)
+            return False
+        self.statusBar().showMessage(f"Log folder: {chosen}", 6000)
+        return True
+
+    def reset_log_folder(self) -> None:
+        """Back to the default folder (Documents\\OpenOBD\\Logs)."""
+        try:
+            write_settings(lambda st: st.remove(LOG_DIR_KEY),
+                           self.settings, what="log folder")
+        except SettingsError as exc:
+            self.statusBar().showMessage(
+                f"Log folder NOT reset: {exc.reason or exc}", 8000)
+            return
+        self.statusBar().showMessage(
+            f"Log folder: {self.log_folder_text()}", 6000)
 
     def _about(self):
         md = self.cal.metadata
@@ -2914,9 +3054,18 @@ class MainWindow(QMainWindow):
 
     def load_log(self):
         p, _ = QFileDialog.getOpenFileName(
-            self, "Load log", "", "Logs (*.csv);;All files (*)")
+            self, "Load log", self._log_browse_dir(),
+            "Logs (*.csv);;All files (*)")
         if p:
             self.load_log_path(p)
+
+    def _log_browse_dir(self) -> str:
+        """Load log opens in the folder recordings go to (the configured log
+        folder, else the default), or Qt's default when none exists yet."""
+        for d in [self._resolved_log_folder()] + self.dashboard._record_dirs():
+            if d and os.path.isdir(d):
+                return d
+        return ""
 
     def load_log_path(self, p):
         try:

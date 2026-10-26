@@ -853,3 +853,390 @@ def test_rr2_f3_session_names_in_tooltips_render_literally(env):
     head = group.header.toolTip()
     assert head.startswith("<qt>") and escaped in head and hostile not in head
     assert plain_tooltip("a & b") == "<qt>a &amp; b</qt>"
+
+
+# --------------------------------------------------------------------------- #
+# v0.39.0: Open session… (a session file from any path; never writes rows)
+# --------------------------------------------------------------------------- #
+def _outside(env, name="elsewhere", **kw):
+    """A session file outside every discovered sessions folder."""
+    folder = env.root / "picked"
+    folder.mkdir(exist_ok=True)
+    path = folder / f"{name}.tmsession.db"
+    kw.setdefault("uid", f"uid-{name}")
+    _make_session(path, **kw)
+    return path
+
+
+def test_open_file_binds_with_chip_and_note(env):
+    from openobd.livedata import OPENED_FILE_CHIP
+    _live(env)                                   # a discovered live drive
+    outside = _outside(env, ended="2026-08-21T10:30:00Z")
+    pg = env.make()
+    assert pg.open_session_file(str(outside))
+    assert pg._picker.currentIndex() == 0
+    assert pg._picker.currentText() == f"file · {outside.name}"
+    chips = pg.crumb.chips()
+    assert chips[0] == ("archived", "muted")     # from its own ended_utc
+    assert OPENED_FILE_CHIP in chips
+    assert pg.crumb.note.full_text().startswith(str(outside))
+    assert pg.crumb.note.textFormat() == pg.crumb.note.textFormat().PlainText
+    assert pg._tiles["rpm"].state == "archive"
+    assert pg.banner_text() is None
+    # Picking the discovered drive keeps its live semantics.
+    _pick(pg, env.sessions / "drive.tmsession.db")
+    assert pg.crumb.chips()[0] == ("live", "ok")
+    assert OPENED_FILE_CHIP not in pg.crumb.chips()
+
+
+def test_open_same_file_twice_reselects_it(env):
+    _session(env)
+    outside = _outside(env)
+    pg = env.make()
+    pg.open_session_file(str(outside))
+    _pick(pg, env.sessions / "drive.tmsession.db")
+    assert pg.open_session_file(str(outside))
+    texts = [pg._picker.itemText(i) for i in range(pg._picker.count())]
+    assert texts.count(f"file · {outside.name}") == 1
+    assert pg._picker.currentIndex() == 0
+
+
+def test_hold_ignored_for_an_ended_opened_file(env):
+    from openobd.livedata import OPENED_FILE_CHIP, as_of_text
+    outside = _outside(env, ended="2026-08-21T10:30:00Z")
+    pg = env.make()
+    pg.open_session_file(str(outside))
+    assert pg.crumb.chips()[0] == ("archived", "muted")
+    assert OPENED_FILE_CHIP in pg.crumb.chips()
+    assert not pg.act_hold.isEnabled()
+    pg._set_hold(True)
+    assert not pg.is_held() and not pg.act_hold.isChecked()
+    # As of the file's last sample, not the time it was opened or polled.
+    last = pg._reader.latest_ts()
+    assert last and pg._as_of == as_of_text(last)
+    assert pg.crumb.note.full_text().endswith(as_of_text(last))
+    assert "2026-08-21" in pg._as_of
+
+
+# R1 (review round 1): an opened file is treated exactly like a discovered
+# session — its state comes from its data, never from how it was found.
+def test_opened_file_still_being_written_reads_live_and_follows(env):
+    from openobd import tmstore
+    from openobd.livedata import OPENED_FILE_CHIP, as_of_text
+    outside = _outside(env)
+    _add_rpm(outside, [900, 1000])               # advancing, not ended
+    pg = env.make()
+    assert pg.open_session_file(str(outside))
+    chips = pg.crumb.chips()
+    assert chips[0] == ("live", "ok")
+    assert OPENED_FILE_CHIP in chips
+    assert pg._tiles["rpm"].state == "fresh"
+    assert pg.act_hold.isEnabled()
+    assert pg._as_of == as_of_text(pg._reader.latest_ts())
+
+    # The logger appends after the open: values and as-of follow the file.
+    stamp = _now_iso()
+    _add_rpm(outside, [3456], ts=stamp)
+    pg._tick()
+    expect = tmstore.display_state(
+        {"value_num": 3456.0, "fresh": True, "quality": "ok"},
+        pg._channel_meta["rpm"]).text
+    assert pg._tiles["rpm"].value_text() == expect
+    assert pg._as_of == as_of_text(stamp)
+    assert pg.crumb.note.full_text().endswith(as_of_text(stamp))
+
+    # Hold works while it is live, and freezes the opened file's view.
+    pg.act_hold.setChecked(True)
+    assert pg.is_held() and ("held", "warning") in pg.crumb.chips()
+    _add_rpm(outside, [4321], ts=_now_iso())
+    pg._tick()
+    assert pg._tiles["rpm"].value_text() == expect
+    assert pg._as_of == as_of_text(stamp)
+    pg.act_hold.setChecked(False)
+    assert pg._tiles["rpm"].value_text() != expect
+
+    # The logger finishes: the opened file now reads archived, Hold released.
+    pg.act_hold.setChecked(True)
+    conn = sqlite3.connect(str(outside))
+    conn.execute("UPDATE session SET ended_utc=? WHERE id=1", (_now_iso(),))
+    conn.commit()
+    conn.close()
+    pg._tick()
+    assert not pg.is_held()
+    assert pg.crumb.chips()[0] == ("archived", "muted")
+    assert not pg.act_hold.isEnabled()
+
+
+def test_opened_file_whose_logger_stopped_reads_not_advancing(env):
+    from openobd.livedata import OPENED_FILE_CHIP, as_of_text
+    outside = _outside(env)          # newest sample 2026-08-21, not ended
+    pg = env.make()
+    pg.open_session_file(str(outside))
+    chips = pg.crumb.chips()
+    assert chips[0] == ("not advancing", "warning")
+    assert OPENED_FILE_CHIP in chips
+    assert pg._tiles["rpm"].state == "stale"
+    assert pg._as_of == as_of_text(pg._reader.latest_ts())
+
+
+def test_as_of_is_the_newest_sample_for_discovered_sessions(env):
+    from openobd.livedata import as_of_text
+    path = _session(env)
+    stamp = "2026-08-21T10:20:00Z"
+    _add_rpm(path, [1234], ts=stamp)
+    pg = env.make()
+    assert pg._as_of == as_of_text(stamp)
+    pg._tick()                                   # a poll reading nothing new
+    assert pg._as_of == as_of_text(stamp)
+
+
+def test_as_of_says_no_samples_yet(env):
+    path = _session(env)
+    conn = sqlite3.connect(str(path))
+    conn.execute("UPDATE channel_latest SET ts_utc=NULL, sample_id=NULL "
+                 "WHERE channel_id > 0")
+    conn.execute("DELETE FROM sample WHERE id > 0")
+    conn.commit()
+    conn.close()
+    pg = env.make()
+    assert pg._as_of == "no samples yet"
+    assert pg.crumb.note.full_text().endswith("no samples yet")
+    assert "as of" not in pg.crumb.note.full_text()
+    # Round 2: nothing has advanced, so it never reads "live" on no evidence.
+    # Hold follows the existing rule (disabled only for archived drives).
+    assert pg.crumb.chips()[0] == ("not advancing", "warning")
+    assert pg._chart.chart.caption == "not advancing"
+    assert pg.act_hold.isEnabled() == (not pg._archived)
+    assert pg._tiles["rpm"].state != "fresh"
+
+
+def test_opened_file_with_no_samples_reads_not_advancing(env):
+    from openobd.livedata import OPENED_FILE_CHIP
+    outside = _outside(env, "empty")
+    conn = sqlite3.connect(str(outside))
+    conn.execute("UPDATE channel_latest SET ts_utc=NULL, sample_id=NULL "
+                 "WHERE channel_id > 0")
+    conn.execute("DELETE FROM sample WHERE id > 0")
+    conn.commit()
+    conn.close()
+    pg = env.make()
+    assert pg.open_session_file(str(outside))
+    chips = pg.crumb.chips()
+    assert chips[0] == ("not advancing", "warning")
+    assert OPENED_FILE_CHIP in chips
+    pg._tick()
+    assert pg.crumb.chips()[0] == ("not advancing", "warning")
+    assert pg._as_of == "no samples yet"
+
+
+def test_as_of_text_formats():
+    from openobd.livedata import as_of_text
+    assert as_of_text(None) == "no samples yet"
+    assert as_of_text("") == "no samples yet"
+    assert as_of_text("garbage") == "as of garbage"
+    old = as_of_text("2026-08-21T10:20:00Z")
+    local = datetime(2026, 8, 21, 10, 20, tzinfo=timezone.utc).astimezone()
+    assert old == f"as of {local:%Y-%m-%d %H:%M:%S}"
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    today = as_of_text(now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    assert today == f"as of {now.astimezone():%H:%M:%S}"
+
+
+# R2: an opened file that a Rescan later discovers loses the opened chip.
+def test_opened_file_later_discovered_drops_the_opened_chip(env):
+    from openobd.livedata import OPENED_FILE_CHIP
+    _session(env)
+    pg = env.make()
+    late = _session(env, "late")                 # not scanned yet
+    assert pg._picker_index_of(str(late)) < 0
+    assert pg.open_session_file(str(late))
+    assert pg._bound_opened and OPENED_FILE_CHIP in pg.crumb.chips()
+    pg.rescan_sessions()                         # now discovered
+    texts = [pg._picker.itemText(i) for i in range(pg._picker.count())]
+    assert not any(t.startswith("file · ") for t in texts)
+    assert not pg._bound_opened
+    assert OPENED_FILE_CHIP not in pg.crumb.chips()
+    assert not pg.crumb.note.full_text().startswith(str(late))
+    assert os.path.samefile(pg._picker.currentData(), late)
+    # Re-picking the same (already bound) entry keeps it unmarked.
+    pg._on_pick(pg._picker.currentIndex())
+    assert OPENED_FILE_CHIP not in pg.crumb.chips()
+
+
+# Round 2: opening a second file must not drop the first from the picker.
+def test_two_opened_files_survive_a_rescan_and_stay_bound(env):
+    from openobd.livedata import OPENED_FILE_CHIP, OPENED_ROLE
+    _session(env)
+    pg = env.make()
+    a = _outside(env, "alpha")
+    b = _outside(env, "bravo")
+    assert pg.open_session_file(str(a))
+    assert pg.open_session_file(str(b))
+    assert len(pg._opened) == 2
+    _pick(pg, a)
+    assert os.path.samefile(pg._reader_path, a)
+    _session(env, "another")                     # the session set changes
+    pg.rescan_sessions()
+    opened = [pg._picker.itemData(i) for i in range(pg._picker.count())
+              if pg._picker.itemData(i, OPENED_ROLE)]
+    assert len(opened) == 2
+    assert any(os.path.samefile(p, a) for p in opened)
+    assert any(os.path.samefile(p, b) for p in opened)
+    # Opened entries stay at the top of the picker.
+    assert all(pg._picker.itemData(i, OPENED_ROLE) for i in range(2))
+    # A is still the bound session, and the picker agrees with the reader.
+    assert os.path.samefile(pg._reader_path, a)
+    assert os.path.samefile(pg._picker.currentData(), pg._reader_path)
+    assert pg._bound_opened and OPENED_FILE_CHIP in pg.crumb.chips()
+
+
+# R4: same-file matching survives junctions, symlinks and relative paths.
+def test_same_file_relative_vs_absolute(tmp_path, monkeypatch):
+    from openobd.livedata import _same_file
+    f = tmp_path / "x.tmsession.db"
+    f.write_bytes(b"x")
+    monkeypatch.chdir(tmp_path)
+    assert _same_file("x.tmsession.db", str(f))
+    if sys.platform == "win32":  # case-insensitive filesystem only
+        assert _same_file(str(f).upper(), str(f))
+    assert not _same_file(str(tmp_path / "missing.db"), str(f))
+
+
+def test_same_file_through_a_junction(tmp_path):
+    import subprocess
+    from openobd.livedata import _same_file
+    real = tmp_path / "real"
+    real.mkdir()
+    f = real / "x.tmsession.db"
+    f.write_bytes(b"x")
+    link = tmp_path / "link"
+    if sys.platform == "win32":
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link),
+                               str(real)], capture_output=True)
+        if made.returncode != 0:
+            pytest.skip(f"cannot create a junction: {made.stderr!r}")
+    else:
+        try:
+            os.symlink(real, link, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"cannot create a symlink: {exc}")
+    via = link / "x.tmsession.db"
+    assert os.path.normcase(str(via)) != os.path.normcase(str(f))
+    assert _same_file(str(via), str(f))
+
+
+def test_open_via_junction_reselects_the_same_entry(env):
+    import subprocess
+    outside = _outside(env)
+    link = env.root / "picked-link"
+    if sys.platform == "win32":
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link),
+                               str(outside.parent)], capture_output=True)
+        if made.returncode != 0:
+            pytest.skip(f"cannot create a junction: {made.stderr!r}")
+    else:
+        pytest.skip("junctions are a Windows construct")
+    pg = env.make()
+    assert pg.open_session_file(str(outside))
+    assert pg.open_session_file(str(link / outside.name))
+    texts = [pg._picker.itemText(i) for i in range(pg._picker.count())]
+    assert texts.count(f"file · {outside.name}") == 1
+    assert len(pg.recent_files()) == 1
+
+
+def test_bad_file_shows_banner_and_keeps_previous_session(env):
+    _live(env)
+    bad = env.root / "bad.tmsession.db"
+    bad.write_bytes(b"not a database" * 64)
+    pg = env.make()
+    before = pg._reader_path
+    assert before
+    assert not pg.open_session_file(str(bad))
+    banner = pg.banner_text()
+    assert banner and banner.startswith(f"could not open {bad.name}: ")
+    assert pg._banner.property("banner") == "danger"
+    assert pg._reader_path == before and pg._reader is not None
+    pg._tick()                                   # a good poll keeps it shown
+    assert pg.banner_text() == banner
+    assert str(bad) not in pg.recent_files()
+
+
+def test_file_dialog_cancel_is_a_noop(env, monkeypatch):
+    from openobd import livedata
+    _live(env)
+    pg = env.make()
+    before = (pg._reader_path, pg._picker.count(), pg.recent_files())
+    monkeypatch.setattr(livedata.QFileDialog, "getOpenFileName",
+                        staticmethod(lambda *a, **k: ("", "")))
+    pg.act_open.trigger()
+    assert (pg._reader_path, pg._picker.count(), pg.recent_files()) == before
+    assert pg.banner_text() is None
+
+
+def test_dialog_filter_and_open_via_action(env, monkeypatch):
+    from openobd import livedata
+    outside = _outside(env)
+    pg = env.make()
+    seen = {}
+
+    def fake(parent, title, start, flt):
+        seen["filter"] = flt
+        return str(outside), flt
+    monkeypatch.setattr(livedata.QFileDialog, "getOpenFileName",
+                        staticmethod(fake))
+    pg.act_open.trigger()
+    assert seen["filter"] == ("truck-mcp session (*.tmsession.db);;"
+                              "All files (*)")
+    assert pg._bound_opened
+
+
+def test_recent_files_persisted_deduped_capped_and_pruned(env):
+    from openobd.livedata import RECENT_FILES_MAX
+    paths = [_outside(env, f"s{i}") for i in range(RECENT_FILES_MAX + 2)]
+    pg = env.make()
+    for p in paths:
+        pg.open_session_file(str(p))
+    pg.open_session_file(str(paths[0]))          # again: moves to the front
+    recent = pg.recent_files()
+    assert len(recent) == RECENT_FILES_MAX
+    assert recent[0] == os.path.normpath(str(paths[0]))
+    assert len({os.path.normcase(r) for r in recent}) == len(recent)
+    pg._rebuild_recent_menu()
+    assert [a.data() for a in pg._recent_menu.actions()] == recent
+    assert pg._open_btn.menu() is pg._recent_menu
+    # Persisted across pages; a file gone by startup is dropped.
+    gone = recent[1]
+    os.remove(gone)
+    pg2 = env.make()
+    assert pg2.recent_files() == [r for r in recent if r != gone]
+
+
+def test_rescan_keeps_opened_file_until_it_is_gone(env):
+    _session(env)
+    outside = _outside(env)
+    pg = env.make()
+    pg.open_session_file(str(outside))
+    pg.rescan_sessions()
+    assert pg._picker.itemText(0) == f"file · {outside.name}"
+    _session(env, "second")                      # set changes: full rebuild
+    pg.rescan_sessions()
+    assert pg._picker.itemText(0) == f"file · {outside.name}"
+    assert pg._bound_opened
+    pg._close_reader()
+    os.remove(outside)
+    pg.rescan_sessions()
+    assert not any(pg._picker.itemText(i).startswith("file · ")
+                   for i in range(pg._picker.count()))
+
+
+def test_opened_entry_tooltip_is_plain(env):
+    # Windows forbids <> in names; an entity in the path must stay literal.
+    folder = env.root / "a&lt;b"
+    folder.mkdir(parents=True)
+    path = folder / "x.tmsession.db"
+    _make_session(path, uid="uid-x")
+    pg = env.make()
+    pg.open_session_file(str(path))
+    from PySide6.QtCore import Qt
+    tip = pg._picker.itemData(0, Qt.ToolTipRole)
+    assert "&amp;lt;b" in tip and tip.startswith("<qt>")
