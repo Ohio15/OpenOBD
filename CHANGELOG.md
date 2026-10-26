@@ -3,6 +3,95 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.36.0 — 2026-10-26
+
+### Changed (Diagnostics tab UX overhaul; cues from GM GDS2 / Tech2, HP Tuners VCM Scanner, Autel / Snap-on)
+- **Shared chrome.** Both Diagnostics sub-tabs carry the Tuning breadcrumb
+  ("Diagnostics › Module Map", "Diagnostics › Codes & Readiness") with chips
+  and a muted note, and one 36 px toolbar with vector glyph icons (the emoji
+  buttons are gone). F5 runs the sub-tab's primary action (Scan Modules /
+  Read Codes); Ctrl+F focuses the code search, Esc clears it. While a GT job
+  runs every job-starting action is disabled and a "Scanning…" /
+  "Reading…" chip shows — one job at a time, so a scan and a read can no
+  longer race for the same result handler.
+- **Module Map.** Chips for DLC voltage, modules responding, not examined
+  and "fault at: <segment/module>"; the legend is a row under the header;
+  hover a module for name, status, bus, request/response ids and role. A
+  module card (title + status chip, Bus / Role / Diagnostic address, a
+  collapsible "Scan notes" list) replaces the plain text box, with an empty
+  state before the first scan. Scan errors and the GT binary-mode advice are
+  an inline danger banner; the failed-segment marker is drawn as a vector
+  triangle.
+- **Codes & Readiness.** DTCs are a tree grouped Stored / Pending /
+  Permanent with counts (Stored open by default, plus any group holding an
+  unknown), columns Code | Description | Module | Status, status as chips.
+  Not-examined and incomplete rows keep their exact wording and stay muted
+  italic with their own glyph; "No trouble codes" is still only said when
+  every kind was examined. Module comes from the responder id; a code with
+  no local description says so. Search filters code, description and module;
+  Copy codes puts the visible rows on the clipboard as TSV. Readiness is a
+  tile grid with Ready / Not ready chips and an "n/m ready" summary. MIL ON
+  is a danger banner, MIL not examined a muted one; a link error is an
+  inline banner instead of a dialog (the two Clear-codes outcome dialogs
+  stay).
+- **Layout.** Map/card and codes/readiness splitter positions persist under
+  `diag/`; the Diagnostics page's minimum width stays under 700 px.
+
+### Fixed (review round 1 + security gate pass 1)
+- A result handler that raised (scan or codes) left the page busy forever
+  with every action disabled and F5 dead. The busy state is now restored
+  before the scan result is applied and again in a `finally`; the exception
+  text is shown as an inline danger banner.
+- Clear Codes captures the clear, the DTC re-read and the readiness re-read
+  separately. A re-read that fails after the ECM accepted the clear no
+  longer hides the clear outcome or leaves the pre-clear rows standing as
+  current: the table shows not-examined rows and the banner names the failed
+  step ("Clear confirmed by 7E8; codes re-read failed: …").
+- The codes table and chips are refreshed before any Clear-codes outcome
+  dialog opens, with the job still marked busy until they are, so the table
+  is current while the modal is up and a Read cannot be overwritten by
+  older data.
+- Before a scan every module on the map is "unknown"; single-wire modules
+  were painted "unreachable via this path" with no scan having run.
+- Map hit-testing (click, tooltip) uses the layout for the current widget
+  size instead of the last paint's, so it is right straight after a resize.
+- An empty `incomplete` entry for a DTC kind no longer marks that kind
+  "incomplete".
+- Empty-state labels are plain text, so GT error text placed in them (e.g.
+  "Readiness not examined — …") can never render as rich text.
+- `GtJob` itself refuses a second job while one is running ("another GT
+  job is still running"), so one-job-at-a-time no longer depends only on the
+  Diagnostics page's own busy flag.
+
+### Fixed (review round 2)
+- If the GT worker thread could not be started (e.g. "can't start new
+  thread"), the error escaped the slot without a result and the page stayed
+  busy forever. The start failure now releases the link and is delivered as
+  the job's result, so it shows as a banner with every action re-enabled; the
+  worker delivers a result for every outcome, including a non-`Exception`
+  raise.
+- A job error with an empty message (e.g. `TimeoutError()`) shows the
+  exception type instead of a blank reason.
+- A "another GT job is still running" refusal no longer paints every module
+  failed ("Scan failed at the tool link"); it shows a warning banner and
+  leaves the map and codes as they were.
+- A failed codes read no longer says "Codes read at HH:MM:SS"; the note says
+  "Codes not read — <why>" until a read succeeds.
+- If showing the re-read after a clear fails, the banner still carries the
+  clear outcome ("Clear confirmed by 7E8. Couldn't show the result: …").
+- If the clear request itself raised, the banner says "Clear outcome
+  unknown — the ECM may have acted: …" instead of implying nothing changed.
+- Module-map nodes never get a negative width at narrow sizes (they could
+  invert and become unclickable); minimum 24 px.
+- The page stays busy while a Clear-codes outcome dialog is open, so no job
+  can start underneath it (the busy flag was being cleared before the
+  dialogs, contradicting the code's own comment).
+- When a Diagnostics job opened its own GT link and closing that link failed
+  after the job had run, the close error replaced the result, so a confirmed
+  clear was reported as "Couldn't reach the truck". The result is kept (a
+  dict result gets a `link_close_error` note and the failure is logged); a
+  close failure after a job that raised never masks the job's own error.
+
 ## 0.35.0 — 2026-10-26
 
 ### Changed (Tuning tab UX overhaul; cues from HP Tuners VCM Editor, EFILive, TunerStudio)

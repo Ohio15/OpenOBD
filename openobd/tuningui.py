@@ -6,11 +6,13 @@ tuningui — the Tuning workspace's building blocks.
   Breadcrumb       header above each sub-tab: "Category › Table", chips, note
   ElidedLabel      single-line label that elides instead of widening its
                    parent (keeps the Tuning page under 1000 px)
-  CollapsiblePanel the editor's right-hand "Log overlay" panel
+  CollapsiblePanel the editor's right-hand "Log overlay" panel (and the
+                   Diagnostics module card's "Scan notes")
   ScalarsTree      grouped, filterable, editable scalar parameters
   ChannelTree      Log Analysis channels grouped Engine / Fuel / Spark / ...
   CursorReadout    each plotted channel's value at the chart cursor
-  ChipDelegate     the scalars Δ column drawn as a chip
+  ChipDelegate     a cell drawn as a chip (scalars Δ, Diagnostics status)
+  make_toolbar     the 36 px workspace toolbar (Tuning and Diagnostics)
 
 Every colour, height and spacing comes from openobd.theme; the widgets set
 objectNames / the dynamic "chip" property and the Tuning root carries
@@ -26,12 +28,14 @@ from PySide6.QtCore import (
     QEvent, QRectF, QSize, QSortFilterProxyModel, Qt, QTimer,
     Signal,
 )
-from PySide6.QtGui import QFont, QPainter, QStandardItem, QStandardItemModel
+from PySide6.QtGui import (
+    QFont, QPainter, QPen, QStandardItem, QStandardItemModel,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QSizePolicy, QStyle, QStyledItemDelegate, QTableView, QTableWidget, QTableWidgetItem,
-    QToolButton, QTreeView, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
-    QWidget,
+    QToolBar, QToolButton, QTreeView, QTreeWidget, QTreeWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from . import theme
@@ -54,10 +58,25 @@ def repolish(widget: QWidget) -> None:
 
 
 def set_chip(label: QLabel, kind: str) -> None:
-    """kind: neutral | danger | accent | muted (theme.chip_qss)."""
+    """kind: neutral | danger | warning | accent | muted | ok
+    (theme.chip_qss)."""
     if label.property("chip") != kind:
         label.setProperty("chip", kind)
         repolish(label)
+
+
+def make_toolbar(object_name: str = "tuningToolbar") -> QToolBar:
+    """The 36 px toolbar every workspace sub-tab uses (theme.toolbar_qss).
+    Actions that do not fit go to the toolbar's overflow menu, so the
+    toolbar never sets the page's minimum width."""
+    tb = QToolBar()
+    tb.setObjectName(object_name)
+    tb.setMovable(False)
+    tb.setFloatable(False)
+    tb.setIconSize(QSize(theme.ICON_SIZE, theme.ICON_SIZE))
+    tb.setFixedHeight(theme.TOOLBAR_HEIGHT)
+    tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+    return tb
 
 
 def table_category(table) -> str:
@@ -132,9 +151,15 @@ class ElidedLabel(QLabel):
 # --------------------------------------------------------------------------- #
 class Breadcrumb(QFrame):
     """'Category › Table' in bold, chips on the right, the note muted below.
-    The same fixed height on every Tuning sub-tab."""
+    The same fixed height on every Tuning / Diagnostics sub-tab.
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    elastic_chips: the chip row may shrink below its natural width (chips
+    clip on a very narrow window) instead of setting the page's minimum
+    width. Diagnostics uses it: its chips spell out "not examined" per kind
+    and must never be shortened to fit."""
+
+    def __init__(self, parent: Optional[QWidget] = None,
+                 elastic_chips: bool = False):
         super().__init__(parent)
         self.setObjectName("breadcrumb")
         self.setFixedHeight(theme.BREADCRUMB_HEIGHT)
@@ -149,7 +174,14 @@ class Breadcrumb(QFrame):
         row.addWidget(self.title, 1)
         self._chip_row = QHBoxLayout()
         self._chip_row.setSpacing(theme.SPACING["sm"])
-        row.addLayout(self._chip_row)
+        if elastic_chips:
+            box = QWidget()
+            self._chip_row.setContentsMargins(0, 0, 0, 0)
+            box.setLayout(self._chip_row)
+            box.setMinimumWidth(1)
+            row.addWidget(box)
+        else:
+            row.addLayout(self._chip_row)
         lay.addLayout(row)
         self.note = ElidedLabel()
         self.note.setObjectName("breadcrumbNote")
@@ -487,7 +519,11 @@ class CollapsiblePanel(QWidget):
     toggled = Signal(bool)
 
     def __init__(self, title: str, body: QWidget, expanded: bool = False,
-                 body_width: int = 230, parent: Optional[QWidget] = None):
+                 body_width: Optional[int] = 230,
+                 parent: Optional[QWidget] = None,
+                 align: Qt.AlignmentFlag = Qt.AlignRight):
+        """body_width None lets the body follow the panel's width (an inline
+        section rather than a fixed side panel); align places the toggle."""
         super().__init__(parent)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -499,10 +535,11 @@ class CollapsiblePanel(QWidget):
         self.toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.toggle.setToolTip(f"Show / hide {title}")
         self.toggle.toggled.connect(self._on_toggle)
-        lay.addWidget(self.toggle, 0, Qt.AlignRight)
+        lay.addWidget(self.toggle, 0, align)
         self.frame = QFrame()
         self.frame.setObjectName("overlayPanel")
-        self.frame.setFixedWidth(body_width)
+        if body_width is not None:
+            self.frame.setFixedWidth(body_width)
         fl = QVBoxLayout(self.frame)
         fl.setContentsMargins(theme.SPACING["md"], theme.SPACING["md"],
                               theme.SPACING["md"], theme.SPACING["md"])
@@ -528,8 +565,26 @@ class CollapsiblePanel(QWidget):
 # --------------------------------------------------------------------------- #
 # Scalars
 # --------------------------------------------------------------------------- #
+#: Item-data role holding a cell's chip kind for ChipDelegate (absent =
+#: danger, the scalars Δ).
+CHIP_KIND_ROLE = Qt.UserRole + 40
+
+#: chip kind -> (border, fill, text) colour tokens; the same pairs as
+#: theme.chip_qss so a painted chip matches a QLabel chip.
+CHIP_PAINT = {
+    "danger": ("danger", "danger-surface", "danger-text"),
+    "warning": ("warning", "warning-surface", "warning-text"),
+    "ok": ("ok", "ok-surface", "ok-text"),
+    "muted": ("border", "surface-sunken", "text-muted"),
+    "neutral": ("border", "surface-raised", "text"),
+    "accent": ("accent", "surface-raised", "link"),
+}
+
+
 class ChipDelegate(QStyledItemDelegate):
-    """Draws a non-empty cell as a rounded danger chip (the scalars Δ)."""
+    """Draws a non-empty cell as a rounded chip: danger by default (the
+    scalars Δ), or the kind in the cell's CHIP_KIND_ROLE. A muted chip has a
+    dashed border, like the QLabel chip."""
 
     def paint(self, painter, option, index):
         text = index.data(Qt.DisplayRole)
@@ -546,12 +601,20 @@ class ChipDelegate(QStyledItemDelegate):
         h = min(option.rect.height() - 4, fm.height() + 2)
         r = QRectF(option.rect.x() + 2, option.rect.center().y() - h / 2,
                    w, h)
+        kind = index.data(CHIP_KIND_ROLE) or "danger"
+        border, fill, fg = CHIP_PAINT.get(kind, CHIP_PAINT["danger"])
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(theme.qcolor("danger"))
-        painter.setBrush(theme.qcolor("danger-surface"))
+        pen = QPen(theme.qcolor(border))
+        if kind == "muted":
+            pen.setStyle(Qt.DashLine)
+        painter.setPen(pen)
+        painter.setBrush(theme.qcolor(fill))
         painter.drawRoundedRect(r, theme.RADIUS["md"], theme.RADIUS["md"])
-        painter.setPen(theme.qcolor("danger-text"))
+        font = index.data(Qt.FontRole)
+        if font is not None:
+            painter.setFont(font)
+        painter.setPen(theme.qcolor(fg))
         painter.drawText(r, int(Qt.AlignCenter), text)
         painter.restore()
 
@@ -886,6 +949,9 @@ class CursorReadout(QTableWidget):
 
 def empty_state_label(text: str) -> QLabel:
     lab = QLabel(text)
+    # Callers append device / GT error text later via setText: never let a
+    # reply's markup render as rich text.
+    lab.setTextFormat(Qt.PlainText)
     lab.setObjectName("emptyState")
     lab.setAlignment(Qt.AlignCenter)
     lab.setWordWrap(True)
