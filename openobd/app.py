@@ -220,6 +220,7 @@ GT_RETRY_BACKOFF_S = (5.0, 15.0, 30.0)
 GT_DETECTED_HINT = ("· OBDX Pro GT detected — Settings → Reconnect GT now "
                     "to switch")
 REPLAY_RECORD_REASON = "Recording needs a live GT; this is a replay."
+GT_OPEN_HUNG = "previous GT open still hung; waiting for it to return"
 #: Menu items the Dashboard's instructions name (MainWindow builds them).
 RECONNECT_GT_LABEL = "Reconnect GT now"
 DISCONNECT_GT_LABEL = "Disconnect GT"
@@ -371,6 +372,12 @@ class Dashboard(QWidget):
         self._fail_count = 0
         self._retry_at: Optional[float] = None
         self._gt_port: Optional[str] = None      # last port the scan saw
+        # The latest connect worker; a new connect waits while it is alive.
+        self._connect_thread: Optional[threading.Thread] = None
+        # The recording-start read in flight: (thread, result box); the
+        # result applied last, so the queued signal never applies it twice.
+        self._ctx_worker = None
+        self._ctx_applied = None
         self._connect_watchdog = QTimer(self)
         self._connect_watchdog.setSingleShot(True)
         self._connect_watchdog.setInterval(connect_timeout_ms)
@@ -715,9 +722,24 @@ class Dashboard(QWidget):
             except Exception:
                 pass
         if self.recording:
+            self._await_record_context()
             self._finalize_record()
             return True
         return False
+
+    def _await_record_context(self) -> None:
+        """Wait (bounded) for the recording-start read still in flight and
+        apply its result to the open recording, so it never lands on a
+        finalized one. The source is already stopped: GtDataSource.stop()
+        leaves the port to that worker until it releases the IO lock."""
+        pending, self._ctx_worker = self._ctx_worker, None
+        if pending is None:
+            return
+        thread, box = pending
+        thread.join(timeout=3.0)
+        payload = box.get("payload")
+        if payload is not None:
+            self._on_record_context(payload)
 
     def _teardown_source(self):
         """Stop and drop the current source. Always called before a new one is
@@ -730,6 +752,10 @@ class Dashboard(QWidget):
         self._sync_controls()
 
     def bind_source(self, source: DataSource):
+        if self._gt_connecting:
+            # The user chose this source while a GT was opening: that connect
+            # is cancelled, its result released and its failure ignored.
+            self._cancel_connect()
         self._teardown_source()
         self._bind_epoch += 1
         self.source = source
@@ -929,8 +955,9 @@ class Dashboard(QWidget):
         stands in the way unless: a connect is in flight, a GT is live, the
         user bound a log/session (then only the 'detected' hint shows), a
         Disconnect is in force, or a failed open's backoff has not run
-        out."""
-        if self._shut_down or self._gt_connecting or self._gt_live():
+        out. Port presence is checked even while a connect is in flight, so
+        an unplug mid-open cancels it and resets the backoff."""
+        if self._shut_down or self._gt_live():
             return
         provider = self._ports_provider or detect_gt_ports
         try:
@@ -942,8 +969,11 @@ class Dashboard(QWidget):
         self._gt_port = ports[0] if ports else None
         user_bound = self._user_source_bound()
         if not ports:
-            # Unplugged: a deliberate Disconnect and any retry backoff end
-            # here, so the next plug-in connects at once.
+            # Unplugged: a deliberate Disconnect, any retry backoff and a
+            # connect still opening end here, so the next plug-in connects
+            # at once (a hung worker still blocks it; see connect_gt).
+            if self._gt_connecting:
+                self._cancel_connect()
             self._auto_connect_suppressed = False
             self._reset_retry()
             self._set_detected_hint(False)
@@ -953,7 +983,7 @@ class Dashboard(QWidget):
         if user_bound:
             self._set_detected_hint(True)
             return
-        if self._auto_connect_suppressed:
+        if self._gt_connecting or self._auto_connect_suppressed:
             return
         if self._retry_at is not None and self._now() < self._retry_at:
             return
@@ -1020,6 +1050,15 @@ class Dashboard(QWidget):
             if not auto:
                 self.status.setText("Already connecting to the OBDX Pro GT…")
             return
+        worker_thread = self._connect_thread
+        if worker_thread is not None and worker_thread.is_alive():
+            # A timed-out or cancelled open has not returned (a hung OS
+            # open): starting another would pile up blocked workers. Its
+            # result is released through the stale-token path when it
+            # returns; every scan tick checks again.
+            if self.status.text() != GT_OPEN_HUNG:
+                self.status.setText(GT_OPEN_HUNG)
+            return
         self._connect_id += 1
         cid = self._connect_id
         self._gt_connecting = True
@@ -1047,7 +1086,9 @@ class Dashboard(QWidget):
             except RuntimeError:
                 src.stop()
 
-        threading.Thread(target=worker, name="gt-connect", daemon=True).start()
+        self._connect_thread = threading.Thread(target=worker,
+                                                name="gt-connect", daemon=True)
+        self._connect_thread.start()
 
     @staticmethod
     def _release_off_thread(src) -> None:
@@ -1138,7 +1179,11 @@ class Dashboard(QWidget):
 
     def _connect_failed(self, msg: str) -> None:
         """A failed open: schedule the retry (GT_RETRY_BACKOFF_S) and show
-        ONE stable status line that later identical failures don't rewrite."""
+        ONE stable status line that later identical failures don't rewrite.
+        Not for a connect the user superseded by binding a log/session: their
+        status line stays and no backoff accrues."""
+        if self._user_source_bound():
+            return
         self._fail_count += 1
         delay = GT_RETRY_BACKOFF_S[min(self._fail_count,
                                        len(GT_RETRY_BACKOFF_S)) - 1]
@@ -1334,15 +1379,23 @@ class Dashboard(QWidget):
                 why = f"{type(exc).__name__}: {exc}"
                 ctx = {"identity": {"examined": False, "why": why},
                        "dtcs_at_start": {"examined": False, "error": why}}
+            payload = (src, rec, ctx)
+            box["payload"] = payload
             try:
-                self.record_ctx_ready.emit((src, rec, ctx))
+                self.record_ctx_ready.emit(payload)
             except RuntimeError:
                 pass   # widget destroyed meanwhile; the file stays valid
 
-        threading.Thread(target=worker, name="gt-record-ctx",
-                         daemon=True).start()
+        box: dict = {}
+        thread = threading.Thread(target=worker, name="gt-record-ctx",
+                                  daemon=True)
+        self._ctx_worker = (thread, box)
+        thread.start()
 
     def _on_record_context(self, payload) -> None:
+        if payload is self._ctx_applied:
+            return              # already applied by _await_record_context
+        self._ctx_applied = payload
         src, rec, ctx = payload
         ident = ctx.get("identity") or {}
         vin_entry = ident.get("vin") or {}

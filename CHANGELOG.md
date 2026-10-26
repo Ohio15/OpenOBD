@@ -56,7 +56,16 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   BEFORE stopping the source, and GtDataSource.stop() joins the poll thread
   for up to 3 s while it keeps publishing; those samples never reached the
   CSV. The source now stops first, then the final drain and close run
-  (`Dashboard._halt_source`).
+  (`Dashboard._halt_source`). A recording-start vehicle read still in
+  flight is waited for (up to 3 s) and written into the recording before it
+  closes. GtDataSource.stop() never closes the port under a run_exclusive
+  holder: if the IO lock is not free within its bounded wait, the holder
+  closes the port as it lets go.
+- A connect worker that is still blocked after the watchdog fired holds off
+  any new connect ("previous GT open still hung; waiting for it to
+  return"), so hung opens never pile up. Unplugging during a connect cancels
+  it and resets the backoff; binding a log or session cancels a connect in
+  flight, and its failure or timeout never touches that source's status.
 - Tests: `tests/test_dashboard_controls.py` (fake ports provider, fake GT
   factory, hand-driven scan ticks, virtual clock); `tests/conftest.py` makes
   the default ports provider report no GT so no test can open real hardware;

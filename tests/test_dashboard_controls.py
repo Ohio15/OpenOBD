@@ -209,16 +209,15 @@ def test_auto_connect_fires_when_the_gt_appears_and_not_before(rig):
     assert ports.calls == looked and len(factory.built) == 1
 
 
-def test_no_scan_while_a_connect_is_in_flight(rig):
+def test_no_second_connect_while_one_is_in_flight(rig):
     d, ports, factory = rig.d, rig.ports, rig.factory
     factory.gate = threading.Event()
     ports.present = ["COM7"]
     d._scan_for_gt()
     assert d._gt_connecting
-    looked = ports.calls
-    d._scan_for_gt()
+    d._scan_for_gt()                       # presence checked, no new open
     d.connect_gt(auto=True)                          # a second open: refused
-    assert ports.calls == looked
+    assert factory.attempts == 1
     factory.gate.set()
     _settle(rig.app)
     assert len(factory.built) == 1 and d._gt_live()
@@ -382,12 +381,143 @@ def test_manual_connect_dropped_when_another_source_is_bound_meanwhile(rig):
     factory.gate = threading.Event()
     d.connect_gt()                                   # manual
     store = StoreSource()
-    d.bind_source(store)
+    d.bind_source(store)                             # cancels the connect
+    assert not d._gt_connecting
+    bound_line = d.status.text()
     factory.gate.set()
     _settle(rig.app)
     assert d.source is store and factory.built[0].stopped
-    assert "released, not bound" in d.status.text()
+    assert d.status.text() == bound_line             # their status stands
+
+
+# --------------------------------------------------------------------------- #
+# review round 2
+# --------------------------------------------------------------------------- #
+def test_a_hung_open_blocks_new_workers_until_it_returns(rig):
+    from openobd.app import GT_OPEN_HUNG
+    d, ports, factory, clock = rig.d, rig.ports, rig.factory, rig.clock
+    factory.gate = threading.Event()                 # the OS open hangs
+    ports.present = ["COM7"]
+    d._scan_for_gt()
+    d._connect_watchdog.timeout.emit()               # 20 s on test time
+    assert not d._gt_connecting and d._fail_count == 1
+    for _ in range(40):                              # 80 s of 2 s ticks
+        clock.now += 2.0
+        d._scan_for_gt()
+    assert factory.attempts == 1                     # no second worker
+    assert sum(1 for t in threading.enumerate() if t.name == "gt-connect") == 1
+    assert d.status.text() == GT_OPEN_HUNG
+    factory.gate.set()                               # the open returns late
+    _settle(rig.app)
+    assert d.source is None and factory.built[0].stopped
+    factory.gate = None
+    d._scan_for_gt()                                 # scanning resumes
+    _settle(rig.app)
+    assert factory.attempts == 2 and d._gt_live()
+
+
+def test_unplug_during_a_connect_cancels_it_and_resets_the_backoff(rig):
+    d, ports, factory, clock = rig.d, rig.ports, rig.factory, rig.clock
+    factory.fail_next = "Access is denied"
+    ports.present = ["COM7"]
+    d._scan_for_gt()
+    _settle(rig.app)
+    assert d._fail_count == 1
+    clock.now += 6.0
+    factory.gate = threading.Event()
+    d._scan_for_gt()                                 # retry, opening...
+    assert d._gt_connecting
+    ports.present = []                               # ...unplugged
+    d._scan_for_gt()
     assert not d._gt_connecting
+    assert d._fail_count == 0 and d._retry_at is None
+    factory.gate.set()
+    _settle(rig.app)
+    assert d.source is None and factory.built[0].stopped
+    factory.gate = None
+    ports.present = ["COM7"]                         # replug: no backoff
+    d._scan_for_gt()
+    _settle(rig.app)
+    assert d._gt_live() and factory.attempts == 3
+
+
+def test_a_superseded_connect_never_touches_the_replay_status(rig):
+    d, factory = rig.d, rig.factory
+    factory.gate = threading.Event()
+    d.reconnect_gt_now()                             # manual connect
+    d.bind_source(ReplaySource())                    # user loads a replay
+    replay_line = d.status.text()
+    d._connect_watchdog.timeout.emit()
+    d._connect_failed("late failure")                # and a stray failure
+    assert d.status.text() == replay_line
+    assert d._fail_count == 0 and d._retry_at is None
+    factory.gate.set()
+    _settle(rig.app)
+    assert isinstance(d.source, ReplaySource)
+    assert d.status.text() == replay_line
+
+
+def test_stop_never_closes_the_port_under_a_lock_holder():
+    closes = []
+    src = GtDataSource(port="COM5")
+    src._gt = SimpleNamespace(close=lambda: closes.append(1), supported=set(),
+                              port_name="COM5")
+    src.stop_lock_wait_s = 0.05            # bounded wait, kept short here
+    entered, release = threading.Event(), threading.Event()
+
+    def held(_gt):
+        entered.set()
+        release.wait(5.0)
+        assert closes == [], "port closed underneath the lock holder"
+
+    worker = threading.Thread(target=src.run_exclusive, args=(held,))
+    worker.start()
+    assert entered.wait(5.0)
+    src.stop()                                       # times out on the lock
+    assert closes == [] and src._closing
+    release.set()
+    worker.join(5.0)
+    assert closes == [1]                             # closed on release
+
+
+class CtxGt(FakeGt):
+    """The recording-start read is still running when the user stops."""
+    VIN = "3GCRKTE35AG150432"
+
+    def __init__(self):
+        super().__init__()
+        self.stopping = threading.Event()
+
+    def read_recording_context(self):
+        self.stopping.wait(5.0)
+        return {"epoch": self.link[0],
+                "identity": {"examined": True,
+                             "vin": {"examined": True, "value": self.VIN}},
+                "dtcs_at_start": {"examined": True, "codes": []}}
+
+    def stop(self):
+        self.stopping.set()
+        super().stop()
+
+
+def test_stop_waits_for_the_recording_start_read_before_finalizing(rig):
+    from openobd.recorder import read_meta
+    d, ports, factory = rig.d, rig.ports, rig.factory
+    factory.cls = CtxGt
+    ports.present = ["COM7"]
+    d._scan_for_gt()
+    _settle(rig.app)
+    src = d.source
+    d.toggle_record()
+    path = d.last_record_path
+    src.feed(1.0, rpm=700.0)
+    d._tick()
+    d.stop()
+    meta = read_meta(path)
+    assert meta["vehicle"]["vin"]["value"] == CtxGt.VIN   # not "stopped before"
+    assert meta["dtcs_at_start"]["examined"] is True
+    rig.app.processEvents()                  # the queued signal: no reapply
+    assert read_meta(path)["vehicle"]["vin"]["value"] == CtxGt.VIN
 
 
 def test_disconnect_suppresses_until_the_port_goes_away_and_comes_back(rig):
