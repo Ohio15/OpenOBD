@@ -1149,10 +1149,10 @@ def test_tampered_splitter_state_falls_back(qapp, tmp_path, bad):
     from PySide6.QtWidgets import QSplitter
     from openobd.diagui import CODES_SPLIT_KEY, MAP_SPLIT_KEY, DiagnosticsPage
     from openobd.tuningui import restore_splitter_state
+    from openobd.appsettings import write_settings
     settings = ini(tmp_path, "tampered.ini")
-    settings.setValue(MAP_SPLIT_KEY, bad)
-    settings.setValue(CODES_SPLIT_KEY, bad)
-    settings.sync()
+    write_settings(lambda st: (st.setValue(MAP_SPLIT_KEY, bad),
+                               st.setValue(CODES_SPLIT_KEY, bad)), settings)
     p = DiagnosticsPage(None, ini(tmp_path, "tampered.ini"))
     assert len(p.map_split.sizes()) == 2
     assert len(p.codes_split.sizes()) == 2

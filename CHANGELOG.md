@@ -51,6 +51,66 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
 - Settings shows the log folder as it resolves (variables expanded), and an
   unusable setting shows the default folder plus why; Log folder… starts in
   the resolved folder.
+- The log folder setting and Live Data's recent-files list are written
+  through the checked settings writer from 0.38.2 (retried, and "NOT SAVED"
+  in the status line if the store refuses), never a bare QSettings write.
+
+## 0.38.2 — 2026-10-26
+
+### Fixed (transient Windows write failures lost settings silently; brain 8d13ce7f, found in 129af1c0)
+- **Settings writes are checked and retried.** Every QSettings write in
+  OpenOBD now goes through `appsettings.write_settings` (UI preferences
+  through `save_pref`): a FRESH QSettings per attempt, the change re-applied,
+  `status()` checked after `sync()`, and a transient `AccessError` (Defender or
+  the Search indexer holding the INI; about 1 sync in 75 on paxson) retried up
+  to 5 times with a short backoff. Qt 6.11 cannot be left to retry it itself:
+  `QSettings::sync()` clears its pending flag even on failure, a store that was
+  empty drops the unsaved change when its last QSettings is destroyed, and
+  `status()` never returns to NoError on the same object (rationale in
+  `openobd/appsettings.py`).
+- **The pedal calibration is never claimed saved when it was not.**
+  `save_pedal_cal` raises `SettingsWriteError` after the retries; the
+  Dashboard's status line says so, the recording's
+  `pedal_calibration.persistence` reads "NOT SAVED (...)", and Learn reports
+  "NOT stored" without applying the value.
+- **"Store unreadable" is no longer "none stored".** `load_pedal_cal` raises
+  `SettingsReadError` when the store reports an error (retrying a transient
+  one), so `try_load_pedal_cal` returns the error and Learn neither merges with
+  nothing nor saves over the real stored value (the never-loosen invariant).
+- **Recording metadata rewrite retries a transient replace.** The atomic
+  `.meta.json` rewrite retries `os.replace` up to 4 times on a
+  `PermissionError` with winerror 5 / 32 only; any other error still fails at
+  once and is reported in `meta_error`, the old document intact.
+- **A value reported NOT SAVED can no longer reach disk later.** Probed on
+  Qt 6.11.2: on a non-empty store the rejected change stays pending in Qt's
+  parked QConfFile and the next successful write to that file, of any key,
+  wrote it too. On a final failure `write_settings` now puts every key the
+  change touched back to its loaded value (or removes it when it did not
+  exist), and an attempt whose store failed to load no longer applies the
+  change onto its empty view. A change that raises part-way is undone the
+  same way.
+- **A preference that was not saved is surfaced, once.** `save_pref` reports a
+  final failure through one hook (`appsettings.set_on_pref_write_failed`),
+  rate-limited to one notice per key per 5 s, which the main window shows as
+  "Preference not saved: <key> — <reason>" in the status bar, so every call
+  site (splitters, recent tables, collapsed groups, layout, span, show mode,
+  overlay panel, notes) reports it without checking the return value. The
+  Settings dialog's dashboard visual says "NOT SAVED" when its preference was
+  not written instead of confirming it.
+- **Learn and the live GT share one pedal-calibration save path**
+  (`Dashboard._store_pedal_cal`): a failed Learn save now also marks the
+  connection NOT SAVED, so the recording's `pedal_calibration.persistence`
+  no longer claims "settings pedal_cal/<VIN>" after it. Only a
+  `SettingsError` counts as a save failure; any other exception is a defect
+  and propagates.
+- Tests: `tests/test_settings_persistence.py` injects the failures through the
+  real dependencies (a read-only INI, an exclusively opened INI, a held replace
+  target) and pins the Qt behaviours the fix relies on, including the replay
+  of a rejected change. A source scan (SC-01) fails on any `QSettings(...)`
+  construction or bare `.setValue` / `.remove` / `.sync` on a settings object
+  outside `openobd/appsettings.py`.
+- Known debt (brain commitment 7dec9d41): a persistently failing write still
+  blocks the GUI thread for about 0.37 s of retry backoff.
 
 ## 0.38.1 — 2026-10-26
 

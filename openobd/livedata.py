@@ -59,7 +59,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtWidgets import QFileDialog
 
 from . import chanlayout, theme, tmstore
-from .appsettings import app_settings
+from .appsettings import app_settings, save_pref
 from .chanlayout import ChannelLayout
 from .stripchart import ChartPane, channel_mime, chartable_names, fmt_value
 from .tmstore import TmSessionReader, TmSessionError
@@ -590,8 +590,7 @@ class LiveDataPage(QWidget):
         return load_recent_files(self._settings)
 
     def _save_recent_files(self, files: list[str]):
-        self._settings.setValue(RECENT_FILES_KEY, files[:RECENT_FILES_MAX])
-        self._settings.sync()
+        save_pref(self._settings, RECENT_FILES_KEY, files[:RECENT_FILES_MAX])
 
     def _prune_recent_files(self):
         """Startup check: drop recent files that no longer exist."""
@@ -729,7 +728,7 @@ class LiveDataPage(QWidget):
         self._rescan.stop()
 
     def save_state(self):
-        self._settings.setValue(SPLIT_KEY, self._split.saveState())
+        save_pref(self._settings, SPLIT_KEY, self._split.saveState())
 
     def _restore_split(self, state) -> bool:
         """Restore the splitter from a QSettings value. The INI is user-
@@ -1049,11 +1048,9 @@ class LiveDataPage(QWidget):
             self._collapsed.add(name)
         else:
             self._collapsed.discard(name)
-        if self._collapsed:
-            self._settings.setValue(GROUPS_KEY,
-                                    json.dumps(sorted(self._collapsed)))
-        else:
-            self._settings.remove(GROUPS_KEY)
+        save_pref(self._settings, GROUPS_KEY,
+                  json.dumps(sorted(self._collapsed))
+                  if self._collapsed else None)
 
     def _clear_tiles(self):
         for tile in self._tiles.values():
@@ -1100,7 +1097,8 @@ class LiveDataPage(QWidget):
         archived "All" must not leak into every live session's window)."""
         if self._archived:
             return
-        self._settings.setValue(SPAN_KEY, self._chart.span_combo.itemText(idx))
+        save_pref(self._settings, SPAN_KEY,
+                  self._chart.span_combo.itemText(idx))
 
     # -- hold ------------------------------------------------------------------ #
     def is_held(self) -> bool:
@@ -1173,11 +1171,9 @@ class LiveDataPage(QWidget):
             self._tick()
 
     def _save_layout(self):
-        if self._layout.is_default():
-            self._settings.remove(chanlayout.SETTINGS_KEY)
-        else:
-            self._settings.setValue(chanlayout.SETTINGS_KEY,
-                                    self._layout.to_json())
+        save_pref(self._settings, chanlayout.SETTINGS_KEY,
+                  None if self._layout.is_default()
+                  else self._layout.to_json())
 
     def _set_visible(self, name: str, visible: bool):
         if visible:
