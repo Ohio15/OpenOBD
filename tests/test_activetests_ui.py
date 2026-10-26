@@ -309,14 +309,24 @@ def test_f5_and_polling_only_while_showing(env):
 #: Modules openobd/activetests.py may import. appsettings is QSettings UI
 #: preferences (Show mode, sources panel) - never the control journal.
 _RO_ALLOWED_IMPORTS = {
-    "__future__", "datetime", "heapq", "math", "pathlib", "time", "typing",
+    "__future__", "datetime", "hashlib", "heapq", "math", "pathlib", "time", "typing",
     "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets",
     "openobd.theme", "openobd.tuningui", "openobd.ctljournal",
     "openobd.tmstore", "openobd.appsettings",
 }
 _RO_BANNED_CALLS = {"ControlLease", "arm", "fire", "activate", "release",
-                    "write_text", "write_bytes", "unlink", "rename"}
-_RO_BANNED_NAMES = {"shutil", "subprocess"}
+                    "write_text", "write_bytes", "unlink", "rename",
+                    # Path / os mutators (str.replace is banned with them on
+                    # purpose: the audit cannot tell receivers apart, and a
+                    # false alarm is cheaper than a missed write).
+                    "touch", "mkdir", "replace", "rmdir", "chmod",
+                    "symlink_to", "link_to", "hardlink_to"}
+#: dynamic import / code execution would let a write hide from the AST.
+_RO_BANNED_NAMES = {"shutil", "subprocess", "__import__", "exec", "eval",
+                    "compile"}
+_RO_OS_MUTATORS = {"remove", "rename", "unlink", "replace", "touch", "mkdir",
+                   "makedirs", "rmdir", "removedirs", "chmod", "symlink",
+                   "link"}
 
 
 def _read_only_violations(src: str) -> list[str]:
@@ -347,9 +357,13 @@ def _read_only_violations(src: str) -> list[str]:
         if name in _RO_BANNED_CALLS:
             bad.append(f"call {name}()")
         if (isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name)
-                and fn.value.id == "os" and fn.attr in ("remove", "rename",
-                                                        "unlink", "replace")):
+                and fn.value.id == "os" and fn.attr in _RO_OS_MUTATORS):
             bad.append(f"call os.{fn.attr}()")
+        if name == "getattr" and not (
+                len(node.args) > 1 and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+                and node.args[1].value not in _RO_BANNED_CALLS):
+            bad.append("getattr() with a non-literal or banned name")
         if name == "open":
             pos = 1 if isinstance(fn, ast.Name) else 0
             mode = next((k.value for k in node.keywords if k.arg == "mode"),
@@ -380,7 +394,11 @@ def test_read_only_audit_catches_violations():
         "p.write_text('x')\np.write_bytes(b'')\np.unlink()\np.rename(q)\n"
         "os.remove(p)\nos.rename(p, q)\nlease.arm()\nlease.fire()\n"
         "x.activate()\nx.release()\nControlLease()\n"
-        "shutil.rmtree(p)\nsubprocess.run(c)\n")
+        "shutil.rmtree(p)\nsubprocess.run(c)\n"
+        "from truck_mcp import X\n__import__('os')\ngetattr(p, name)()\n"
+        "getattr(p, 'unlink')()\nexec(s)\neval(s)\ncompile(s, f, 'exec')\n"
+        "p.touch()\np.mkdir()\np.replace(q)\np.rmdir()\np.chmod(0)\n"
+        "p.symlink_to(q)\np.link_to(q)\np.hardlink_to(q)\nos.mkdir(p)\n")
     bad = _read_only_violations(hostile)
     for want in ("import subprocess", "import os", "import shutil",
                  "import truck.control", "import openobd.tm_writer",
@@ -388,11 +406,17 @@ def test_read_only_audit_catches_violations():
                  "call write_bytes()", "call unlink()", "call rename()",
                  "call os.remove()", "call os.rename()", "call arm()",
                  "call fire()", "call activate()", "call release()",
-                 "call ControlLease()"):
+                 "call ControlLease()", "import truck_mcp",
+                 "name __import__", "name exec", "name eval", "name compile",
+                 "call touch()", "call mkdir()", "call replace()",
+                 "call rmdir()", "call chmod()", "call symlink_to()",
+                 "call link_to()", "call hardlink_to()", "call os.mkdir()"):
         assert want in bad, want
+    assert bad.count("getattr() with a non-literal or banned name") == 2
     assert bad.count("open() with a write or non-literal mode") == 4
     assert _read_only_violations("open(p)\nopen(p, 'rb')\np.open('r')\n"
-                                 "s = 'activate release arm fire'\n") == []
+                                 "s = 'activate release arm fire'\n"
+                                 "getattr(o, 'text', '')\n") == []
 
 
 def test_ctrl_f_routes_to_journal_filter(env, monkeypatch):
@@ -646,3 +670,95 @@ def test_g5_selection_is_bounded_and_cached(env):
     assert pg.shown_counts() == (mod.TABLE_LIMIT, 300)
     pg.refresh()                       # identical journal: cached selection
     assert seen == [mod.TABLE_LIMIT]
+
+
+# -- review round 2 / gate pass 2 (v0.38.0) ---------------------------------- #
+def test_r2_f2_identical_records_keep_one_selection(env):
+    twin = {"at": NOW - 100, "event": "arm", "module": "BCM", "cpid": "0x10"}
+    path = _journal(env.roots[0], [twin, dict(twin)])
+    from openobd.activetests import ROW_KEY_ROLE
+    pg = env.make()
+    keys = [pg.tree.topLevelItem(i).data(0, ROW_KEY_ROLE) for i in range(2)]
+    assert keys[0] != keys[1]                             # ordinal appended
+    pg.tree.topLevelItem(1).setSelected(True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"at": NOW, "event": "arm", "module": "TCM",
+                            "cpid": "0x01"}) + "\n")
+    pg.refresh()
+    sel = pg.tree.selectedItems()
+    assert len(sel) == 1 and sel[0].text(2) == "BCM"
+
+
+def _clock_and_spy(env, pg, start):
+    import openobd.activetests as mod
+    clock = {"t": start}
+    env.monkeypatch.setattr(mod, "time",
+                            SimpleNamespace(time=lambda: clock["t"]))
+    seen = []
+    real = mod.heapq.nlargest
+
+    def spy(n, iterable, key=None):
+        seen.append(n)
+        return real(n, iterable, key=key)
+    env.monkeypatch.setattr(mod.heapq, "nlargest", spy)
+    pg._sel_cache = None                 # count selections from here on
+    return clock, seen
+
+
+def test_r2_f3_24h_mode_hits_the_cache_within_the_minute(env):
+    _journal(env.roots[0], CLEAN)
+    pg = env.make()
+    pg.show_combo.setCurrentIndex(pg.show_combo.findData("24h"))
+    clock, seen = _clock_and_spy(env, pg, (NOW // 60) * 60 + 1)
+    pg.refresh()
+    clock["t"] += 30                     # exact cutoff moved, same minute
+    pg.refresh()
+    assert len(seen) == 1                                 # second poll hit
+    assert len(pg.visible_rows()) == 3
+
+
+def test_r2_f3_nan_journal_hits_and_append_misses(env):
+    path = _journal(env.roots[0], CLEAN + [
+        '{"at": NaN, "event": "arm", "module": "TCM", "cpid": "0x01"}'])
+    pg = env.make()
+    _clock, seen = _clock_and_spy(env, pg, NOW)
+    pg.refresh()
+    pg.refresh()
+    assert len(seen) == 1                    # NaN no longer defeats the cache
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"at": NOW, "event": "arm", "module": "ECM",
+                            "cpid": "0x02"}) + "\n")
+    pg.refresh()
+    assert len(seen) == 2                    # changed content always misses
+    assert "ECM" in [r[2] for r in pg.visible_rows()]
+
+
+def test_r2_f3_changed_entry_same_length_misses(env):
+    path = _journal(env.roots[0], CLEAN)
+    pg = env.make()
+    _clock, seen = _clock_and_spy(env, pg, NOW)
+    pg.refresh()
+    _journal(env.roots[0], CLEAN[:-1] + [dict(CLEAN[-1], module="TCM")])
+    assert path.is_file()
+    pg.refresh()
+    assert len(seen) == 2
+    assert "TCM" in [r[2] for r in pg.visible_rows()]
+
+
+def test_r2_f5_failed_filter_build_never_short_circuits(env):
+    _journal(env.roots[0], CLEAN)
+    pg = env.make()
+    rows = pg.visible_rows()
+    real = pg._rows
+
+    def flaky(top):
+        if pg.filter.text() == "zz":
+            raise RuntimeError("build failed")
+        return real(top)
+    env.monkeypatch.setattr(pg, "_rows", flaky)
+    pg.filter.setText("zz")                # build and fallback both raise
+    assert pg._table_key is None
+    assert pg.tree.topLevelItem(0).text(0).startswith("Table unavailable")
+    pg.filter.setText("")                  # back to the earlier state
+    assert pg.visible_rows() == rows                      # rebuilt
+    assert pg._table_key is not None

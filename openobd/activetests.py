@@ -22,6 +22,7 @@ log, and an unmistakable safe / unsafe colour.
 """
 from __future__ import annotations
 
+import hashlib
 import heapq
 import math
 import time
@@ -400,10 +401,17 @@ class ActiveTestsPage(QWidget):
         mode = self.show_mode()
         needle = self.filter.text().strip().lower()
         cutoff = time.time() - 86400 if mode == "24h" else None
-        inputs = (mode, needle, cutoff)
-        snapshot = [(str(r.path), r.entries) for r in st.reads]
+        # The cache key quantises the 24 h cutoff to the minute (the exact
+        # cutoff moves every call and would never hit); the filter below
+        # still uses the exact cutoff. Content is compared by fingerprint,
+        # not deep list equality (NaN != NaN never matched, and a deep compare
+        # walks the whole journal every poll). A None fingerprint never hits.
+        inputs = (mode, needle,
+                  None if cutoff is None else int(cutoff // 60))
+        snapshot = self._fingerprint(st.reads)
         cache = self._sel_cache
-        if cache is not None and cache[0] == inputs and cache[1] == snapshot:
+        if (snapshot is not None and cache is not None
+                and cache[0] == inputs and cache[1] == snapshot):
             return cache[2]
         matched = 0
 
@@ -430,6 +438,22 @@ class ActiveTestsPage(QWidget):
         result = (top, matched)
         self._sel_cache = (inputs, snapshot, result)
         return result
+
+    @staticmethod
+    def _fingerprint(reads) -> Optional[tuple]:
+        """Per journal (path, entry count, BLAKE2b of the entries' repr).
+        repr renders NaN / Infinity as stable text, so a NaN line compares
+        equal to itself across polls; any changed, added or removed entry
+        changes the digest, so changed content always misses the cache.
+        None (never cached) if an entry cannot be rendered."""
+        try:
+            return tuple(
+                (str(r.path), len(r.entries),
+                 hashlib.blake2b(repr(r.entries).encode("utf-8", "replace"),
+                                 digest_size=16).hexdigest())
+                for r in reads)
+        except Exception:      # an unrenderable entry: never serve the cache
+            return None
 
     @staticmethod
     def _rows(top: list[tuple]) -> list[tuple]:
@@ -490,6 +514,11 @@ class ActiveTestsPage(QWidget):
         selected = {it.data(0, ROW_KEY_ROLE)
                     for it in self.tree.selectedItems()}
         self.tree.setUpdatesEnabled(False)
+        # Forget what the tree shows BEFORE touching it: if the build below
+        # raises, a half-built tree must never match a later key and be
+        # presented as current.
+        self._table_key = None
+        seen: dict[str, int] = {}
         try:
             self.tree.clear()
             if empty is not None:
@@ -501,7 +530,11 @@ class ActiveTestsPage(QWidget):
                 item.setForeground(COL_EVENT,
                                    theme.qcolor(_EVENT_TOKENS[kind]))
                 item.setData(COL_EVENT, Qt.UserRole, kind)
-                row_key = "\x1f".join(row[1:])
+                # Ordinal among equal content keeps two identical records
+                # (same second, same fields) distinct across a rebuild.
+                base = "\x1f".join(row[1:])
+                seen[base] = seen.get(base, 0) + 1
+                row_key = f"{base}\x1f#{seen[base]}"
                 item.setData(0, ROW_KEY_ROLE, row_key)
                 item.setToolTip(COL_WHEN, plain_tooltip(full))
                 item.setToolTip(COL_DETAIL, plain_tooltip(
@@ -523,8 +556,13 @@ class ActiveTestsPage(QWidget):
 
     def _apply_filter(self, *_a) -> None:
         """Display-only: changes which entries are listed, never what was
-        read or the verdict."""
-        self._fill_table()
+        read or the verdict. Guarded like refresh(): a build failure falls
+        back to the last good read or a loud "Table unavailable" row, never a
+        half-built table."""
+        try:
+            self._fill_table()
+        except Exception:
+            self._restore_last_good()
 
     def visible_rows(self) -> list[list[str]]:
         rows = []

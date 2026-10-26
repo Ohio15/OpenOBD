@@ -110,6 +110,58 @@ class ControlState:
     detail: str = ""
 
 
+def _fold(reads: list[JournalRead]) -> tuple[list[dict], int]:
+    """(outstanding activations, unorderable record count) for a set of reads.
+
+    The ONE fold both control_state() and outstanding() use, so the cross-root
+    verdict and the single-file helper can never disagree about the same file.
+
+    Every journal's entries are flattened and ordered GLOBALLY by wall-clock
+    `at` before folding. Append order is chronological only WITHIN one file;
+    folding concatenated files in root order would let an old, already-resolved
+    `released` in one journal pop a newer `activate` in another - a false
+    clean - and a release written before its activate in one file must not be
+    trusted in file order either. truck-mcp stamps every append with `at`; an
+    entry without a usable `at` cannot be ordered and is counted (the caller
+    treats it as damage) rather than trusted in file order.
+    """
+    flat: list[tuple[float, dict, str]] = []
+    unorderable = 0
+    for r in reads:
+        for entry in r.entries:
+            # json.loads accepts NaN / Infinity and huge integer literals: a
+            # NaN key makes the sort order undefined (a release could fold
+            # before its activate - a false clean), so a non-finite or
+            # unconvertible `at` is unorderable, never trusted.
+            try:
+                at_f = float(entry.get("at"))
+            except (TypeError, ValueError, OverflowError):
+                unorderable += 1
+                continue
+            if not math.isfinite(at_f):
+                unorderable += 1
+                continue
+            flat.append((at_f, entry, str(r.path)))
+    flat.sort(key=lambda t: t[0])       # stable: equal `at` keeps file order
+
+    # Keyed by (module, cpid) exactly as truck-mcp keys it: the truck has one
+    # state per control, so a release by anyone - any file, any recovery run -
+    # puts it back.
+    live: dict[tuple, dict] = {}
+    for _at, entry, journal in flat:
+        # str(): a list / dict module or cpid from a hostile line must not
+        # raise TypeError (unhashable) and take the safety verdict down.
+        key = (str(entry.get("module")), str(entry.get("cpid")))
+        event = entry.get("event")
+        if event == "activate":
+            d = dict(entry)
+            d["_journal"] = journal
+            live[key] = d
+        elif event in ("released", "return_to_normal"):
+            live.pop(key, None)
+    return list(live.values()), unorderable
+
+
 def control_state() -> ControlState:
     """Read every journal across all roots and produce one honest verdict."""
     paths = journal_paths()
@@ -124,49 +176,7 @@ def control_state() -> ControlState:
     total = sum(len(r.entries) for r in reads)
     damaged = [r for r in reads if r.error or r.unreadable_lines]
 
-    # Flatten every journal's entries and order them GLOBALLY by wall-clock `at`
-    # before folding. Append order is chronological only WITHIN one file; folding
-    # concatenated files in root order would let an old, already-resolved
-    # `released` in one journal pop a newer `activate` in another — a false
-    # clean. truck-mcp stamps every append with `at`; an entry without a usable
-    # `at` cannot be ordered and is treated as damage (verdict downgrades to
-    # unknown) rather than trusted in file order.
-    flat: list[tuple[float, dict, str]] = []
-    unorderable = 0
-    for r in reads:
-        for entry in r.entries:
-            at = entry.get("at")
-            # json.loads accepts NaN / Infinity and huge integer literals: a
-            # NaN key makes the sort order undefined (a release could fold
-            # before its activate - a false clean), so a non-finite or
-            # unconvertible `at` is unorderable, never trusted.
-            try:
-                at_f = float(at)
-            except (TypeError, ValueError, OverflowError):
-                unorderable += 1
-                continue
-            if not math.isfinite(at_f):
-                unorderable += 1
-                continue
-            flat.append((at_f, entry, str(r.path)))
-    flat.sort(key=lambda t: t[0])
-
-    # Keyed by (module, cpid) exactly as truck-mcp keys it: the truck has one
-    # state per control, so a release by anyone — any file, any recovery run —
-    # puts it back.
-    live: dict[tuple, dict] = {}
-    for _at, entry, journal in flat:
-        # str(): a list / dict module or cpid from a hostile line must not
-        # raise TypeError (unhashable) and take the safety verdict down.
-        key = (str(entry.get("module")), str(entry.get("cpid")))
-        event = entry.get("event")
-        if event == "activate":
-            d = dict(entry)
-            d["_journal"] = journal
-            live[key] = d
-        elif event in ("released", "return_to_normal"):
-            live.pop(key, None)
-    outstanding = list(live.values())
+    outstanding, unorderable = _fold(reads)
 
     if outstanding:
         return ControlState("outstanding", outstanding=outstanding, reads=reads,
@@ -201,21 +211,13 @@ def entries(path: Optional[Path] = None) -> list[dict]:
 
 
 def outstanding(path: Optional[Path] = None) -> list[dict]:
-    """Outstanding activations in ONE journal. Prefer control_state() for the
-    cross-root aggregate verdict; this stays for targeted/unit use."""
+    """Outstanding activations in ONE journal, folded exactly as control_state()
+    folds (by `at`, unorderable records skipped). Prefer control_state() for
+    the cross-root aggregate verdict, which also reports damage; this stays
+    for targeted/unit use."""
     if path is None:
         return control_state().outstanding
-    live: dict[tuple, dict] = {}
-    for entry in read_one(path).entries:
-        # str(): a list / dict module or cpid from a hostile line must not
-        # raise TypeError (unhashable) and take the safety verdict down.
-        key = (str(entry.get("module")), str(entry.get("cpid")))
-        event = entry.get("event")
-        if event == "activate":
-            live[key] = entry
-        elif event in ("released", "return_to_normal"):
-            live.pop(key, None)
-    return list(live.values())
+    return _fold([read_one(path)])[0]
 
 
 def recent(path: Optional[Path] = None, limit: int = 50) -> list[dict]:
