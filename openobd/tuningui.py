@@ -949,6 +949,9 @@ class CursorReadout(QTableWidget):
 
 def empty_state_label(text: str) -> QLabel:
     lab = QLabel(text)
+    # Callers append device / GT error text later via setText: never let a
+    # reply's markup render as rich text.
+    lab.setTextFormat(Qt.PlainText)
     lab.setObjectName("emptyState")
     lab.setAlignment(Qt.AlignCenter)
     lab.setWordWrap(True)

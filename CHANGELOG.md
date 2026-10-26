@@ -37,6 +37,32 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
 - **Layout.** Map/card and codes/readiness splitter positions persist under
   `diag/`; the Diagnostics page's minimum width stays under 700 px.
 
+### Fixed (review round 1 + security gate pass 1)
+- A result handler that raised (scan or codes) left the page busy forever
+  with every action disabled and F5 dead. The busy state is now restored
+  before the scan result is applied and again in a `finally`; the exception
+  text is shown as an inline danger banner.
+- Clear Codes captures the clear, the DTC re-read and the readiness re-read
+  separately. A re-read that fails after the ECM accepted the clear no
+  longer hides the clear outcome or leaves the pre-clear rows standing as
+  current: the table shows not-examined rows and the banner names the failed
+  step ("Clear confirmed by 7E8; codes re-read failed: …").
+- The codes table and chips are refreshed before any Clear-codes outcome
+  dialog opens, with the job still marked busy until they are, so the table
+  is current while the modal is up and a Read cannot be overwritten by
+  older data.
+- Before a scan every module on the map is "unknown"; single-wire modules
+  were painted "unreachable via this path" with no scan having run.
+- Map hit-testing (click, tooltip) uses the layout for the current widget
+  size instead of the last paint's, so it is right straight after a resize.
+- An empty `incomplete` entry for a DTC kind no longer marks that kind
+  "incomplete".
+- Empty-state labels are plain text, so GT error text placed in them (e.g.
+  "Readiness not examined — …") can never render as rich text.
+- `GtJob` itself refuses a second job while one is running ("another GT
+  job is still running"), so one-job-at-a-time no longer depends only on the
+  Diagnostics page's own busy flag.
+
 ## 0.35.0 — 2026-10-26
 
 ### Changed (Tuning tab UX overhaul; cues from HP Tuners VCM Editor, EFILive, TunerStudio)

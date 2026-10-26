@@ -146,36 +146,68 @@ class GtJob(QObject):
     """Run fn(gt) off the GUI thread against whatever GT link exists."""
     finished = Signal(object, object)   # result, error string or None
 
+    BUSY_ERROR = "another GT job is still running"
+
     def __init__(self, dashboard, parent=None):
         super().__init__(parent)
         self.dashboard = dashboard
+        # One job at a time is enforced HERE, not only by the caller: two
+        # workers would interleave AT commands on the one serial link.
+        self._busy = threading.Lock()
 
     def run(self, fn):
+        if not self._busy.acquire(blocking=False):
+            self.finished.emit(None, self.BUSY_ERROR)
+            return
+
         def work():
             try:
-                from .transport import GtDataSource
-                src = self.dashboard.source
-                if isinstance(src, GtDataSource) and src._thread is not None:
-                    result = src.run_exclusive(fn)
-                else:
-                    from . import gt as _gt
-                    g = _gt.ObdxGt()
-                    g.open()
-                    try:
-                        result = fn(g)
-                    finally:
-                        g.close()
+                result, error = self._call(fn), None
             except Exception as e:
-                try:
-                    self.finished.emit(None, str(e))
-                except RuntimeError:
-                    pass
-                return
+                result, error = None, str(e)
+            except BaseException:
+                self._busy.release()
+                raise
+            # release BEFORE emitting: the queued result handler may start
+            # the next job and must not find the lock still held
+            self._busy.release()
             try:
-                self.finished.emit(result, None)
-            except RuntimeError:
+                self.finished.emit(result, error)
+            except RuntimeError:   # receiver already destroyed at shutdown
                 pass
-        threading.Thread(target=work, name="gt-diag", daemon=True).start()
+        try:
+            threading.Thread(target=work, name="gt-diag", daemon=True).start()
+        except BaseException:
+            self._busy.release()
+            raise
+
+    def _call(self, fn):
+        from .transport import GtDataSource
+        src = self.dashboard.source
+        if isinstance(src, GtDataSource) and src._thread is not None:
+            return src.run_exclusive(fn)
+        from . import gt as _gt
+        g = _gt.ObdxGt()
+        g.open()
+        try:
+            return fn(g)
+        finally:
+            g.close()
+
+
+def clear_and_reread(gt) -> dict:
+    """The Clear Codes job. Each step is captured on its own: once the ECM
+    has accepted a clear, a failed re-read must not hide that outcome nor
+    leave the pre-clear rows standing as current. A step that raised comes
+    back as {"error": why}. If the clear itself raised, nothing after it is
+    attempted (whether the ECM acted is unknown) and the error propagates."""
+    out = {"clear": gt.clear_dtcs()}
+    for key, step in (("dtcs", gt.read_dtcs), ("ready", gt.readiness)):
+        try:
+            out[key] = step()
+        except Exception as e:   # noqa: BLE001 — reported per step
+            out[key] = {"error": str(e) or type(e).__name__}
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -194,7 +226,6 @@ class ModuleMapView(QWidget):
         super().__init__()
         self.verdict: Optional[Verdict] = None
         self.selected: Optional[str] = None
-        self._node_rects: dict[str, QRectF] = {}
         self.setMinimumHeight(300)
         self.setMouseTracking(True)
 
@@ -206,14 +237,57 @@ class ModuleMapView(QWidget):
         return self._mod(key)
 
     # -- hit testing / tooltips ---------------------------------------------
+    # Geometry is a pure function of the widget size, shared by painting and
+    # hit-testing, so a click or tooltip right after a resize never tests
+    # against the previous paint's layout.
+    NODE_H = 40.0
+
+    @staticmethod
+    def _chain_layout(w: float, h: float) -> tuple[QRectF, QRectF, QRectF]:
+        """PC, GT and DLC node rects."""
+        nh = ModuleMapView.NODE_H
+        chain_y = h * 0.5 - nh / 2
+        nw = min(110.0, w * 0.13)
+        pc_r = QRectF(12, chain_y, nw, nh)
+        gt_r = QRectF(pc_r.right() + 46, chain_y, nw, nh)
+        dlc_r = QRectF(gt_r.right() + 46, chain_y, nw, nh)
+        return pc_r, gt_r, dlc_r
+
+    @staticmethod
+    def _rails(w: float, h: float) -> tuple[float, float, float, float]:
+        """rail_x0, rail_x1, hs_y, sw_y."""
+        dlc_r = ModuleMapView._chain_layout(w, h)[2]
+        return dlc_r.right() + 40, w - 16, h * 0.22, h * 0.78
+
+    @staticmethod
+    def _layout_nodes(w: float, h: float) -> dict[str, QRectF]:
+        """Module key -> node rect for a w x h canvas (modules hang off
+        their bus rail: HS below it, SW above it)."""
+        nh = ModuleMapView.NODE_H
+        rail_x0, rail_x1, hs_y, sw_y = ModuleMapView._rails(w, h)
+        span = rail_x1 - rail_x0
+        out: dict[str, QRectF] = {}
+        for bus, rail_y, drop in ((HS, hs_y, +1), (SW, sw_y, -1)):
+            mods = [m for m in vehnet.MODULES if m.bus == bus]
+            mw = min(120.0, span / max(1, len(mods)) - 10)
+            for i, m in enumerate(mods):
+                cx = rail_x0 + span * (i + 0.5) / len(mods)
+                ny = rail_y + drop * 26
+                out[m.key] = QRectF(cx - mw / 2,
+                                    ny if drop > 0 else ny - nh, mw, nh)
+        return out
+
+    def node_rects(self) -> dict[str, QRectF]:
+        return self._layout_nodes(self.width(), self.height())
+
     def node_at(self, pos) -> Optional[str]:
-        for key, rect in self._node_rects.items():
+        for key, rect in self.node_rects().items():
             if rect.contains(QPointF(pos)):
                 return key
         return None
 
     def node_center(self, key):
-        rect = self._node_rects.get(key)
+        rect = self.node_rects().get(key)
         return rect.center() if rect is not None else None
 
     def tooltip_for(self, key) -> str:
@@ -250,24 +324,21 @@ class ModuleMapView(QWidget):
             if self.verdict else SegStatus.UNKNOWN
 
     def _mod(self, key) -> Status:
-        if self.verdict:
-            return self.verdict.modules.get(key, Status.UNKNOWN)
-        return Status.UNREACHABLE if (vehnet._module(key)
-                                      and vehnet._module(key).bus == SW) \
-            else Status.UNKNOWN
+        # Before a scan every module is UNKNOWN — never a finding. A real
+        # verdict (vehnet.localize) is what marks SW modules unreachable.
+        if self.verdict is None:
+            return Status.UNKNOWN
+        return self.verdict.modules.get(key, Status.UNKNOWN)
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
         p.fillRect(0, 0, w, h, theme.diag_qcolor("map-canvas"))
-        self._node_rects.clear()
 
         f = QFont(); f.setPointSizeF(8.5); p.setFont(f)
-        node_h = 40
-        chain_y = h * 0.5 - node_h / 2
 
-        def draw_node(rect, title, sub, color, key=None, selected=False):
+        def draw_node(rect, title, sub, color, selected=False):
             p.setPen(QPen(color.lighter(130) if selected else color,
                           3.2 if selected else 2.2))
             fill = QColor(color)
@@ -280,8 +351,6 @@ class ModuleMapView(QWidget):
             p.setPen(theme.diag_qcolor("node-sub"))
             p.drawText(rect.adjusted(4, rect.height() / 2 - 3, -4, -3),
                        Qt.AlignCenter, sub)
-            if key:
-                self._node_rects[key] = QRectF(rect)
 
         def warning_mark(mx, my):
             # vector warning triangle (no glyph font needed offscreen)
@@ -310,11 +379,8 @@ class ModuleMapView(QWidget):
                                   110, 14), Qt.AlignCenter, label)
 
         # chain: PC -> GT -> DLC
-        nw = min(110.0, w * 0.13)
-        pc_r = QRectF(12, chain_y, nw, node_h)
+        pc_r, gt_r, dlc_r = self._chain_layout(w, h)
         gt_ok = self._seg("pc_gt")
-        gt_r = QRectF(pc_r.right() + 46, chain_y, nw, node_h)
-        dlc_r = QRectF(gt_r.right() + 46, chain_y, nw, node_h)
         seg_line(pc_r.right(), pc_r.center().y(), gt_r.left(),
                  gt_r.center().y(), gt_ok, "USB")
         seg_line(gt_r.right(), gt_r.center().y(), dlc_r.left(),
@@ -329,10 +395,7 @@ class ModuleMapView(QWidget):
                   else theme.diag_qcolor("node-tool"))
 
         # bus rails
-        rail_x0 = dlc_r.right() + 40
-        rail_x1 = w - 16
-        hs_y = h * 0.22
-        sw_y = h * 0.78
+        rail_x0, rail_x1, hs_y, sw_y = self._rails(w, h)
         seg_line(dlc_r.right(), dlc_r.center().y(), rail_x0, hs_y,
                  self._seg("dlc_hs"))
         seg_line(dlc_r.right(), dlc_r.center().y(), rail_x0, sw_y,
@@ -345,22 +408,21 @@ class ModuleMapView(QWidget):
                    Qt.AlignCenter, SW)
 
         # modules hang off their rail
-        for bus, rail_y, drop in ((HS, hs_y, +1), (SW, sw_y, -1)):
-            mods = [m for m in vehnet.MODULES if m.bus == bus]
-            span = rail_x1 - rail_x0
-            mw = min(120.0, span / max(1, len(mods)) - 10)
-            for i, m in enumerate(mods):
-                cx = rail_x0 + span * (i + 0.5) / len(mods)
-                ny = rail_y + drop * 26
-                rect = QRectF(cx - mw / 2, ny if drop > 0 else ny - node_h,
-                              mw, node_h)
-                st = self._mod(m.key)
-                p.setPen(QPen(STATUS_COLORS[st], 1.6))
-                p.drawLine(QPointF(cx, rail_y), QPointF(cx, rect.top()
-                           if drop > 0 else rect.bottom()))
-                sub = m.req_id and f"{m.req_id}/{m.resp_id}" or st.value
-                draw_node(rect, m.name, sub, STATUS_COLORS[st], key=m.key,
-                          selected=self.selected == m.key)
+        rects = self._layout_nodes(w, h)
+        for m in vehnet.MODULES:
+            rect = rects.get(m.key)
+            if rect is None:
+                continue
+            drop_down = m.bus == HS          # HS hangs below, SW above
+            rail_y = hs_y if drop_down else sw_y
+            cx = rect.center().x()
+            st = self._mod(m.key)
+            p.setPen(QPen(STATUS_COLORS[st], 1.6))
+            p.drawLine(QPointF(cx, rail_y), QPointF(cx, rect.top()
+                       if drop_down else rect.bottom()))
+            sub = m.req_id and f"{m.req_id}/{m.resp_id}" or st.value
+            draw_node(rect, m.name, sub, STATUS_COLORS[st],
+                      selected=self.selected == m.key)
         p.end()
 
     def mousePressEvent(self, event):
@@ -976,7 +1038,7 @@ class DiagnosticsPage(QWidget):
             incomplete = dtcs.get("incomplete") or {}
             for kind, key, chip in DTC_KINDS:
                 codes = dtcs.get(key)
-                partial = key in incomplete
+                partial = bool(incomplete.get(key))
                 if codes is None:
                     chips.append((f"{kind} "
                                   + ("incomplete" if partial
@@ -1024,9 +1086,7 @@ class DiagnosticsPage(QWidget):
         if ans != QMessageBox.Yes:
             return
         self._set_busy("clear")
-        self.job.run(lambda gt: {"clear": gt.clear_dtcs(),
-                                 "dtcs": gt.read_dtcs(),
-                                 "ready": gt.readiness()})
+        self.job.run(clear_and_reread)
 
     # model rows -------------------------------------------------------------
     @staticmethod
@@ -1073,7 +1133,7 @@ class DiagnosticsPage(QWidget):
 
         for kind, key, chip in DTC_KINDS:
             codes = dtcs.get(key)
-            partial = key in incomplete
+            partial = bool(incomplete.get(key))
             if codes is None:
                 count = "incomplete" if partial else "not examined"
             else:
@@ -1094,7 +1154,7 @@ class DiagnosticsPage(QWidget):
                     module_name(cid)))
             if codes is None:
                 # not examined is NOT "no codes" — say so on its own row
-                if key not in incomplete:
+                if not partial:
                     unexamined.append(kind)
                     uncertain = True
                     g.appendRow(self._uncertain_row(
@@ -1240,27 +1300,67 @@ class DiagnosticsPage(QWidget):
     # -- shared result dispatch ----------------------------------------------
     def _on_job_done(self, result, error):
         pending = self._pending
-        if pending == "scan":
-            self._apply_scan(result, error)
-            return
-        self._set_busy(None)
+        try:
+            if pending == "scan":
+                # restore busy FIRST: a handler exception must never leave
+                # every action disabled with F5 dead
+                self._set_busy(None)
+                self._apply_scan(result, error)
+            else:
+                self._apply_codes(pending, result, error)
+        except Exception as e:   # noqa: BLE001 — shown, never swallowed
+            if self._pending is not None:
+                self._set_busy(None)
+            banner = (self.map_banner if pending == "scan"
+                      else self.codes_banner)
+            self._show_banner(
+                banner, f"Couldn't show the {pending or 'job'} result: "
+                f"{type(e).__name__}: {e}")
+        finally:
+            if self._pending is not None:
+                self._set_busy(None)
+
+    def _apply_codes(self, pending, result, error):
         if error is not None:
+            self._set_busy(None)
             self._show_banner(
                 self.codes_banner, f"Couldn't reach the truck: {error}"
                 + (" — the rows below are from the previous read at "
                    f"{self._read_at}." if self._read_at else ""))
             return
-        if pending == "clear":
-            clr = result.get("clear", {})
-            if not clr.get("sent"):
-                QMessageBox.warning(
-                    self, "Clear codes",
-                    "The clear was NOT sent — nothing was changed.\n\n"
-                    f"{clr.get('error') or 'addressing not confirmed'}")
-            elif not clr.get("cleared"):
-                QMessageBox.warning(
-                    self, "Clear codes",
-                    "The clear was sent but the ECM did not confirm it.\n\n"
-                    f"{clr.get('error')}\nAcknowledged by: "
-                    f"{', '.join(clr.get('acked_by', [])) or 'nobody'}")
-        self.populate_codes(result.get("dtcs", {}), result.get("ready", {}))
+        result = result or {}
+        dtcs, ready = result.get("dtcs") or {}, result.get("ready") or {}
+        # A step that failed comes back as {"error": why}: populate_codes
+        # renders that as not-examined rows / banners — never old rows.
+        failed = [name for name, part in (("codes", dtcs),
+                                          ("readiness", ready))
+                  if isinstance(part, dict) and part.get("error")
+                  and not part.get("examined")]
+        # Populate BEFORE any dialog, still busy, so the table is current
+        # while a modal is up and no Read can be started underneath it.
+        self.populate_codes(dtcs, ready)
+        clr = result.get("clear") if pending == "clear" else None
+        if clr is not None and failed:
+            why = "; ".join(f"{n} re-read failed: "
+                            + str((dtcs if n == "codes" else ready)["error"])
+                            for n in failed)
+            outcome = (f"Clear confirmed by "
+                       f"{', '.join(clr.get('acked_by') or []) or 'the ECM'}"
+                       if clr.get("cleared") else
+                       "Clear NOT sent" if not clr.get("sent") else
+                       "Clear sent, not confirmed")
+            self._show_banner(self.codes_banner, f"{outcome}; {why}")
+        self._set_busy(None)
+        if clr is None:
+            return
+        if not clr.get("sent"):
+            QMessageBox.warning(
+                self, "Clear codes",
+                "The clear was NOT sent — nothing was changed.\n\n"
+                f"{clr.get('error') or 'addressing not confirmed'}")
+        elif not clr.get("cleared"):
+            QMessageBox.warning(
+                self, "Clear codes",
+                "The clear was sent but the ECM did not confirm it.\n\n"
+                f"{clr.get('error')}\nAcknowledged by: "
+                f"{', '.join(clr.get('acked_by', [])) or 'nobody'}")

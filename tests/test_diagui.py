@@ -684,3 +684,259 @@ def test_window_minimum_width_with_diagnostics(win, qapp):
     qapp.processEvents()
     assert win.diag.minimumSizeHint().width() < 1000
     win.main_tabs.setCurrentIndex(0)
+
+
+# --------------------------------------------------------------------------- #
+# Review round 1 + security gate pass 1 (v0.36.0)
+# --------------------------------------------------------------------------- #
+CLEAR_OK = {"sent": True, "cleared": True, "acked_by": ["7E8"],
+            "rejected_by": {}, "error": None}
+CLEAN_READY = {"mil": False, "dtc_count": 0, "monitors": MONITORS}
+
+
+class FakeGt:
+    """Stands in for ObdxGt inside a captured job fn."""
+
+    def __init__(self, clear=CLEAR_OK, dtcs=None, ready=None,
+                 read_raises=None, ready_raises=None):
+        self._clear, self._dtcs, self._ready = clear, dtcs, ready
+        self._read_raises, self._ready_raises = read_raises, ready_raises
+
+    def clear_dtcs(self):
+        return self._clear
+
+    def read_dtcs(self):
+        if self._read_raises:
+            raise self._read_raises
+        return self._dtcs
+
+    def readiness(self):
+        if self._ready_raises:
+            raise self._ready_raises
+        return self._ready
+
+
+def code_rows(page):
+    return [r["code"] for r in page.visible_rows() if r["row"] == "code"]
+
+
+def confirm_then_record(monkeypatch, page, calls):
+    """Answer the confirm with Yes; record every later warning() together
+    with the page state at the moment the dialog would be up."""
+    from PySide6.QtWidgets import QMessageBox
+
+    def warning(_parent, title, text, *rest):
+        if title == "Clear trouble codes":
+            return QMessageBox.Yes
+        calls.append({"title": title, "text": text,
+                      "codes": code_rows(page), "busy": page.busy()})
+        return QMessageBox.Ok
+    monkeypatch.setattr(QMessageBox, "warning", warning)
+
+
+def test_scan_handler_exception_restores_busy_and_shows_banner(
+        page, monkeypatch):
+    def boom(_result):
+        raise RuntimeError("localize exploded")
+    monkeypatch.setattr(vehnet, "localize", boom)
+    page.tabs.setCurrentIndex(0)
+    page.scan_modules()
+    assert page.busy() == "scan"
+    page.job.finished.emit(vehnet.ScanResult(**SCAN), None)
+    assert page.busy() is None
+    assert all(a.isEnabled() for a in
+               (page.act_scan, page.act_read, page.act_clear))
+    assert not page.map_banner.isHidden()
+    assert page.map_banner.property("banner") == "danger"
+    assert "localize exploded" in page.map_banner.text()
+    page.run_primary()                                 # F5 is alive again
+    assert len(page.job.run.fns) == 2 and page.busy() == "scan"
+
+
+def test_codes_handler_exception_restores_busy_and_shows_banner(
+        page, monkeypatch):
+    from openobd import diagui
+
+    def boom(*_a):
+        raise ValueError("populate exploded")
+    monkeypatch.setattr(diagui.DiagnosticsPage, "populate_codes", boom)
+    page.read_codes()
+    page.job.finished.emit({"dtcs": DTCS, "ready": READY}, None)
+    assert page.busy() is None and page.act_read.isEnabled()
+    assert "populate exploded" in page.codes_banner.text()
+
+
+def test_clear_ok_but_reread_fails_shows_not_examined_not_old_rows(
+        page, monkeypatch):
+    from openobd.diagui import clear_and_reread
+    page.populate_codes(DTCS, READY)                   # the pre-clear rows
+    assert "P0300" in code_rows(page)
+    calls = []
+    confirm_then_record(monkeypatch, page, calls)
+    page.act_clear.trigger()
+    fn = page.job.run.fns[-1]
+    assert fn is clear_and_reread
+    result = fn(FakeGt(read_raises=IOError("no reply to 03"),
+                       ready=CLEAN_READY))
+    assert result["clear"] == CLEAR_OK
+    assert result["dtcs"] == {"error": "no reply to 03"}
+    assert result["ready"] == CLEAN_READY
+    page.job.finished.emit(result, None)
+    assert calls == []                                 # the clear succeeded
+    assert code_rows(page) == []                       # never pre-clear rows
+    rows = [r for r in page.visible_rows() if r["row"] == "not_examined"]
+    assert len(rows) == 3
+    assert all("no reply to 03" in r["description"] for r in rows)
+    assert not page.codes_banner.isHidden()
+    assert page.codes_banner.text() == (
+        "Clear confirmed by 7E8; codes re-read failed: no reply to 03")
+    assert page.busy() is None and page.act_read.isEnabled()
+
+
+def test_clear_readiness_reread_failure_is_named(page, monkeypatch):
+    from openobd.diagui import clear_and_reread
+    calls = []
+    confirm_then_record(monkeypatch, page, calls)
+    page.act_clear.trigger()
+    result = clear_and_reread(FakeGt(
+        dtcs=dict(DTCS, stored=[], pending=[], incomplete={},
+                  by_module={}),
+        ready_raises=TimeoutError("0101 timed out")))
+    page.job.finished.emit(result, None)
+    assert calls == []
+    assert page.codes_banner.text() == (
+        "Clear confirmed by 7E8; readiness re-read failed: 0101 timed out")
+    assert "0101 timed out" in page.ready_empty.text()
+
+
+def test_clear_not_sent_shows_dialog_and_reread_rows(page, monkeypatch):
+    from openobd.diagui import clear_and_reread
+    calls = []
+    confirm_then_record(monkeypatch, page, calls)
+    page.act_clear.trigger()
+    result = page.job.run.fns[-1](FakeGt(
+        clear={"sent": False, "cleared": False, "acked_by": [],
+               "error": "no header"}, dtcs=DTCS, ready=READY))
+    page.job.finished.emit(result, None)
+    assert len(calls) == 1 and calls[0]["title"] == "Clear codes"
+    assert calls[0]["text"].startswith("The clear was NOT sent")
+    assert "Stored (2)" in groups(page)
+    assert "P0300" in code_rows(page)
+    assert page.codes_banner.isHidden()
+
+
+def test_clear_dialog_shows_after_table_is_populated(page, monkeypatch):
+    calls = []
+    confirm_then_record(monkeypatch, page, calls)
+    page.act_clear.trigger()
+    result = page.job.run.fns[-1](FakeGt(
+        clear={"sent": True, "cleared": False, "acked_by": ["7EA"],
+               "error": "7E8 did not acknowledge"}, dtcs=DTCS, ready=READY))
+    page.job.finished.emit(result, None)
+    assert len(calls) == 1
+    assert calls[0]["text"].startswith("The clear was sent but the ECM did "
+                                       "not confirm it.")
+    # the model was already current while the modal was up
+    assert calls[0]["codes"] == code_rows(page)
+    assert "P0300" in calls[0]["codes"]
+    assert page.busy() is None
+
+
+def test_map_modules_unknown_before_scan(page):
+    from openobd.vehnet import SW, Status
+    for m in vehnet.MODULES:
+        assert page.map_view.module_status(m.key) == Status.UNKNOWN, m.key
+    assert "unreachable" not in page.map_view.tooltip_for("ipc")
+    page.map_view.grab()                               # paints UNKNOWN fine
+    page._apply_scan(vehnet.ScanResult(**SCAN), None)
+    sw = [m.key for m in vehnet.MODULES if m.bus == SW]
+    assert sw
+    for key in sw:
+        assert page.map_view.module_status(key) == Status.UNREACHABLE, key
+
+
+def test_map_hit_testing_uses_current_size_without_a_paint(qapp):
+    from openobd.diagui import ModuleMapView
+    view = ModuleMapView()                             # never shown/painted
+    view.resize(800, 400)
+    small = ModuleMapView._layout_nodes(800, 400)["ebcm"].center()
+    assert view.node_at(small) == "ebcm"
+    view.resize(1400, 700)
+    big = ModuleMapView._layout_nodes(1400, 700)["ebcm"].center()
+    assert big != small
+    assert view.node_center("ebcm") == big
+    assert view.node_at(big) == "ebcm"
+    assert set(view.node_rects()) == {m.key for m in vehnet.MODULES}
+    view.deleteLater()
+
+
+def test_empty_incomplete_entry_is_not_partial(page):
+    dtcs = dict(DTCS, incomplete={"stored": {}, "pending": {}})
+    page.populate_codes(dtcs, READY)
+    chips = page.codes_crumb.chips()
+    assert ("Stored 2", "danger") in chips or any(
+        t == "Stored 2" for t, _k in chips)
+    assert not any("incomplete" in t for t, _k in chips)
+    g = groups(page)
+    assert "Stored (2)" in g and "Pending (1)" in g
+    assert not any(r["row"] == "incomplete" for r in page.visible_rows())
+    # kinds not examined with an empty incomplete entry still say so
+    page.populate_codes(dict(NOT_EXAMINED, incomplete={"stored": {}}), READY)
+    assert any(t == "Stored not examined" for t, _k in
+               page.codes_crumb.chips())
+    rows = [r for r in page.visible_rows() if r["kind"] == "Stored"]
+    assert [r["row"] for r in rows] == ["not_examined"]
+
+
+def test_readiness_error_text_is_plain_text(page):
+    from PySide6.QtCore import Qt
+    from openobd.tuningui import empty_state_label
+    assert empty_state_label("x").textFormat() == Qt.PlainText
+    page.populate_codes(DTCS, {"error": "<b>x</b>"})
+    assert page.ready_empty.textFormat() == Qt.PlainText
+    assert "<b>x</b>" in page.ready_empty.text()
+    assert page.card.empty.textFormat() == Qt.PlainText
+
+
+def test_gtjob_refuses_a_second_concurrent_job(qapp):
+    import threading
+    from PySide6.QtCore import Qt
+    from openobd.diagui import GtJob
+    job = GtJob(None)
+    got, done = [], threading.Event()
+
+    def on_finished(result, error):
+        got.append((result, error))
+        if error != GtJob.BUSY_ERROR:
+            done.set()
+    job.finished.connect(on_finished, Qt.DirectConnection)
+    release = threading.Event()
+
+    def call(fn):                     # the real transport is not under test
+        return fn(None)
+    job._call = call
+
+    def slow(_gt):
+        assert release.wait(5)
+        return "first"
+    job.run(slow)
+    job.run(lambda _gt: "second")                     # refused synchronously
+    assert got == [(None, GtJob.BUSY_ERROR)]
+    release.set()
+    assert done.wait(5)
+    assert got[-1] == ("first", None)
+    # once the first finished, the next job is accepted; a raising fn
+    # still frees the link
+    done.clear()
+
+    def bad(_gt):
+        raise OSError("port gone")
+    job.run(bad)
+    assert done.wait(5)
+    assert got[-1] == (None, "port gone")
+    done.clear()
+    job.run(lambda _gt: "third")
+    assert done.wait(5)
+    assert got[-1] == ("third", None)
+    assert job._busy.acquire(timeout=5)
+    job._busy.release()
