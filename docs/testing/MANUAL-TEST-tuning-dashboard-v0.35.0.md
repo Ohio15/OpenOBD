@@ -545,6 +545,316 @@ Pass: [ ]  Fail: [ ]
 
 ---
 
+## 7A. Diagnostics (v0.36.0)
+
+**Covers**: v0.36.0 Diagnostics tab UX overhaul (PR #55). Sources: `CHANGELOG.md` section 0.36.0, `openobd/diagui.py` (`DiagnosticsPage`, `ModuleMapView`, `ModuleCard`, `LegendRow`), `tests/test_diagui.py`. IDs are `G-nn`. Cases marked [BOTH] are checked at 1366x768 and 1920x1080, [1366] only at 1366x768, [GT] need the OBDX Pro GT on the truck.
+
+**Preconditions addendum (Diagnostics)**
+- GT connected to the truck (USB plugged in, OBD cable on the DLC), ignition ON, engine off; the Dashboard may be live or idle (both must work, see G-02).
+- A truck with at least one known stored code is preferred (note it: `________`). Without one, G-15 and G-19 to G-22 can only check the empty and "No trouble codes" paths; mark the code-dependent steps N/A with a reason.
+- Cases that clear codes (G-23 to G-26) run on a bench or test truck only. Clearing resets every readiness monitor and needs a full drive cycle to recover. Never run them on a truck that must pass an emissions check. Hardware-dependent cases that cannot be provoked on the bench (marked "if reproducible") are recorded N/A with the reason; their logic is covered by `tests/test_diagui.py`.
+
+Open Diagnostics from the main tab bar. The two sub-tabs are "Module Map" (left) and "Codes & Readiness" (right).
+
+### 7A.1 Module Map
+
+### G-01 Empty state before any scan [BOTH] - P0
+Setup: fresh app launch, no scan yet this session.
+1. Open Diagnostics -> Module Map. Expected: breadcrumb "Diagnostics > Module Map" in bold; one chip at the right reading "not scanned" (muted); the note under the title starts "Not scanned" and says Scan Modules (F5) uses the live GT link or opens its own.
+2. Look at the right-hand card. Expected: the empty-state text "Not scanned yet. Scan Modules (F5) checks the USB link, DLC power, the bus and every module, using the live GT link or opening its own." No module details, no "Scan notes" panel.
+3. Look at the map. Expected: every module node reads "not scanned" in the grey "not scanned" colour; the HS-GMLAN modules show their request/response ids, and the SW-GMLAN modules (IPC, SDM, HVAC, Radio) do NOT read "unreachable" before a scan; no failed-segment marker anywhere.
+4. Look at the toolbar. Expected: "Scan Modules" enabled (highlighted as the primary button); "Copy report" DISABLED.
+5. Click Scan Modules once. Expected: after the scan completes the SW-GMLAN modules read "unreachable" (amber, dashed rail) and only now.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-02 Scan Modules busy chip and busy state always restored [BOTH] - P0 **[GT]**
+1. Click Scan Modules. Expected: immediately a muted "Scanning..." chip is the LAST chip in the header; Scan Modules, Read Codes and Clear Codes are all disabled (one GT job at a time); the window stays responsive.
+2. While scanning press F5 and click the disabled buttons. Expected: nothing starts a second job.
+3. Wait for the scan to finish. Expected: the "Scanning..." chip disappears; Scan Modules, Read Codes and Clear Codes are enabled again; the header chips and the "Scanned at hh:mm:ss" note are updated.
+4. Repeat the scan with the Dashboard live on the GT, and again with the Dashboard idle. Expected: both complete; with the Dashboard live its polling pauses during the scan and resumes afterwards.
+5. Failure path (if reproducible): unplug the USB cable while a scan runs. Expected: the scan ends with the error banner of G-10, and the buttons are re-enabled; the busy state is restored even when the result handler fails (it must never stay stuck disabled or show "Scanning..." forever). Check by pressing F5 again: a new scan starts.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-03 Header chips after a scan [BOTH] - P0 **[GT]**
+1. After a successful scan expected chips, left to right: "DLC <v> V" (neutral, e.g. "DLC 12.6 V"), "<n> responding" (green when n > 0), "<k> not examined" (muted; only present when k > 0), "fault at: <segment or module>" (red; only present when a fault was found).
+2. Expected: the note reads "Scanned at hh:mm:ss" with the time of this scan, plus the hover/click hint.
+3. With every module answering, expected: no "fault at" chip and no failed marker on the map.
+4. Resize the window to its minimum width. Expected: the chips shrink or clip; they do not widen the window.
+5. Where the DLC voltage cannot be read (if reproducible), expected: the first chip reads "DLC not read" (muted), never a made-up voltage.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-04 Fault chip and failed-segment marker - P1 **[GT]**
+1. Produce a fault: switch the ignition OFF (or unplug the OBD cable from the DLC) and scan. Expected: a red "fault at: <label>" chip, for example "fault at: DLC power", "fault at: USB link (PC to GT)" or a module name such as "fault at: EBCM (ABS)".
+2. Expected: the failed segment or module is drawn red/orange, and the first failed segment carries a vector warning triangle with an exclamation mark (a drawn triangle, not an emoji or missing-glyph box).
+3. Restore ignition/cable and rescan. Expected: the fault chip and marker are gone.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-05 Legend row [BOTH] - P1
+1. Expected: a row directly under the toolbar (above the map) with five swatch + label pairs in this order: responding, no response, unreachable via this path, not examined, not scanned. Swatch colours match the node colours of those states (green, red, amber, cool grey, grey).
+2. The map no longer paints its own legend (no duplicate legend inside the map area).
+3. Narrow the window. Expected: the legend clips; it does not force the page wider.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-06 Hover tooltips - P1
+1. After a scan hover the EBCM node for 1 s. Expected: a tooltip with five lines: the module name, "Status: <status>", "Bus: <bus>", "Diagnostic address: request <req> / response <resp>" (e.g. request 243 / response 643), and "Role: <role>".
+2. Hover an SW-GMLAN module (IPC). Expected: the address line reads "none on HS-CAN (single-wire bus only)".
+3. Move the pointer over a module and off it. Expected: the cursor is a pointing hand over a node and an arrow elsewhere; the tooltip hides when the pointer leaves the node.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-07 Click a module: module card [BOTH] - P0
+1. Scan, then click the EBCM node. Expected: the node gets a thicker, lighter outline; the card at the right shows the title "EBCM (ABS)" with a status chip (here "no response", red), and the rows Bus "HS-GMLAN (500k)", Role "Brake control ...", Diagnostic address "request 243 / response 643".
+2. Click an ECM node. Expected: the card updates to ECM with the chip "responding" (green).
+3. Click an SW-GMLAN module. Expected: the Diagnostic address row reads "No HS-CAN diagnostic address - reachable only via the single-wire bus." and the status chip is amber ("unreachable").
+4. Select a module, then scan again. Expected: the same module stays selected and its card shows the status from the NEW scan.
+5. Before the first scan (or after the app restarts) with no module selected, expected after a scan: the card shows the hint "Click a module on the map for its status, bus and address."
+6. Select text in the card with the mouse. Expected: the values are selectable.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-08 Scan notes collapsible and its persistence - P1
+1. After a scan the "Scan notes" disclosure appears under the card, expanded by default, with one bullet ("• ...") per note (e.g. the EBCM no-answer note, the BCM "not examined" note, the SW-GMLAN note in the reference screenshot).
+2. Collapse it, then expand it. Expected: it toggles; the notes are plain text (no formatting of device replies).
+3. Collapse it, quit and relaunch, scan again. Expected: it starts collapsed; expand, relaunch, scan: it starts expanded.
+4. A scan with no notes. Expected: the panel says "No notes from this scan."
+
+Pass: [ ]  Fail: [ ]
+
+### G-09 Copy report - P1
+1. Before any scan the button is disabled (G-01). After a scan click Copy report and paste into Notepad.
+2. Expected first line "OpenOBD module scan at hh:mm:ss"; then "DLC: <v> V" (or "not read"); "Fault at: <label>" (or "none found"); a blank line; a tab-separated table headed "module / bus / request/response / status" with one row per module (e.g. "EBCM (ABS)", "HS-GMLAN (500k)", "243/643", "no response"; "-" for modules with no HS-CAN address); then "Notes:" with one "- " line per scan note.
+3. After a failed scan (G-10) the pasted report includes the line "Scan failed at the tool link: <reason>".
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-10 Inline error banner when the GT is absent [BOTH] - P0
+1. Unplug the GT from USB and make sure no other program holds the port. Click Scan Modules. Expected: NO popup dialog; a red banner above the legend reads "Scan failed at the tool link: <reason>"; a red chip "fault at: USB link (PC to GT)" appears; the buttons are enabled again and "Scanning..." is gone.
+2. Plug the GT in and scan again. Expected: the banner disappears on the successful scan.
+3. Repeat at 1366x768. Expected: a long reason wraps inside the banner; the page does not widen.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-11 Binary-mode advice text - P1
+1. If the GT can be put into binary (J2534) mode on the bench, scan in that state. Expected: the red banner reads exactly "OBDX GT is stuck in binary (J2534) mode - unplug it from USB and the OBD port for 10 s, then rescan." (with the em dash as in the product) and the chip reads "fault at: GT in binary mode".
+2. Follow the advice, rescan. Expected: the banner clears.
+3. If the mode cannot be provoked, record N/A (covered by `test_scan_error_and_binary_mode_banners`).
+
+Pass: [ ]  Fail: [ ]  N/A: [ ]
+
+### 7A.2 Codes & Readiness
+
+### G-12 Empty state before any read [BOTH] - P0
+Setup: fresh launch, Codes & Readiness not yet read.
+1. Open the Codes & Readiness sub-tab. Expected: breadcrumb "Diagnostics > Codes & Readiness"; one muted chip "not read"; the note says Read Codes (F5) reads stored, pending and permanent codes and readiness, and that Clear Codes also resets every readiness monitor.
+2. Expected: the code tree is empty (no "No trouble codes" row, nothing that looks like a clean result); the readiness panel shows "Readiness not read yet. Read Codes (F5) reads it with the codes." and no summary chip claiming "ready"; no MIL banner.
+3. Expected: "Copy codes" is DISABLED; "Read Codes" enabled and highlighted; "Clear Codes..." enabled; the search field shows the placeholder "Search codes (Ctrl+F)".
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-13 Read Codes busy chip and busy state restored - P0 **[GT]**
+1. Click Read Codes. Expected: a muted "Reading..." chip is the last chip; Read Codes, Clear Codes and Scan Modules are all disabled; F5 does nothing further.
+2. When the read finishes, expected: the chip disappears; all three actions are enabled again; the tree and readiness grid are filled.
+3. Switch to Module Map while a read runs. Expected: Scan Modules is disabled there too (one job at a time); the "Reading..." state is not lost when switching back.
+4. Failure path (if reproducible): unplug the GT while reading. Expected: the buttons are re-enabled and the chip is gone (the busy state is always restored, even when a handler fails); F5 starts a new read.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-14 Header chips after a read [BOTH] - P1 **[GT]**
+1. Expected chips: first the MIL chip ("MIL ON" red, "MIL off" green, or "MIL not examined" muted), then one chip per kind in the order Stored, Pending, Permanent: "<Kind> <n>" (red for Stored n > 0, amber for Pending n > 0, muted for Permanent n > 0, green for 0 when fully examined).
+2. A kind that could not be examined reads "<Kind> not examined" (muted); a kind with an incomplete module reply reads "<Kind> <n> + incomplete" or "<Kind> incomplete" (muted, never green).
+3. Compare with the reference screenshot (MIL ON, Stored 2, Pending 1 + incomplete, Permanent 0).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-15 Grouped tree: Stored / Pending / Permanent with counts [BOTH] - P0 **[GT]**
+1. Read Codes. Expected: three group rows in this order, each "<Kind> (<n>)": "Stored (2)", "Pending (1 + incomplete)", "Permanent (0)" in the reference. The count n equals the number of code rows beneath the group (count them).
+2. Expected columns: Code | Description | Module | Status. The Status cell is a chip ("Stored" red, "Pending" amber, "Permanent" muted); stored code text is red.
+3. Expected: "Stored" is open by default; "Permanent" is collapsed unless it holds a code or an unknown; any group holding a not-examined or incomplete row is open.
+4. Collapse and expand a group with the mouse and with Left/Right arrows. Expected: it toggles; group rows span the full width.
+5. Expected: when n = 0 for a fully examined kind, the group shows "(0)" and no child row.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-16 Not-examined and incomplete rows are muted italic [BOTH] - P0 **[GT]**
+1. Produce an unknown (if reproducible): ignition OFF with the GT linked, or any condition where a module's reply is cut short. Read Codes. Expected: for a kind that could not be read, a row "? | Not examined - <reason or 'no module answered'>" with the status chip "not examined"; for a module with a truncated reply, a row "? | Incomplete from <responder id> - <why>" with the Module column naming the module and the chip "incomplete".
+2. Expected: these rows are muted grey AND italic, carry their own glyph icon in the Code column (a half-filled circle for incomplete), use a dashed-outline chip, and cannot be mistaken for a code row (no red/amber code text, code column is "?").
+3. Expected: their wording is exactly what the read reported; the group containing them is open and its count reads "(not examined)", "(incomplete)" or "(n + incomplete)".
+4. If neither can be provoked, record N/A (covered by `test_not_examined_rows_are_present_and_styled`, `test_incomplete_rows_keep_exact_semantics`).
+
+Pass: [ ]  Fail: [ ]  N/A: [ ]  Notes: ____
+
+### G-17 "No trouble codes" vs "No codes in the examined kinds" - P0 **[GT]**
+1. On a truck with no codes where all three kinds were examined, Read Codes. Expected: a first row "No trouble codes" with a green "clear" chip.
+2. With at least one kind not examined or incomplete and no codes found (G-16 setup), Read Codes. Expected: the row reads "No codes in the examined kinds" with a muted chip, NEVER "No trouble codes".
+3. When all three kinds were not examined, expected: no summary row at all (only the three not-examined rows) and no green anywhere.
+4. When any code is present, expected: no summary row.
+
+Pass: [ ]  Fail: [ ]  N/A: [ ]  Notes: ____
+
+### G-18 Module column and "No local description" fallback - P1 **[GT]**
+1. Expected: the Module column shows the reporting module by name (e.g. "ECM (E38)", "TCM (T43)") derived from the responder id; a responder id that matches no known module shows the raw id; a code with no reporting module shows "-" in muted colour.
+2. For a code not in the local description table, expected the Description reads "No local description" in muted colour (never blank).
+3. If the truck has no such code, record N/A for step 2.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-19 Search filters codes; Esc clears [BOTH] - P0
+1. Read Codes with several rows. Click the search field and type `P04`. Expected: the tree filters on each keystroke; only rows matching code, description OR module text remain, under their group; all groups are expanded while a search is active (reference screenshot: only P0420 remains).
+2. Type a module name (e.g. `TCM`). Expected: rows whose Module column matches remain.
+3. Type text in lower and upper case. Expected: case-insensitive.
+4. Type nonsense. Expected: empty tree, no crash.
+5. With the cursor in the search field press Esc. Expected: the field clears and the full tree returns, with the default open/closed groups restored.
+6. Click the field's clear button. Expected: same as Esc.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-20 Copy codes: TSV of the visible rows - P1
+1. Read Codes, clear the search, click Copy codes, paste into Notepad. Expected: first line "kind<TAB>code<TAB>description<TAB>module", then one line per visible row (group rows are not included).
+2. Type `P04` in the search, click Copy codes, paste. Expected: only the visible (filtered) rows are in the TSV.
+3. Paste into Excel. Expected: four columns, no merged cells.
+4. Not-examined and incomplete rows, when present, appear in the TSV with code "?" and their wording (they are not dropped).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-21 Readiness tile grid and "n/m ready" chip [BOTH] - P0 **[GT]**
+1. Read Codes. Expected: a "Readiness monitors" panel at the right with a tile per monitor in a two-column grid, each with the monitor name and a chip "Ready" (green) or "Not ready" (amber); a coloured left edge matches the state.
+2. Expected: a summary chip at the top of the panel "<done>/<total> ready" (e.g. "8/10 ready"), green only when every monitor is ready, amber otherwise.
+3. If the reply carried an error, expected: the panel says "Readiness not examined - <reason>" and the chip reads "readiness not examined" (muted); no tiles, no green.
+4. If the ECM reports no supported monitors, expected the text "The ECM reported no supported readiness monitors." and chip "no monitors reported".
+5. Narrow the window. Expected: the grid scrolls within its panel; the window does not widen.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-22 MIL banners - P0 **[GT]**
+1. MIL ON: Read Codes on a truck with the MIL lit. Expected: a red banner "MIL is ON - <n> code(s)" above the tree and the red chip "MIL ON".
+2. MIL off: Expected: no banner and a green chip "MIL off".
+3. MIL not examined (readiness reply failed; if reproducible): Expected: a MUTED banner "MIL not examined - <reason>" and the muted chip "MIL not examined"; it must not read "MIL off".
+4. Expected: the banner is hidden before the first read.
+
+Pass: [ ]  Fail: [ ]  N/A: [ ]  Notes: ____
+
+### G-23 Clear Codes confirmation text; Cancel changes nothing - P0 **[GT]** (bench truck only)
+1. Click "Clear Codes...". Expected: a warning dialog titled "Clear trouble codes" with the text "Clear ALL stored and pending DTCs?" followed by "This also resets every readiness monitor - the truck will need a full drive cycle before it can pass an emissions check." Buttons: Yes and Cancel; Cancel is the default.
+2. Press Enter without choosing. Expected: it cancels.
+3. Click Cancel. Expected: no GT traffic starts; no "Clearing..." chip; the rows and readiness are unchanged; all actions stay enabled.
+4. Check the button caption. Expected: it keeps the trailing ellipsis "Clear Codes..." (it asks before acting).
+5. Press F5 and use the keyboard to confirm that F5 never triggers Clear Codes.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-24 Clear Codes success outcome - P0 **[GT]** (bench truck only)
+1. Click Clear Codes, then Yes. Expected: a muted "Clearing..." chip; Read Codes, Scan Modules and Clear Codes disabled.
+2. On a confirmed clear, expected: NO outcome dialog; the page re-reads and shows fresh results ("Codes read at" time updates); Stored is empty (or only codes that re-set), and the readiness grid shows monitors reset to "Not ready" (the "n/m ready" chip drops).
+3. Expected: the busy state is restored and all actions are enabled.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-25 Clear Codes failure outcome dialogs - P1 **[GT]**
+1. Provoke "not sent" (if reproducible, e.g. ignition OFF or the OBD cable pulled right after confirming). Expected: a warning dialog titled "Clear codes" starting "The clear was NOT sent - nothing was changed." followed by the reason (or "addressing not confirmed"). After OK the rows from the re-read are shown and the busy state is restored.
+2. Provoke "sent, not confirmed" (if reproducible). Expected: a warning dialog titled "Clear codes" starting "The clear was sent but the ECM did not confirm it." with the error and a line "Acknowledged by: <ids or nobody>".
+3. These two are the ONLY popup dialogs in the Diagnostics tab besides the confirmation of G-23; link errors are inline (G-28).
+4. If neither can be provoked, record N/A (covered by `test_clear_codes_is_confirmed_and_reports_outcome`).
+
+Pass: [ ]  Fail: [ ]  N/A: [ ]  Notes: ____
+
+### G-26 Failed re-read after Clear Codes never shows the pre-clear rows - P0 **[GT]** (bench truck only)
+1. Make sure Stored shows at least one code (note it: `________`). Click Clear Codes, Yes, and make the re-read fail (pull the OBD cable from the DLC or switch the ignition OFF right after confirming; if the timing cannot be hit, record N/A).
+2. Expected: the old code rows are NOT shown any more; the tree shows not-examined rows for the kinds that could not be re-read (muted italic "Not examined - ..."); the readiness panel and MIL banner read "not examined"; no "No trouble codes" row.
+3. Expected: a banner above the tree names the step that failed (the re-read after the clear), so it is clear that the clear itself may have been sent but its result is unknown.
+4. Restore the cable/ignition and click Read Codes. Expected: the banner disappears and the true post-clear state is shown.
+
+Pass: [ ]  Fail: [ ]  N/A: [ ]  Notes: ____
+
+### G-27 "Codes read at" note - P1
+1. After Read Codes expected the note reads "Codes read at hh:mm:ss - Clear Codes also resets every readiness monitor." with the time of this read.
+2. Read again later. Expected: the time updates. After a clear (G-24) it shows the time of the re-read.
+3. A read that fails with a link error (G-28) does NOT change the time.
+
+Pass: [ ]  Fail: [ ]
+
+### G-28 Link error is an inline banner, not a popup [BOTH] - P0
+1. Unplug the GT (or hold its COM port in another program). Click Read Codes. Expected: NO popup; a red banner above the tree reads "Couldn't reach the truck: <reason>"; the buttons are enabled again and "Reading..." is gone.
+2. Do this after a successful read. Expected: the banner also says "the rows below are from the previous read at hh:mm:ss" and names that read time.
+3. Restore the GT and Read Codes. Expected: the banner disappears on success.
+4. Repeat at 1366x768. Expected: a long reason wraps inside the banner; the page does not widen.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### 7A.3 Shortcuts
+
+### G-29 F5 runs the primary action per sub-tab - P0 **[GT]**
+1. On Module Map press F5. Expected: a scan starts ("Scanning..." chip). After it ends, switch to Codes & Readiness and press F5. Expected: a read starts ("Reading..." chip).
+2. Press F5 while a job runs. Expected: nothing (no second job, no queued job).
+3. Hover Scan Modules and Read Codes. Expected: the tooltip ends with "(F5)".
+4. Leave Diagnostics for the Dashboard and press F5. Expected: it does what it did before (starts a replay when a log is loaded), and does NOT start a scan or a read (G-31).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-30 Ctrl+F only on Codes; Esc clears - P1
+1. On Codes & Readiness click in the tree and press Ctrl+F. Expected: the search field takes focus with its text selected.
+2. Type `lean`, press Esc. Expected: the field clears (G-19).
+3. Switch to Module Map and press Ctrl+F. Expected: nothing (no focus jump, no switch of sub-tab).
+4. Press Ctrl+F on the Dashboard. Expected: nothing. On Tuning it still focuses the table search (X-06).
+
+Pass: [ ]  Fail: [ ]
+
+### G-31 Diagnostics keys do not leak into the Dashboard [BOTH] - P0
+1. With a live GT on the Dashboard and Diagnostics open, click a row in the code tree (focus on the tree) and press R, M, Space and P. Expected: they behave as list keys (type-ahead, row select/toggle); no recording starts, no marker, no replay pause (extends X-05).
+2. On Module Map press R, M, Space. Expected: nothing happens on the Dashboard; the status line and Record button are unchanged.
+3. Press F5 on Diagnostics, then switch to the Dashboard. Expected: the Dashboard state is unchanged (no replay started by the Diagnostics F5).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### 7A.4 Persistence and cross-cutting
+
+### G-32 Splitter positions persist under diag/ - P1
+1. On Module Map drag the splitter between map and card to a clearly different position (card wider). On Codes & Readiness drag the splitter between tree and readiness panel (readiness wider).
+2. Quit (File -> Quit) and relaunch; open Diagnostics. Expected: both splitters reopen at the dragged positions.
+3. Expected: the settings are stored under keys beginning `diag/` (check the QSettings file: `diag/map_split`, `diag/codes_split`, `diag/scan_notes_open`) and the Diagnostics page wrote no other key.
+4. Delete the `diag/` keys, relaunch. Expected: the defaults return (map wider than card, tree wider than readiness) without error.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-33 Minimum width at 1366x768 [1366] - P0
+1. Launch at 1366x768, maximise, open each Diagnostics sub-tab. Expected: no horizontal scrollbar; the whole window including the status bar fits the screen.
+2. Fill the chrome to its widest: read codes with every kind not examined (or error text), start a scan against an absent GT so the error banner and "Scanning..." chip show. Drag the window narrower until it stops. Expected: the Diagnostics page minimum width is under 700 px and the window minimum width is under 1000 px (measure); chips, note, legend and banners clip/wrap rather than widen the window.
+3. At the narrowest width expected: the toolbar remains usable (overflow ">>" if needed) and the search field is still reachable.
+4. Check at 1920x1080. Expected: the map fills the area; nothing is stretched into an unusable layout.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-34 Dark palette consistent with Tuning [BOTH] - P0
+1. Place Diagnostics and Tuning (Editor) side by side in turn. Expected: the same breadcrumb height, the same 36 px toolbar, the same chip look (rounded outline chips), the same greys, no white or light-grey backgrounds, no default-blue selection colour, no light scroll bars (extends X-02).
+2. Check the map canvas, the module card, the legend, the tree, the readiness tiles, the banners (red danger, muted), the dashed "not examined" chips and the disclosure button. Expected: all use the dark palette; text contrast at least 4.5:1.
+3. Open the warning dialogs of G-23 and G-25. Expected: dark-themed, not jarring white.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### G-35 Toolbar chrome and icons - P1
+1. Expected: both sub-tabs have a single 36 px toolbar directly under the breadcrumb: Module Map holds "Scan Modules", a separator, "Copy report"; Codes holds "Read Codes", "Clear Codes...", a separator, "Copy codes", a separator, the search field.
+2. Expected: every button shows a vector glyph icon (no emoji, no missing-glyph boxes); the primary button (Scan Modules / Read Codes) is visibly highlighted compared with the others.
+3. Disable states: while a job runs the three job actions are greyed; Copy report and Copy codes follow G-01 and G-12.
+4. Hover each button. Expected: a descriptive tooltip.
+
+Pass: [ ]  Fail: [ ]
+
+### G-36 Keyboard-only pass - P2
+1. Without the mouse: Tab to the sub-tab bar, switch sub-tabs with the arrow keys, Tab to Read Codes and press Enter/Space, Tab to the tree and move with the arrow keys, Ctrl+F, type, Esc.
+2. Expected: every step works and a visible focus indicator shows on the focused control; the module map itself is mouse-only (record any gap as a defect note, not a fail of this case).
+
+Pass: [ ]  Fail: [ ]
+
+---
+
+**Run log addendum (Diagnostics)**: add the 21 P0 cases of section 7A to the P0 pass count (the existing 42 becomes 63) and record G-nn ids for any defects.
+
+---
+
 ## 8. Cross-cutting
 
 ### X-01 Minimum width under 1000 px [1366] - P0
@@ -614,7 +924,7 @@ Pass: [ ]  Fail: [ ]
 Pass: [ ]  Fail: [ ]
 
 ### X-11 About and version - P2
-1. Help -> About. Expected: "OpenOBD 0.35.0", vehicle and controller info, and the safety text.
+1. Help -> About. Expected: "OpenOBD 0.36.0", vehicle and controller info, and the safety text.
 
 Pass: [ ]  Fail: [ ]
 
@@ -635,5 +945,5 @@ Pass: [ ]  Fail: [ ]
 | Build version | |
 | Screen sizes run | 1366x768 [ ]   1920x1080 [ ] |
 | GT bench run | Yes [ ]   No [ ] |
-| P0 pass count | ___ / 42 |
+| P0 pass count | ___ / 63 |
 | Defects raised (ids) | |
