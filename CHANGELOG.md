@@ -29,6 +29,21 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   note. An unsafe last-good verdict stays visible through a failed read.
 - The page stays strictly read-only: no arm, fire, activate or release
   control exists in OpenOBD.
+- **Stable table.** The 3 s poll rebuilds the journal table only when what
+  it shows changed; a rebuild keeps the selected rows and the scroll
+  position. The filter and Show selector apply to every journal entry before
+  the newest-100 limit, a footer row says "showing N of M matching entries"
+  when the list is cut, "No matches" replaces an empty filtered list, and
+  Copy report says "Entries shown (N of M ...)".
+- **Failed reads stay labelled.** After a failed read the Journal sources
+  panel starts with "last good read HH:MM:SS (not current)", Copy report says
+  "Verdict: read failed (last good: <verdict> at HH:MM:SS)", and a table that
+  cannot be rendered counts as a failed read (the last good table stays).
+- **Control-state verdict hardening.** A journal record whose timestamp is
+  NaN, infinite or too large to order now makes the verdict "journal
+  unknown" instead of being sorted unpredictably (which could have hidden an
+  unreleased activation); a list / object module or CPID no longer breaks
+  the verdict. Tooltips on elided breadcrumb text render literally.
 
 ### Internal
 - ActiveTestsPage moved from `livedata.py` to its own module

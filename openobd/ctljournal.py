@@ -29,6 +29,7 @@ Pure stdlib, no Qt, unit-testable against fixture JSONL files.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -135,9 +136,16 @@ def control_state() -> ControlState:
     for r in reads:
         for entry in r.entries:
             at = entry.get("at")
+            # json.loads accepts NaN / Infinity and huge integer literals: a
+            # NaN key makes the sort order undefined (a release could fold
+            # before its activate - a false clean), so a non-finite or
+            # unconvertible `at` is unorderable, never trusted.
             try:
                 at_f = float(at)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
+                unorderable += 1
+                continue
+            if not math.isfinite(at_f):
                 unorderable += 1
                 continue
             flat.append((at_f, entry, str(r.path)))
@@ -148,7 +156,9 @@ def control_state() -> ControlState:
     # puts it back.
     live: dict[tuple, dict] = {}
     for _at, entry, journal in flat:
-        key = (entry.get("module"), entry.get("cpid"))
+        # str(): a list / dict module or cpid from a hostile line must not
+        # raise TypeError (unhashable) and take the safety verdict down.
+        key = (str(entry.get("module")), str(entry.get("cpid")))
         event = entry.get("event")
         if event == "activate":
             d = dict(entry)
@@ -197,7 +207,9 @@ def outstanding(path: Optional[Path] = None) -> list[dict]:
         return control_state().outstanding
     live: dict[tuple, dict] = {}
     for entry in read_one(path).entries:
-        key = (entry.get("module"), entry.get("cpid"))
+        # str(): a list / dict module or cpid from a hostile line must not
+        # raise TypeError (unhashable) and take the safety verdict down.
+        key = (str(entry.get("module")), str(entry.get("cpid")))
         event = entry.get("event")
         if event == "activate":
             live[key] = entry

@@ -563,3 +563,59 @@ def test_bad_precision_does_not_mislabel_reading(tmp_path):
     assert ds.state == "fresh" and ds.text == "42"
     ds2 = display_state(_s(value_num=42), {"name": "rpm", "precision": -3})
     assert ds2.state == "fresh" and ds2.text == "42"
+
+
+# --- control journal: non-finite / hostile values (v0.38.0 review R2) ------- #
+def _write_raw_journal(path, lines):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_control_state_nan_activate_is_never_clean(tmp_path, monkeypatch):
+    # json.loads accepts a bare NaN; a NaN sort key makes the global order
+    # undefined, so the release could fold before the activate -> false clean.
+    _isolate_roots(monkeypatch, tmp_path)
+    monkeypatch.setenv("TRUCK_MCP_DATA", str(tmp_path))
+    _write_raw_journal(tmp_path / "control" / "control-journal.jsonl", [
+        '{"at": NaN, "event": "activate", "module": "7E0", "cpid": "12"}',
+        '{"at": 2, "event": "released", "module": "7E0", "cpid": "12"}',
+    ])
+    st = ctljournal.control_state()
+    assert st.verdict == "unknown"
+    assert "no usable timestamp" in st.detail
+
+
+def test_control_state_nan_release_keeps_activation_outstanding(
+        tmp_path, monkeypatch):
+    _isolate_roots(monkeypatch, tmp_path)
+    monkeypatch.setenv("TRUCK_MCP_DATA", str(tmp_path))
+    _write_raw_journal(tmp_path / "control" / "control-journal.jsonl", [
+        '{"at": 1, "event": "activate", "module": "7E0", "cpid": "12"}',
+        '{"at": Infinity, "event": "released", "module": "7E0", "cpid": "12"}',
+    ])
+    assert ctljournal.control_state().verdict == "outstanding"
+
+
+def test_control_state_huge_int_timestamp_is_unknown(tmp_path, monkeypatch):
+    _isolate_roots(monkeypatch, tmp_path)
+    monkeypatch.setenv("TRUCK_MCP_DATA", str(tmp_path))
+    _write_raw_journal(tmp_path / "control" / "control-journal.jsonl", [
+        '{"at": 1, "event": "activate", "module": "7E0", "cpid": "12"}',
+        '{"at": 2, "event": "released", "module": "7E0", "cpid": "12"}',
+        '{"at": 1' + "0" * 400 + ', "event": "arm", "module": "7E0"}',
+    ])
+    st = ctljournal.control_state()                     # no OverflowError
+    assert st.verdict == "unknown"
+
+
+def test_control_state_unhashable_module_does_not_raise(tmp_path, monkeypatch):
+    _isolate_roots(monkeypatch, tmp_path)
+    monkeypatch.setenv("TRUCK_MCP_DATA", str(tmp_path))
+    _write_journal(tmp_path / "control" / "control-journal.jsonl", [
+        {"at": 1, "event": "activate", "module": [], "cpid": {"x": 1}},
+        {"at": 2, "event": "released", "module": "7E0", "cpid": "12"},
+    ])
+    st = ctljournal.control_state()                     # no TypeError
+    assert st.verdict == "outstanding" and st.outstanding[0]["module"] == []
+    j = tmp_path / "control" / "control-journal.jsonl"
+    assert len(ctljournal.outstanding(j)) == 1

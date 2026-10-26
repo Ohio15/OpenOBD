@@ -22,7 +22,10 @@ log, and an unmistakable safe / unsafe colour.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import heapq
+import math
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -50,6 +53,9 @@ SHOW_MODES = (("all", "All entries"),
               ("24h", "Last 24 h"))
 COLUMNS = ("When", "Event", "Module", "CPID", "Detail")
 COL_WHEN, COL_EVENT, COL_MODULE, COL_CPID, COL_DETAIL = range(5)
+#: Item data role (column 0) holding a row's identity, so a rebuild can
+#: put the selection back on the same journal entries.
+ROW_KEY_ROLE = Qt.UserRole + 1
 #: Keys shown in their own column (or internal), not repeated in Detail.
 _OWN_COLUMN_KEYS = ("at", "event", "module", "cpid", "_journal")
 
@@ -79,10 +85,13 @@ _EVENT_TOKENS = {"danger": "danger-text", "ok": "ok-text", "neutral": "text"}
 
 
 def _epoch(at) -> Optional[float]:
+    """A finite epoch, or None. json.loads accepts NaN / Infinity and huge
+    integer literals; none of them can be ordered, so none is a timestamp."""
     try:
-        return float(at)
-    except (TypeError, ValueError):
+        value = float(at)
+    except (TypeError, ValueError, OverflowError):
         return None
+    return value if math.isfinite(value) else None
 
 
 def _plural(n: int, word: str) -> str:
@@ -110,6 +119,12 @@ class ActiveTestsPage(QWidget):
         self._as_of: Optional[datetime] = None      # last SUCCESSFUL read
         self._read_error: Optional[str] = None      # why the last read failed
         self._roots: list[Path] = []                # searched at last good read
+        # Render caches (R1 / SC-10): the 3 s poll re-reads the journal,
+        # but the table is rebuilt only when what it shows has changed.
+        self._sel_cache: Optional[tuple] = None     # (inputs, snapshot, result)
+        self._table_key: Optional[tuple] = None     # what the tree now shows
+        self._shown: tuple[int, int] = (0, 0)       # (rows listed, matching)
+        self._sources_body = ""                     # last good sources listing
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -337,101 +352,193 @@ class ActiveTestsPage(QWidget):
             state = ctljournal.control_state()
         except Exception as exc:   # the safety page must never fail to render
             self._read_error = str(exc) or type(exc).__name__
+            if self._state is None:      # nothing to keep: say so, not blank
+                self._restore_last_good()
         else:
-            self._state = state
-            self._roots = roots
-            self._read_error = None
-            self._as_of = datetime.now()
-            self._fill_table()
-            self._fill_sources()
+            prev = (self._state, self._roots)
+            self._state, self._roots, self._read_error = state, roots, None
+            try:
+                self._fill_table()
+                self._fill_sources()
+            except Exception as exc:
+                # A render failure must never leave a half-built table marked
+                # current: put the last good read back and say it failed.
+                self._state, self._roots = prev
+                self._read_error = ("could not render the journal: "
+                                    + (str(exc) or type(exc).__name__))
+                self._restore_last_good()
+            else:
+                self._as_of = datetime.now()   # only once fully rendered
+        self._show_sources()
         self._refresh_chrome()
 
-    # -- journal table --------------------------------------------------------
-    def _entries(self) -> list[dict]:
-        """Newest first, Show mode applied, capped at TABLE_LIMIT. Entries
-        without a usable timestamp sort last (ctljournal already downgrades
-        the verdict for them)."""
-        if self._state is None:
-            return []
-        flat = []
-        for r in self._state.reads:
-            for e in r.entries:
-                d = dict(e)
-                d.setdefault("_journal", str(r.path))
-                flat.append(d)
-        flat.sort(key=lambda e: (_epoch(e.get("at")) is not None,
-                                 _epoch(e.get("at")) or 0.0), reverse=True)
-        mode = self.show_mode()
-        if mode == "controls":
-            flat = [e for e in flat
-                    if event_kind(str(e.get("event", ""))) == "danger"]
-        elif mode == "24h":
-            cutoff = (datetime.now() - timedelta(hours=24)).timestamp()
-            flat = [e for e in flat
-                    if (_epoch(e.get("at")) or 0.0) >= cutoff]
-        return flat[:TABLE_LIMIT]
+    def _restore_last_good(self) -> None:
+        self._sel_cache = None
+        self._table_key = None
+        try:
+            self._fill_table()
+            self._fill_sources()
+        except Exception:
+            self.tree.clear()
+            self._table_key = None
+            self._shown = (0, 0)
+            self._sources_body = ""
+            self._add_note_row("Table unavailable: the last good read could "
+                               "not be rendered either", "empty")
 
-    def _fill_table(self) -> None:
-        self.tree.clear()
-        entries = self._entries()
-        if not entries:
-            item = QTreeWidgetItem(["No journal entries"])
-            item.setFlags(Qt.NoItemFlags)
-            item.setForeground(0, theme.qcolor("text-muted"))
-            item.setData(0, Qt.UserRole, "empty")
-            self.tree.addTopLevelItem(item)
-            item.setFirstColumnSpanned(True)
-            return
+    # -- journal table --------------------------------------------------------
+    def _select(self) -> tuple[list[tuple], int]:
+        """(newest TABLE_LIMIT matches, number matching). Show mode and the
+        filter apply to EVERY entry before the limit, so an old match is
+        never hidden behind newer non-matches. Bounded selection (heapq) over
+        a generator: no full copy + sort on the UI thread. Entries without a
+        usable timestamp sort last (ctljournal already downgrades the verdict
+        for them). Cached per (inputs, journal content)."""
+        st = self._state
+        if st is None:
+            return [], 0
+        mode = self.show_mode()
+        needle = self.filter.text().strip().lower()
+        cutoff = time.time() - 86400 if mode == "24h" else None
+        inputs = (mode, needle, cutoff)
+        snapshot = [(str(r.path), r.entries) for r in st.reads]
+        cache = self._sel_cache
+        if cache is not None and cache[0] == inputs and cache[1] == snapshot:
+            return cache[2]
+        matched = 0
+
+        def candidates():
+            nonlocal matched
+            for r in st.reads:
+                journal = str(r.path)
+                for e in r.entries:
+                    event = str(e.get("event", ""))
+                    if mode == "controls" and event_kind(event) != "danger":
+                        continue
+                    at = _epoch(e.get("at"))
+                    if cutoff is not None and (at or 0.0) < cutoff:
+                        continue
+                    if needle:
+                        hay = " ".join((event, str(e.get("module", "")),
+                                        str(e.get("cpid", "")), _detail(e)))
+                        if needle not in hay.lower():
+                            continue
+                    matched += 1
+                    yield (at is not None, at or 0.0), e, journal
+
+        top = heapq.nlargest(TABLE_LIMIT, candidates(), key=lambda t: t[0])
+        result = (top, matched)
+        self._sel_cache = (inputs, snapshot, result)
+        return result
+
+    @staticmethod
+    def _rows(top: list[tuple]) -> list[tuple]:
+        """Display rows: (when, event, module, cpid, detail, full, journal).
+        The journal is the file the entry was read from, assigned here - an
+        entry's own `_journal` key cannot forge its provenance."""
+        rows = []
         last_day = None
-        for e in entries:
+        for _key, e, journal in top:
             at = _epoch(e.get("at"))
+            dt = None
             if at is not None:
                 try:
                     dt = datetime.fromtimestamp(at)
                 except (OverflowError, OSError, ValueError):
                     dt = None
-            else:
-                dt = None
             if dt is None:
-                when, full = str(e.get("at", "")), str(e.get("at", ""))
+                when = full = str(e.get("at", ""))
             else:
                 full = dt.strftime("%Y-%m-%d %H:%M:%S")
                 when = (full if dt.date() != last_day
                         else dt.strftime("%H:%M:%S"))
                 last_day = dt.date()
-            event = str(e.get("event", ""))
-            detail = _detail(e)
-            item = QTreeWidgetItem([
-                when, event, str(e.get("module", "")),
-                str(e.get("cpid", "")), detail])
-            kind = event_kind(event)
-            item.setForeground(COL_EVENT, theme.qcolor(_EVENT_TOKENS[kind]))
-            item.setData(COL_EVENT, Qt.UserRole, kind)
-            item.setToolTip(COL_WHEN, plain_tooltip(full))
-            item.setToolTip(COL_DETAIL, plain_tooltip(
-                f"{detail}\njournal: {e.get('_journal', '?')}"))
-            self.tree.addTopLevelItem(item)
-        self._apply_filter()
+            rows.append((when, str(e.get("event", "")),
+                         str(e.get("module", "")), str(e.get("cpid", "")),
+                         _detail(e), full, journal))
+        return rows
+
+    def _empty_text(self, matched: int) -> Optional[str]:
+        if matched:
+            return None
+        st = self._state
+        if st is None:
+            return ("No successful read yet" if self._read_error is not None
+                    else "No journal entries")
+        if not any(r.entries for r in st.reads):
+            return "No journal entries"
+        return "No matches for the current filter / Show mode"
+
+    def _add_note_row(self, text: str, role: str) -> None:
+        item = QTreeWidgetItem([text])
+        item.setFlags(Qt.NoItemFlags)
+        item.setForeground(0, theme.qcolor("text-muted"))
+        item.setData(0, Qt.UserRole, role)
+        self.tree.addTopLevelItem(item)
+        item.setFirstColumnSpanned(True)
+
+    def _fill_table(self) -> None:
+        top, matched = self._select()
+        rows = self._rows(top)
+        empty = self._empty_text(matched)
+        key = (self.show_mode(), self.filter.text().strip().lower(),
+               tuple(rows), matched, empty)
+        if key == self._table_key:
+            return          # unchanged: keep items, selection and scroll
+        bar = self.tree.verticalScrollBar()
+        scroll = bar.value()
+        selected = {it.data(0, ROW_KEY_ROLE)
+                    for it in self.tree.selectedItems()}
+        self.tree.setUpdatesEnabled(False)
+        try:
+            self.tree.clear()
+            if empty is not None:
+                self._add_note_row(empty, "empty")
+            for row in rows:
+                when, event, module, cpid, detail, full, journal = row
+                item = QTreeWidgetItem([when, event, module, cpid, detail])
+                kind = event_kind(event)
+                item.setForeground(COL_EVENT,
+                                   theme.qcolor(_EVENT_TOKENS[kind]))
+                item.setData(COL_EVENT, Qt.UserRole, kind)
+                row_key = "\x1f".join(row[1:])
+                item.setData(0, ROW_KEY_ROLE, row_key)
+                item.setToolTip(COL_WHEN, plain_tooltip(full))
+                item.setToolTip(COL_DETAIL, plain_tooltip(
+                    f"{detail}\njournal: {journal}"))
+                self.tree.addTopLevelItem(item)
+                if row_key in selected:
+                    item.setSelected(True)
+            if matched > len(rows):
+                self._add_note_row(
+                    f"showing {len(rows)} of {matched} matching entries "
+                    "(newest first); narrow the filter or Show mode to list "
+                    "older ones", "info")
+        finally:
+            self.tree.setUpdatesEnabled(True)
+        self.tree.doItemsLayout()
+        bar.setValue(scroll)
+        self._table_key = key
+        self._shown = (len(rows), matched)
 
     def _apply_filter(self, *_a) -> None:
-        """Display-only: hides rows, never changes what was read."""
-        needle = self.filter.text().strip().lower()
-        for i in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(i)
-            if item.data(0, Qt.UserRole) == "empty":
-                continue
-            hay = " ".join(item.text(c) for c in
-                           (COL_EVENT, COL_MODULE, COL_CPID, COL_DETAIL))
-            item.setHidden(bool(needle) and needle not in hay.lower())
+        """Display-only: changes which entries are listed, never what was
+        read or the verdict."""
+        self._fill_table()
 
     def visible_rows(self) -> list[list[str]]:
         rows = []
         for i in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(i)
-            if item.isHidden() or item.data(0, Qt.UserRole) == "empty":
+            if item.isHidden() or item.data(0, Qt.UserRole) in ("empty",
+                                                                 "info"):
                 continue
             rows.append([item.text(c) for c in range(len(COLUMNS))])
         return rows
+
+    def shown_counts(self) -> tuple[int, int]:
+        """(entries listed, entries matching Show mode + filter)."""
+        return self._shown
 
     def _fill_sources(self) -> None:
         reads = {str(r.path): r for r in (self._state.reads
@@ -449,7 +556,17 @@ class ActiveTestsPage(QWidget):
                            if r.unreadable_lines else "")
                 lines.append(f"journal      {path}  "
                              f"({_plural(len(r.entries), 'record')}{damaged})")
-        self.sources_text.setText("\n".join(lines) or "No data roots searched.")
+        self._sources_body = "\n".join(lines) or "No data roots searched."
+
+    def _show_sources(self) -> None:
+        body = self._sources_body
+        if self._read_error is not None:
+            head = (f"last good read {self._as_of.strftime('%H:%M:%S')} "
+                    "(not current)" if self._as_of is not None
+                    else "no successful read yet")
+            body = f"{head}\n{body}" if body else head
+        if self.sources_text.text() != body:
+            self.sources_text.setText(body)
 
     # -- report / search --------------------------------------------------------
     def report(self) -> str:
@@ -460,8 +577,17 @@ class ActiveTestsPage(QWidget):
                 else "never")
         out.append(f"Last successful read: {good}")
         st = self._state
+        if self._read_error is not None:
+            if st is not None and self._as_of is not None:
+                label = VERDICT_CHIPS.get(st.verdict, (st.verdict,))[0]
+                out.append(f"Verdict: read failed (last good: {label} at "
+                           f"{self._as_of.strftime('%H:%M:%S')})")
+            else:
+                out.append("Verdict: read failed (no successful read yet)")
+        elif st is not None:
+            label = VERDICT_CHIPS.get(st.verdict, (st.verdict,))[0]
+            out.append(f"Verdict: {label}")
         if st is not None:
-            out.append(f"Verdict: {VERDICT_CHIPS.get(st.verdict, (st.verdict,))[0]}")
             if st.detail:
                 out.append(f"Detail: {st.detail}")
             out.append(f"Journals: {len(st.reads)}, records: "
@@ -477,7 +603,8 @@ class ActiveTestsPage(QWidget):
         out.append("Journal sources:")
         out.extend("  " + ln for ln in self.sources_text.text().splitlines())
         rows = self.visible_rows()
-        out.append(f"Entries shown ({len(rows)}, newest first):")
+        out.append(f"Entries shown ({len(rows)} of {self._shown[1]}, "
+                   "newest first):")
         out.extend("  " + "  ".join(r) for r in rows)
         return "\n".join(out)
 

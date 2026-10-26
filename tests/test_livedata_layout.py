@@ -103,7 +103,8 @@ def test_full_session_label_still_readable(page):
 def test_breadcrumb_elides_instead_of_widening(page):
     # The status sentence moved into the breadcrumb (title + note): both
     # elide to the width they are given and keep the full text as tooltip.
+    from openobd.tuningui import plain_tooltip
     for lab in (page.crumb.title, page.crumb.note):
         one_line = lab.fontMetrics().horizontalAdvance(lab.full_text())
         assert lab.minimumSizeHint().width() < one_line
-        assert lab.toolTip() == lab.full_text()
+        assert lab.toolTip() == plain_tooltip(lab.full_text())
