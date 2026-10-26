@@ -3,6 +3,16 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.39.1 — 2026-10-26
+
+### Fixed
+- **Active Tests toolbar styling.** The Active Tests toolbar now gets the
+  same workspace toolbar look as Tuning, Diagnostics and Live Data (36 px
+  bar, bold accent Refresh as the primary action, checked/disabled/hover
+  button states). Its objectName was missing from the theme's toolbar list,
+  so none of that styling applied. A test now derives the list from every
+  toolbar the app builds, so a new toolbar cannot miss it again.
+
 ## 0.39.0 — 2026-10-26
 
 ### Added

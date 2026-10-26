@@ -315,7 +315,8 @@ def text_qss(name: str, extra: str = "") -> str:
 
 
 #: objectNames of the workspace toolbars that share one look.
-TOOLBAR_NAMES = ("tuningToolbar", "diagToolbar", "liveToolbar")
+#: tests/test_theme.py derives this from every make_toolbar("<name>") call.
+TOOLBAR_NAMES = ("tuningToolbar", "diagToolbar", "liveToolbar", "activeToolbar")
 
 
 def _toolbar_block(name: str) -> str:
@@ -353,7 +354,7 @@ QToolBar#{name}::separator {{
 
 
 def toolbar_qss() -> str:
-    """The 36 px workspace toolbar (Tuning and Diagnostics). A QToolButton
+    """The 36 px workspace toolbar (every TOOLBAR_NAMES page). A QToolButton
     with the dynamic property primary=true is the sub-tab's main action."""
     return "".join(_toolbar_block(n) for n in TOOLBAR_NAMES)
 
