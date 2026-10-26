@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme, tmstore
-from .tuningui import CHIP_KIND_ROLE, ChipDelegate
+from .tuningui import CHIP_KIND_ROLE, ChipDelegate, plain_tooltip
 
 # Drag payload for a Live Data field: a tile drags its channel name under
 # this type; the graphed-channels table is the drop target.
@@ -796,7 +796,7 @@ class ChannelTable(QTableWidget):
         self.setObjectName("graphTable")
         self.setHorizontalHeaderLabels(list(self.COLUMNS))
         for c, tip in enumerate(self.HEADER_TIPS):
-            self.horizontalHeaderItem(c).setToolTip(tip)
+            self.horizontalHeaderItem(c).setToolTip(plain_tooltip(tip))
         self.verticalHeader().setVisible(False)
         self.verticalHeader().setDefaultSectionSize(theme.ROW_HEIGHT)
         self.setEditTriggers(QTableWidget.NoEditTriggers)

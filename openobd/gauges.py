@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QLayout, QSizePolicy, QVBoxLayout, QWidget,
 )
 
+from .tuningui import plain_tooltip
 from .gaugemotion import (
     NeedleMotion, fmt_reading, grid_cells, grid_shape, reading_decimals,
 )
@@ -233,7 +234,8 @@ class GaugeBase(QWidget):
         self._static: Optional[QPixmap] = None
         self._static_key = None
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setToolTip(f"{label} — click to reset min/max capture")
+        self.setToolTip(plain_tooltip(
+            f"{label} — click to reset min/max capture"))
 
     # -- data ------------------------------------------------------------- #
     @property

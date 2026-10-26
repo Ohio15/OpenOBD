@@ -657,7 +657,7 @@ def test_record_button_labels_and_state(rig):
     assert d.btn_record.text() == RECORD_IDLE_TEXT
     assert d.btn_record.property("recording") is False
     assert d.btn_mark.isHidden() and not d.btn_mark.isEnabled()
-    assert d.btn_record.toolTip().startswith("Last recording: ")
+    assert d.btn_record.toolTip().startswith("<qt>Last recording: ")
     assert "Saved 1234 samples" in d.status.text()
 
 
@@ -677,7 +677,7 @@ def test_marker_needs_a_recording_and_m_still_marks(rig):
     d._scan_for_gt()
     _settle(rig.app)
     src = d.source
-    assert d.shortcut_tooltip(d.btn_mark).endswith("(M)")
+    assert d.shortcut_tooltip(d.btn_mark).endswith("(M)</qt>")
     d.toggle_record()
     src.feed(1.0, rpm=700.0)
     d._tick()
@@ -733,10 +733,11 @@ def test_samples_published_during_stop_land_in_the_csv(rig, monkeypatch, path):
 
 def test_record_is_disabled_for_a_log_replay(rig):
     from openobd.app import REPLAY_RECORD_REASON
+    from openobd.tuningui import plain_tooltip
     d = rig.d
     d.bind_source(ReplaySource())
     assert not d.btn_record.isEnabled()
-    assert d.btn_record.toolTip() == REPLAY_RECORD_REASON
+    assert d.btn_record.toolTip() == plain_tooltip(REPLAY_RECORD_REASON)
     assert REPLAY_RECORD_REASON == "Recording needs a live GT; this is a replay."
     d.toggle_record()                                # R / direct call too
     assert not d.recording and d.status.text() == REPLAY_RECORD_REASON
@@ -805,7 +806,7 @@ def test_r_toggles_record(rig):
     rig.ports.present = ["COM7"]
     d._scan_for_gt()
     _settle(rig.app)
-    assert d.shortcut_tooltip(d.btn_record).endswith("(R)")
+    assert d.shortcut_tooltip(d.btn_record).endswith("(R)</qt>")
     _shortcut(d, "R").activated.emit()
     assert d.recording
     _shortcut(d, "R").activated.emit()
@@ -874,3 +875,41 @@ def test_main_window_menus_replace_the_connect_and_session_buttons(qapp):
     finally:
         win.dashboard.shutdown()
         win.deleteLater()
+
+
+def test_record_tooltip_renders_a_hostile_path_literally(rig, monkeypatch):
+    """DR-032 868953ce: the record button's tooltip carries a recording path
+    or block reason (runtime text); markup in it must not render as HTML,
+    including through the shortcut-hint composition shown on hover."""
+    from openobd.tuningui import plain_tooltip
+    d = rig.d
+    hostile = "Last recording: C:/<b>x</b>&.csv"
+    monkeypatch.setattr(d, "_record_block_reason", lambda: None)
+    d._record_tip = hostile
+    d._sync_controls()
+    assert d.btn_record.toolTip() == plain_tooltip(hostile)
+    assert d.shortcut_tooltip(d.btn_record) == plain_tooltip(f"{hostile} (R)")
+    monkeypatch.setattr(d, "_record_block_reason", lambda: "<i>blocked</i>")
+    d._sync_controls()
+    assert d.btn_record.toolTip() == "<qt>&lt;i&gt;blocked&lt;/i&gt;</qt>"
+    d._record_tip = ""
+    d._set_record_tooltip(d._record_tip)
+    assert d.btn_record.toolTip() == ""
+
+
+def test_shortcut_tooltip_unwraps_a_wrapped_action_tip_once(rig):
+    """A tooltip already wrapped by an action chokepoint (with its own key
+    hint and a line break) is unwrapped exactly once: no double escaping,
+    the newline survives as <br>, and the dashboard key is appended."""
+    from PySide6.QtWidgets import QWidget
+    from openobd.app import MainWindow
+    d = rig.d
+    host = QWidget()
+    a = MainWindow._new_action(host, "open", "T", "<i>y</i> & z\nmore",
+                               lambda: None, shortcut_hint="Ctrl+Y")
+    assert a.toolTip() == (
+        "<qt>&lt;i&gt;y&lt;/i&gt; &amp; z<br>more  (Ctrl+Y)</qt>")
+    d.btn_pause.setToolTip(a.toolTip())
+    assert d.shortcut_text(d.btn_pause) == "<i>y</i> & z\nmore  (Ctrl+Y) (Space)"
+    assert d.shortcut_tooltip(d.btn_pause) == (
+        "<qt>&lt;i&gt;y&lt;/i&gt; &amp; z<br>more  (Ctrl+Y) (Space)</qt>")

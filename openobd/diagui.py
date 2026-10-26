@@ -51,8 +51,8 @@ from . import theme, vehnet
 from .gt import DTC_DESCRIPTIONS
 from .tuningui import (
     CHIP_KIND_ROLE, Breadcrumb, ChipDelegate, CollapsiblePanel,
-    empty_state_label, make_toolbar, repolish, restore_splitter_state,
-    set_chip,
+    empty_state_label, make_toolbar, plain_tooltip, repolish,
+    restore_splitter_state, set_chip,
 )
 from .vehnet import HS, SW, ScanResult, SegStatus, Status, Verdict
 
@@ -336,7 +336,8 @@ class ModuleMapView(QWidget):
         if e.type() == QEvent.ToolTip:
             key = self.node_at(e.pos())
             if key:
-                QToolTip.showText(e.globalPos(), self.tooltip_for(key), self)
+                QToolTip.showText(e.globalPos(),
+                                  plain_tooltip(self.tooltip_for(key)), self)
             else:
                 QToolTip.hideText()
                 e.ignore()
@@ -722,7 +723,7 @@ class DiagnosticsPage(QWidget):
 
     def _action(self, glyph: str, text: str, tip: str, slot) -> QAction:
         a = QAction(theme.glyph_icon(glyph), text, self)
-        a.setToolTip(tip)
+        a.setToolTip(plain_tooltip(tip))
         a.triggered.connect(slot)
         return a
 

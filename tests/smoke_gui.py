@@ -755,9 +755,9 @@ assert "Shift+F5" in d.shortcut_tooltip(d.btn_stop)
 # the recorder rewrites btn_record's tooltip with the log path; the key hint
 # is appended at display time and must survive that
 d.btn_record.setToolTip("Last recording: C:/x.csv")
-assert d.shortcut_tooltip(d.btn_record) == "Last recording: C:/x.csv (R)"
+assert d.shortcut_tooltip(d.btn_record) == "<qt>Last recording: C:/x.csv (R)</qt>"
 d.btn_record.setToolTip("")
-assert d.shortcut_tooltip(d.btn_record).endswith("datalog (R)")
+assert d.shortcut_tooltip(d.btn_record).endswith("datalog (R)</qt>")
 assert len(d._shortcuts) == 7   # R, Ctrl+R, M, F5, Shift+F5, Space, P
 assert "(Space)" in d.shortcut_tooltip(d.btn_pause)
 assert "(M)" in d.shortcut_tooltip(d.btn_mark)

@@ -50,6 +50,11 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   `openobd/activetests.py`; the old ad-hoc banner / alert stylesheets and
   their colour tokens are gone (the page uses the shared workspace theme).
 
+### Fixed
+- Tooltips that show calibration, session or file text render it literally
+  (no rich-text injection); a guard test keeps runtime tooltips (widget
+  tooltips, model tooltip roles) escaped.
+
 ## 0.37.0 — 2026-10-26
 
 ### Changed (Live Data tab UX overhaul; cues from HP Tuners VCM Scanner, EFILive Scan, TunerStudio / Torque)

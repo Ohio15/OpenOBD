@@ -31,6 +31,7 @@ Run:  python -m openobd.app  [optional path to a .cal.json]
 from __future__ import annotations
 
 import csv
+import html
 import os
 import sys
 import threading
@@ -73,7 +74,7 @@ from .model import CalTableModel, HeatmapDelegate, clean_unit
 from .tuningui import (
     Breadcrumb, CalTableView, ChannelTree, CollapsiblePanel, CursorReadout,
     ElidedLabel, Navigator, ScalarsTree, empty_state_label, format_selection_stats,
-    make_toolbar, table_category,
+    make_toolbar, plain_tooltip, table_category,
 )
 from .transport import DataSource, LogReplaySource, GtDataSource, Sample
 from . import tmsource, tmstore
@@ -384,7 +385,7 @@ class Dashboard(QWidget):
 
         root = QVBoxLayout(self)
         self.status = QLabel(LOOKING_FOR_GT)
-        self.status.setToolTip(DASHBOARD_KEYS_HELP)
+        self.status.setToolTip(plain_tooltip(DASHBOARD_KEYS_HELP))
         root.addWidget(self.status)
 
         # The primary row: one big Record/Stop button, Mark beside it while
@@ -540,8 +541,9 @@ class Dashboard(QWidget):
             why = ""
             if isinstance(self.source, GtDataSource):
                 why = " · " + self.source.pedal_calibration().status()
-            g.setToolTip("Pedal raw: APP D as decoded (about 19 % at rest on "
-                         f"this truck){why} — click to reset min/max capture")
+            g.setToolTip(plain_tooltip(
+                "Pedal raw: APP D as decoded (about 19 % at rest on "
+                f"this truck){why} — click to reset min/max capture"))
         return {"app": "pedal"} if normalized else {}
 
     def _sync_link(self) -> None:
@@ -682,15 +684,34 @@ class Dashboard(QWidget):
 
     def shortcut_tooltip(self, btn) -> str:
         """The tooltip a button shows: its current tooltip text (or the
-        action description when none is set) plus the shortcut key."""
+        action description when none is set) plus the shortcut key. The
+        stored tooltip may already be plain_tooltip-escaped (the record
+        button carries a file path); it is unwrapped and the whole composed
+        text re-escaped, so the shown tooltip is literal end to end."""
+        return plain_tooltip(self.shortcut_text(btn))
+
+    def shortcut_text(self, btn) -> str:
+        """shortcut_tooltip before escaping: the stored tooltip unwrapped
+        from plain_tooltip (its <br> back to newlines, entities decoded;
+        a literal "<br>" in the source text was escaped, so every raw <br>
+        here is a converted newline) plus the shortcut key."""
         what, key = self._shortcut_hints[btn]
-        return f"{btn.toolTip() or what} ({key})"
+        tip = btn.toolTip()
+        if tip.startswith("<qt>") and tip.endswith("</qt>"):
+            tip = html.unescape(
+                tip[len("<qt>"):-len("</qt>")].replace("<br>", "\n"))
+        return f"{tip or what} ({key})"
+
+    def _set_record_tooltip(self, text: str) -> None:
+        """Record-button tooltip: a recording path or block reason is
+        runtime text, so it renders literally. Empty clears the tooltip."""
+        self.btn_record.setToolTip(plain_tooltip(text) if text else "")
 
     def eventFilter(self, obj, event):
         if (event.type() == QEvent.ToolTip
                 and obj in getattr(self, "_shortcut_hints", {})):
-            QToolTip.showText(event.globalPos(), self.shortcut_tooltip(obj),
-                              obj)
+            QToolTip.showText(event.globalPos(),
+                              plain_tooltip(self.shortcut_text(obj)), obj)
             return True
         return super().eventFilter(obj, event)
 
@@ -892,11 +913,11 @@ class Dashboard(QWidget):
         is_gt = isinstance(src, GtDataSource)
         if self.recording:
             self.btn_record.setEnabled(True)    # Stop must always work
-            self.btn_record.setToolTip(self._record_tip)
+            self._set_record_tooltip(self._record_tip)
         else:
             why = self._record_block_reason()
             self.btn_record.setEnabled(why is None)
-            self.btn_record.setToolTip(why or self._record_tip)
+            self._set_record_tooltip(why or self._record_tip)
         self._refresh_record_button()
         self.btn_mark.setEnabled(self.recording)
         self.btn_mark.setVisible(self.recording)
@@ -1462,11 +1483,11 @@ class Dashboard(QWidget):
         path, n = rec.close()
         if not n and rec.error is None:
             self._record_tip = ""
-            self.btn_record.setToolTip(self._record_tip)
+            self._set_record_tooltip(self._record_tip)
             self.status.setText("Nothing recorded.")
             return
         self._record_tip = f"Last recording: {path}"
-        self.btn_record.setToolTip(self._record_tip)
+        self._set_record_tooltip(self._record_tip)
         if rec.error:
             self.status.setText(
                 f"Recording stopped on an error ({rec.error}) — {n} samples "
@@ -1876,7 +1897,8 @@ class MainWindow(QMainWindow):
     def _new_action(self, glyph: str, text: str, tip: str, slot,
                     shortcut_hint: str = "") -> QAction:
         a = QAction(theme.glyph_icon(glyph), text, self)
-        a.setToolTip(f"{tip}  ({shortcut_hint})" if shortcut_hint else tip)
+        a.setToolTip(plain_tooltip(
+            f"{tip}  ({shortcut_hint})" if shortcut_hint else tip))
         a.triggered.connect(slot)
         return a
 

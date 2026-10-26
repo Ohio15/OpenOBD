@@ -161,7 +161,9 @@ class CalTableModel(QAbstractTableModel):
         if role == Qt.ToolTipRole:
             ax = (self.table.x_axis if orientation == Qt.Horizontal
                   else self.table.y_axis)
-            return axis_name(ax, "X" if orientation == Qt.Horizontal else "Y")
+            # Axis name / unit are calibration-file text: render literally.
+            return theme.plain_tooltip(
+                axis_name(ax, "X" if orientation == Qt.Horizontal else "Y"))
         if role != Qt.DisplayRole:
             return None
         if orientation == Qt.Horizontal:
@@ -252,7 +254,8 @@ class CalTableModel(QAbstractTableModel):
             return self.table.cell_changed(r, c)
 
         if role == Qt.ToolTipRole:
-            return self._tooltip(r, c, val)
+            # Axis labels, unit and the overlay's log channel are file text.
+            return theme.plain_tooltip(self._tooltip(r, c, val))
 
         if role == Qt.TextAlignmentRole:
             return int(Qt.AlignCenter)

@@ -21,7 +21,6 @@ undo stack and the log; nothing here mutates a Calibration on its own.
 """
 from __future__ import annotations
 
-import html
 import json
 from typing import Iterable, Optional
 
@@ -41,6 +40,9 @@ from PySide6.QtWidgets import (
 
 from . import theme
 from .model import clean_unit
+# Re-exported: the escaping helper lives in theme so model.py (which
+# tuningui imports) can use it too.
+from .theme import plain_tooltip  # noqa: F401
 
 #: QSettings key holding the navigator's recently opened tables (JSON list:
 #: an INI-backed QSettings returns a one-element list as a bare string).
@@ -49,14 +51,6 @@ RECENT_MAX = 8
 RECENT_GROUP = "Recent"
 
 SEP = " › "
-
-
-def plain_tooltip(text: str) -> str:
-    """A tooltip that renders `text` literally. QToolTip auto-detects rich
-    text, so a session-derived name containing markup would render as HTML;
-    escaping it and wrapping it in <qt> makes Qt show the characters as
-    written. Route every tooltip that interpolates DB / session text here."""
-    return f"<qt>{html.escape(str(text))}</qt>"
 
 
 def restore_splitter_state(splitter, value) -> bool:
@@ -330,7 +324,7 @@ class Navigator(QWidget):
         tip = t.name + (f"\n{t.note}" if t.note else "")
         if self.changed_state(t.name) == self.NO_STOCK:
             tip += "\nNo stock baseline: changes cannot be tracked"
-        leaf.setToolTip(0, tip)
+        leaf.setToolTip(0, plain_tooltip(tip))
         self._apply_state(leaf, self.changed_state(t.name))
         self._leaves.setdefault(t.name, []).append(leaf)
         return leaf
@@ -561,7 +555,7 @@ class CollapsiblePanel(QWidget):
         self.toggle.setText(title)
         self.toggle.setCheckable(True)
         self.toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.toggle.setToolTip(f"Show / hide {title}")
+        self.toggle.setToolTip(plain_tooltip(f"Show / hide {title}"))
         self.toggle.toggled.connect(self._on_toggle)
         lay.addWidget(self.toggle, 0, align)
         self.frame = QFrame()
@@ -764,7 +758,7 @@ class ScalarsTree(QWidget):
         try:
             row[0].setText(s.name)
             if s.note:
-                row[0].setToolTip(s.note)
+                row[0].setToolTip(plain_tooltip(s.note))
             row[1].setText(f"{s.value:g}")
             row[2].setText(clean_unit(s.unit))
             row[3].setText("" if s.stock_value is None
@@ -1012,7 +1006,8 @@ class CalTableView(QTableView):
 
     def set_corner_text(self, text: str) -> None:
         self._corner = text or ""
-        self.corner_label.setToolTip(self._corner)
+        self.corner_label.setToolTip(
+            plain_tooltip(self._corner) if self._corner else "")
         self._place_corner()
 
     def corner_text(self) -> str:
