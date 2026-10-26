@@ -7,16 +7,23 @@ goes through plain_tooltip (defined in theme, re-exported by tuningui).
 The guard AST-scans openobd/ for tooltip sinks:
 - setToolTip / setStatusTip / setWhatsThis calls (positional or text=) and
   QToolTip.showText;
-- setData / setItemData calls carrying a ToolTipRole argument;
+- setData / setItemData calls carrying a ToolTipRole argument in any
+  position (model/combo (index, value, role), QStandardItem (value, role),
+  QTableWidgetItem (role, value), QTreeWidgetItem (column, role, value)),
+  `value=`, or a {ToolTipRole: value} roles dict;
 - setProperty("toolTip", ...);
-- `return` statements inside an `if` whose test references ToolTipRole
-  (a model's data() / headerData() tooltip branch).
+- `return` statements inside an `if role == ToolTipRole` / `is` /
+  `role in (..., ToolTipRole)` block or a `case Qt.ToolTipRole:` arm (a
+  model's data() / headerData() tooltip branch).
 The shown text must be a string literal (or None for a role branch), a
 module-level string constant of the same file, or a call to plain_tooltip
 that resolves to theme / tuningui. A sink method not called in place (an
 alias, a getattr by name, a bound method passed around) and any getattr
 with a computed attribute name are flagged, since the guard cannot see
-what they are fed. No opt-out comment, no exemption list.
+what they are fed. For the same reason any OTHER mention of ToolTipRole is
+flagged: a role kept in a variable, a negated test (`role != ToolTipRole`,
+whose tooltip return falls through), a ternary. Write the positive form.
+No opt-out comment, no exemption list (brains 868953ce / 129af1c0).
 Offscreen Qt, no sleeps."""
 import ast
 import os
@@ -88,14 +95,31 @@ def _plain_tooltip_resolves(path: pathlib.Path, tree: ast.Module) -> bool:
 
 def _helper_modules(tree: ast.Module) -> set[str]:
     """Names bound by `from . import theme` / `from . import tuningui`, so
-    theme.plain_tooltip(...) resolves to the real module."""
-    out = set()
+    theme.plain_tooltip(...) resolves to the real module. A name that is
+    also bound any other way in the file (assigned, a parameter, a def, a
+    different import) is not trusted: which binding is live at the call is
+    not something the guard can see."""
+    good: set[str] = set()
+    other: set[str] = set()
     for n in ast.walk(tree):
-        if isinstance(n, ast.ImportFrom) and n.level == 1 and not n.module:
+        if isinstance(n, (ast.Import, ast.ImportFrom)):
             for a in n.names:
-                if a.name in (HOME, REEXPORT) and a.asname in (None, a.name):
-                    out.add(a.name)
-    return out
+                bound = a.asname or a.name.split(".")[0]
+                if (isinstance(n, ast.ImportFrom) and n.level == 1
+                        and not n.module and a.name in (HOME, REEXPORT)
+                        and bound == a.name):
+                    good.add(bound)
+                else:
+                    other.add(bound)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
+                            ast.ClassDef)):
+            other.add(n.name)
+        elif isinstance(n, ast.Name) and isinstance(n.ctx,
+                                                     (ast.Store, ast.Del)):
+            other.add(n.id)
+        elif isinstance(n, ast.arg):
+            other.add(n.arg)
+    return good - other
 
 
 def _is_role(node) -> bool:
@@ -103,8 +127,21 @@ def _is_role(node) -> bool:
             or (isinstance(node, ast.Name) and node.id == ROLE))
 
 
-def _mentions_role(node) -> bool:
-    return any(_is_role(n) for n in ast.walk(node))
+def _positive_role_test(test) -> bool:
+    """`role == ToolTipRole`, `role is ToolTipRole`, `role in (...,
+    ToolTipRole)`, or an and/or containing one: the body can run for a
+    tooltip request. A negated test is NOT positive (its tooltip return is
+    after the `if`), so its role mention is flagged instead."""
+    if isinstance(test, ast.BoolOp):
+        return any(_positive_role_test(v) for v in test.values)
+    if isinstance(test, ast.Compare) and len(test.ops) == 1:
+        op, left, right = test.ops[0], test.left, test.comparators[0]
+        if isinstance(op, (ast.Eq, ast.Is)):
+            return _is_role(left) or _is_role(right)
+        if (isinstance(op, ast.In)
+                and isinstance(right, (ast.Tuple, ast.List, ast.Set))):
+            return any(_is_role(e) for e in right.elts)
+    return False
 
 
 def _text_arg(call: ast.Call, name: str):
@@ -117,21 +154,36 @@ def _text_arg(call: ast.Call, name: str):
     return call.args[-1] if call.args else None
 
 
-def _role_value(call: ast.Call):
-    """(is a ToolTipRole setData, value). Model/combo setters take the role
-    last (index, value, role); item setters take it first (role, value)."""
+def _role_values(call: ast.Call) -> list[tuple[ast.AST, object]]:
+    """[(ToolTipRole node, value node or None)] for a setData / setItemData
+    call. A positional role takes the argument after it when there is one
+    (QTableWidgetItem (role, value), QTreeWidgetItem (column, role, value)),
+    else the one before it (model / combo (index, value, role),
+    QStandardItem (value, role)); `value=` wins; a {ToolTipRole: value}
+    dict (QAbstractItemModel.setItemData) yields its value. None = the
+    value cannot be located (flagged)."""
     args = call.args
-    if len(args) >= 2 and _is_role(args[-1]):
-        return True, args[-2]
-    if len(args) >= 2 and _is_role(args[0]):
-        return True, args[1]
+    kw_value = next((k.value for k in call.keywords if k.arg == "value"),
+                    None)
+    out: list[tuple[ast.AST, object]] = []
     for kw in call.keywords:
         if kw.arg == "role" and _is_role(kw.value):
-            for k in call.keywords:
-                if k.arg == "value":
-                    return True, k.value
-            return True, args[-1] if args else None
-    return False, None
+            out.append((kw.value, kw_value if kw_value is not None
+                        else (args[-1] if args else None)))
+    for i, a in enumerate(args):
+        if _is_role(a):
+            if kw_value is not None:
+                value = kw_value
+            elif i + 1 < len(args):
+                value = args[i + 1]
+            else:
+                value = args[i - 1] if i >= 1 else None
+            out.append((a, value))
+        elif isinstance(a, ast.Dict):
+            for k, v in zip(a.keys, a.values):
+                if k is not None and _is_role(k):
+                    out.append((k, v))
+    return out
 
 
 def _returns_in(stmts) -> list[ast.Return]:
@@ -179,22 +231,40 @@ def _scan(path: pathlib.Path) -> tuple[list[str], int]:
 
     out: list[str] = []
     sites = 0
+    # ToolTipRole nodes in a position the guard understands (a positive
+    # test, a setData / setItemData role); any other mention is flagged.
+    accounted: set[int] = set()
+    scopes: dict[int, str] = {}
+
+    def role_branch(stmts, scope: list[str]) -> None:
+        nonlocal sites
+        for ret in _returns_in(stmts):
+            sites += 1
+            if ret.value is not None and not safe(ret.value, True):
+                out.append(f"{path.name}:{ret.lineno} "
+                           f"({'.'.join(scope)}) role")
 
     def walk(node: ast.AST, scope: list[str]) -> None:
         nonlocal sites
         for child in ast.iter_child_nodes(node):
+            scopes[id(child)] = ".".join(scope)
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
                                   ast.ClassDef)):
                 walk(child, scope + [child.name])
                 continue
             where = f"{path.name}:{getattr(child, 'lineno', '?')} " \
                     f"({'.'.join(scope)})"
-            if isinstance(child, ast.If) and _mentions_role(child.test):
-                for ret in _returns_in(child.body):
-                    sites += 1
-                    if ret.value is not None and not safe(ret.value, True):
-                        out.append(f"{path.name}:{ret.lineno} "
-                                   f"({'.'.join(scope)}) role")
+            if isinstance(child, ast.If) and _positive_role_test(child.test):
+                accounted.update(id(n) for n in ast.walk(child.test)
+                                 if _is_role(n))
+                role_branch(child.body, scope)
+            elif isinstance(child, ast.match_case):
+                vals = [m.value for m in ast.walk(child.pattern)
+                        if isinstance(m, ast.MatchValue)
+                        and _is_role(m.value)]
+                if vals:
+                    accounted.update(id(v) for v in vals)
+                    role_branch(child.body, scope)
             if isinstance(child, ast.Call):
                 f = child.func
                 if isinstance(f, ast.Attribute) and f.attr in SINKS:
@@ -209,9 +279,9 @@ def _scan(path: pathlib.Path) -> tuple[list[str], int]:
                         walk(kw.value, scope)
                     continue
                 if isinstance(f, ast.Attribute) and f.attr in DATA_SETTERS:
-                    is_tip, value = _role_value(child)
-                    if is_tip:
+                    for role, value in _role_values(child):
                         sites += 1
+                        accounted.add(id(role))
                         if not safe(value):
                             out.append(where + " role")
                 if (isinstance(f, ast.Attribute) and f.attr == "setProperty"
@@ -234,6 +304,16 @@ def _scan(path: pathlib.Path) -> tuple[list[str], int]:
             walk(child, scope)
 
     walk(tree, [])
+
+    def mentions(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if _is_role(child) and id(child) not in accounted:
+                out.append(f"{path.name}:{child.lineno} "
+                           f"({scopes.get(id(child), '')}) role-mention")
+                continue
+            mentions(child)
+
+    mentions(tree)
     return out, sites
 
 
@@ -320,6 +400,54 @@ def test_the_guard_scans_roles_properties_and_computed_getattr(tmp_path):
         "bad.py:5 (M.data) role", "bad.py:11 (M.data) role",
         "bad.py:15 (M.g) role", "bad.py:17 (M.g) role",
         "bad.py:19 (M.g) property", "bad.py:22 (M.g) getattr"]
+
+
+def test_the_guard_sees_every_role_position(tmp_path):
+    """Gaps closed after gate pass 2 (brain 129af1c0): a role in the middle
+    (QTreeWidgetItem.setData(col, role, value)), a roles dict, a role held
+    in a variable, a negated test and a ternary were all invisible."""
+    bad = tmp_path / "bad.py"
+    bad.write_text(
+        "from . import theme\n"
+        "class M:\n"
+        "    def g(self, item, model, idx, name):\n"
+        "        item.setData(0, Qt.ToolTipRole, name)\n"
+        "        item.setData(0, Qt.ToolTipRole, theme.plain_tooltip(name))\n"
+        "        model.setItemData(idx, {Qt.ToolTipRole: name})\n"
+        "        model.setItemData(idx, {Qt.ToolTipRole: 'lit', 0: name})\n"
+        "        model.setData(idx, value=name, role=Qt.ToolTipRole)\n"
+        "        role = Qt.ToolTipRole\n"
+        "        model.setData(idx, name, role)\n"
+        "    def data(self, index, role):\n"
+        "        if role != Qt.ToolTipRole:\n"
+        "            return None\n"
+        "        return self.name\n"
+        "    def headerData(self, s, o, role):\n"
+        "        return self.name if role == Qt.ToolTipRole else None\n"
+        "    def flags(self, role):\n"
+        "        match role:\n"
+        "            case Qt.ToolTipRole:\n"
+        "                return self.name\n"
+        "            case Qt.DisplayRole:\n"
+        "                return self.name\n"
+        "        if role is Qt.ToolTipRole and self.name:\n"
+        "            return theme.plain_tooltip(self.name)\n",
+        encoding="utf-8")
+    assert _violations(bad) == [
+        "bad.py:4 (M.g) role", "bad.py:6 (M.g) role", "bad.py:8 (M.g) role",
+        "bad.py:20 (M.flags) role", "bad.py:9 (M.g) role-mention",
+        "bad.py:12 (M.data) role-mention",
+        "bad.py:16 (M.headerData) role-mention"]
+
+
+def test_the_guard_does_not_trust_a_rebound_helper_module(tmp_path):
+    bad = tmp_path / "bad.py"
+    bad.write_text(
+        "from . import theme\n"
+        "def f(w, name, theme=theme):\n"
+        "    w.setToolTip(theme.plain_tooltip(name))\n",
+        encoding="utf-8")
+    assert _violations(bad) == ["bad.py:3 (f)"]
 
 
 def test_the_guard_rejects_a_local_plain_tooltip(tmp_path):
