@@ -3,6 +3,38 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.38.0 — 2026-10-26
+
+### Changed (Active Tests tab UX overhaul; cues from HP Tuners VCM Scanner, GM GDS2, Autel special functions)
+- **Shared chrome.** Breadcrumb "Active Tests › Control journal" with a verdict
+  chip (clean / CONTROL LEFT ACTIVE / journal unknown / read failed), journal
+  and record counts and "Polling" while the tab is showing; the note reads
+  "as of HH:MM:SS · searched <roots>". One 36 px toolbar: Refresh (F5, only
+  while Active Tests shows), Copy report, a journal filter (Ctrl+F focuses,
+  Esc clears; display only) and a Show selector (All entries / Activate +
+  refused only / Last 24 h, remembered).
+- **Verdict banners.** An outstanding control shows a danger banner listing
+  module, CPID, release bytes and journal path, and states that OpenOBD will
+  not send the release and truck-mcp recovery must be run. An unknown verdict
+  shows a warning banner with the reason; a clean verdict shows no banner (the
+  green chip carries it).
+- **Journal table.** Newest first, columns When / Event / Module / CPID /
+  Detail; the date is shown when the day changes; activate and refused fires
+  in the danger colour, releases in the ok colour; "No journal entries" when
+  there is nothing to list. A collapsible "Journal sources" panel lists every
+  data root searched and whether it held a journal (and any damage).
+- **Honest freshness.** "as of" is the last SUCCESSFUL read. A failed read
+  keeps the previous table but flags it: a "read failed" chip, a danger banner
+  saying the table is the last good read, and "last good read HH:MM:SS" in the
+  note. An unsafe last-good verdict stays visible through a failed read.
+- The page stays strictly read-only: no arm, fire, activate or release
+  control exists in OpenOBD.
+
+### Internal
+- ActiveTestsPage moved from `livedata.py` to its own module
+  `openobd/activetests.py`; the old ad-hoc banner / alert stylesheets and
+  their colour tokens are gone (the page uses the shared workspace theme).
+
 ## 0.37.0 — 2026-10-26
 
 ### Changed (Live Data tab UX overhaul; cues from HP Tuners VCM Scanner, EFILive Scan, TunerStudio / Torque)

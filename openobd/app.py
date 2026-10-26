@@ -59,7 +59,8 @@ from . import __version__, editops, theme
 from .appsettings import app_settings
 from .calspec import Calibration
 from .diagui import DiagnosticsPage
-from .livedata import ActiveTestsPage, LiveDataPage
+from .activetests import ActiveTestsPage
+from .livedata import LiveDataPage
 from .logbin import (
     Log, Overlay, parse_csv, analyze_log, bin_log_to_table, detect_shift_points,
     CANONICAL, time_axis, attach_long, calibrate_pedal_from_log,
@@ -1676,7 +1677,7 @@ class MainWindow(QMainWindow):
         # so the existing index-0/1/2 navigation stays valid.
         self.livedata = LiveDataPage()
         self.main_tabs.addTab(self.livedata, "Live Data")
-        self.active_tests = ActiveTestsPage()
+        self.active_tests = ActiveTestsPage(self.settings)
         self.main_tabs.addTab(self.active_tests, "Active Tests")
 
         self.main_tabs.setCurrentIndex(0)
@@ -1881,15 +1882,17 @@ class MainWindow(QMainWindow):
 
     def _sync_find_shortcut(self, *_a) -> None:
         """Ctrl+F is live on Tuning (table search), on Diagnostics >
-        Codes & Readiness (code search) and on Live Data (tile filter);
-        nowhere else has a search field."""
+        Codes & Readiness (code search), on Live Data (tile filter) and on
+        Active Tests (journal filter); nowhere else has a search field."""
         cur = self.main_tabs.currentWidget()
         diag = getattr(self, "diag", None)
         livedata = getattr(self, "livedata", None)
+        active = getattr(self, "active_tests", None)
         self._find_shortcut.setEnabled(
             cur is self.tuning_page
             or (diag is not None and cur is diag and diag.has_search())
-            or (livedata is not None and cur is livedata))
+            or (livedata is not None and cur is livedata)
+            or (active is not None and cur is active))
 
     def _editor_showing(self) -> bool:
         """True while Tuning > Editor (the calibration grid) is on screen."""
@@ -1923,6 +1926,9 @@ class MainWindow(QMainWindow):
             return
         if cur is getattr(self, "livedata", None):
             self.livedata.focus_filter()
+            return
+        if cur is getattr(self, "active_tests", None):
+            self.active_tests.focus_filter()
             return
         self.navigator.focus_search()
 
