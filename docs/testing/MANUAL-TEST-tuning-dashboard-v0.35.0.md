@@ -855,6 +855,392 @@ Pass: [ ]  Fail: [ ]
 
 ---
 
+## 7B. Live Data (v0.37.0)
+
+**Covers**: v0.37.0 Live Data tab UX overhaul (PR #56). Sources: `CHANGELOG.md` section 0.37.0, `openobd/livedata.py` (`LiveDataPage`, `ValueTile`, `TileGroup`), `openobd/stripchart.py` (`StripChart`, `ChannelTable`, `ChartPane`), `tests/test_livedata_ui.py`. IDs are `LD-nn`. Cases marked [BOTH] are checked at 1366x768 and 1920x1080, [1366] only at 1366x768, [GT] need the OBDX Pro GT on the truck (a live drive). Every other case runs against the fixture sessions below (an archived drive, a simulated live drive, or a prepared copy), so the whole section can be executed on the bench with no truck.
+
+**Preconditions addendum (Live Data)**
+- Live Data reads truck-mcp session files (`sessions/*.tmsession.db`) read-only and never opens the serial port; nothing in this section needs the GT unless marked [GT]. Point the app at a scratch data root with the `TRUCK_MCP_DATA` environment variable (launch OpenOBD from a shell where it is set) so the fixtures below are the only sessions listed. Prepare all fixture copies in `D:\Scratch\<yyyy-mm-dd>-livedata-fixtures\truck-mcp\sessions\` (never in the repo, never against the original files).
+- Fixture sessions (note the file name used for each: `________`):
+  - **S-ARCH**: a copy of a real recorded drive that has ended (`session.ended_utc` set), with a VIN, at least 20 channels across Engine, Trans and Sensors (see LD-31), numeric channels with varying values, at least one carried (not fresh) channel, and a session event labelled "wot". The label shown in the picker is the session label.
+  - **S-SIM**: a simulated truck-mcp drive log that is still being written (logger running, about 1 sample per second, `session.source = 'simulated'`). Start and stop it from truck-mcp; keep a terminal for it. Used for every live-view case on the bench.
+  - **S-STALE**: a copy of a drive recorded earlier whose `ended_utc` is NULL and whose newest sample is older than a few minutes (or S-SIM after its logger process is killed without ending the session).
+  - **S-UNK**: a copy of S-ARCH whose `session.source` is set to an unrecognised value, e.g. `UPDATE session SET source='telepathy'` (use `python -I` with `sqlite3` on the COPY).
+  - **S-NOEVT**: a copy of S-ARCH with `DROP TABLE event` run on the copy.
+  - **S-TEXT**: a copy with every numeric channel removed or re-kinded so only text/enum channels remain (no chartable channel), or a session whose only channels are text.
+  - **S-BAD**: a file named `broken.tmsession.db` containing non-SQLite bytes (e.g. 1 KB of text).
+- Clean state: before the first case delete the `livedata/` keys from the OpenOBD QSettings file (`livedata/layout`, `livedata/split`, `livedata/span`, `livedata/groups_collapsed`) so persistence cases start from defaults. Cases that change them say so.
+- Cases that edit a fixture file (LD-07, LD-13) edit the scratch COPY only. Never edit, lock or delete a file under the real truck-mcp data root.
+
+Open Live Data from the main tab bar. It is one combined page: the chrome (breadcrumb, 36 px toolbar), the tile area (collapsible groups), and below the splitter the graphed-channels table and the Chart vs. Time strip chart.
+
+### 7B.1 Chrome and view states
+
+### LD-01 Live session chrome: breadcrumb, chips, note [BOTH] - P0
+Setup: only S-SIM in the data root, logger running.
+1. Open Live Data. Expected: breadcrumb reads "Live Data > <session label>" (the product draws a chevron) with the session label bold; there is no separate status line under the toolbar.
+2. Read the chips left to right. Expected: first a green "live"; then "SIMULATED" (red) because the source is simulated; then "<n> channels" (neutral, n equals the number of tiles with no filter and no hidden fields; "1 channel" is singular); then "<m> graphed" (neutral, m equals the number of rows in the graphed-channels table). No "held", no "PROVENANCE UNKNOWN".
+3. Read the muted note at the right of the breadcrumb. Expected: "<VIN or 'VIN unknown'>  .  source=simulated  .  as of hh:mm:ss"; the time advances every second while the logger runs.
+4. Expected: no red banner; Rescan, Fields..., Hold, the Window combo and the filter field are enabled.
+5. Narrow the window. Expected: the chips and note shrink or elide; they do not widen the page.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-02 Stale session reads "not advancing", never live [BOTH] - P0
+Setup: S-STALE only (or stop the S-SIM logger process abruptly and wait about a minute).
+1. Open Live Data and wait one tick. Expected: first chip is amber "not advancing"; NOT green "live".
+2. Look at every tile. Expected: each tile with a value uses the not-advancing palette (amber/grey family, the same one in all tiles) and its caption reads "not advancing"; no tile is green.
+3. Look at the top-right of the chart. Expected: the state label reads "not advancing" in the same amber.
+4. Look at the note. Expected: "as of" shows the time of the last tick (when the file was last read), not the time of the last sample.
+5. Restart the S-SIM logger (live, advancing) and Rescan. Expected: the chip returns to "live" within one tick and tiles return to the live palette.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-03 Archived session [BOTH] - P0
+Setup: S-ARCH selected.
+1. Expected: first chip is muted "archived"; no "live" chip anywhere.
+2. Expected: every tile uses the archive palette with the caption "archived drive"; the chart label (top-right) reads "archived drive".
+3. Expected: the Hold button is DISABLED (greyed) with a tooltip that still reads as the Hold help text.
+4. Expected: the chart opens on the window "All" and its time axis is wall-clock (see LD-21).
+5. Expected: the note shows the drive's VIN, `source=<value>` and "as of hh:mm:ss"; the values never move because nothing is advancing.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-04 Provenance chips - P1
+1. Select S-SIM. Expected: red "SIMULATED" chip and note `source=simulated`.
+2. Select S-UNK. Expected: amber "PROVENANCE UNKNOWN" chip (not "SIMULATED", not silently absent) and the note shows `source=telepathy` (the raw value).
+3. Select S-ARCH (a real drive). Expected: neither provenance chip; the other chips (view state, channels, graphed) are still there.
+4. Switch between the three several times. Expected: the provenance chip follows the selected session each time; none lingers from the previous one.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-05 Empty states - P1
+1. Point `TRUCK_MCP_DATA` at a folder that does not exist and launch. Expected: the tile area is replaced by the shared empty-state text starting "truck-mcp data root not found." and mentioning the `TRUCK_MCP_DATA` variable and Rescan (F5); breadcrumb is just "Live Data" with no chips and the note "No session bound"; Hold and Fields... are disabled.
+2. Point it at an existing root whose `sessions/` folder is empty. Expected: the empty state reads "No drive-log sessions found." with the hint to run a truck-mcp session_drive_log.
+3. Create the data root / drop in S-ARCH while the app is open and press Rescan. Expected: the empty state disappears and the session binds.
+4. Expected: the empty-state text is plain text (a folder or label containing `<b>` characters is shown literally).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-06 Session that cannot be opened: danger banner, no stale reader - P0
+Setup: data root with S-BAD and S-ARCH.
+1. Select S-BAD in the picker (or let it be the only session). Expected: a red banner above the tiles beginning "Could not open session:" followed by the reason; no popup dialog.
+2. Expected: the tile area shows the empty state "No session bound: the selected session could not be opened. Pick another, or Rescan (F5)."; the breadcrumb is "Live Data" with no chips (it does not still show the previous session's name, chips or note).
+3. Expected: no tiles, table rows or chart traces of any earlier session remain on screen (a session that fails to open does not leave its reader bound).
+4. Select S-ARCH. Expected: the banner disappears, tiles and chart load normally.
+5. Select S-BAD again. Expected: the same banner returns; the app does not crash, freeze or hold the previous session's file open (the file can be copied/renamed in Explorer).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-07 Read failure: banner after two failed reads, then recovery - P0
+Setup: a COPY of S-SIM made live-looking (`ended_utc` NULL) on a removable drive or an SMB share you can disconnect, as the data root. If neither can be arranged, record N/A with the reason (covered by `test_read_failure_banner_after_two_ticks_and_recovery`).
+1. Open the session and confirm tiles are live. Disconnect the drive/share (or otherwise make the file unreadable).
+2. After the first failed tick (about 1 s). Expected: NO banner yet (one blip is tolerated); tiles unchanged.
+3. After the second consecutive failure. Expected: a red banner "Read failed (2x): <reason>" followed by the line "The tiles and chart show the failure, not the last values: nothing below is live until a read succeeds."; the first chip becomes red "read failed".
+4. Expected: every tile shows "-" with a caption "read failed: <reason>" in the failed palette (not the last good value, not the live palette); the chart label (top-right) reads "read failed" and no value anywhere is presented as live.
+5. Reconnect. Expected: within one or two ticks the banner disappears, the chip returns to "live", tiles show fresh values again.
+6. Expected: the failure counter resets after recovery (one new blip does not show the banner).
+
+Pass: [ ]  Fail: [ ]  N/A: [ ]  Notes: ____
+
+### 7B.2 Toolbar
+
+### LD-08 Toolbar: one 36 px bar, session picker, Rescan [BOTH] - P1
+1. Expected: a single 36 px toolbar directly under the breadcrumb, left to right: "Session" label and picker, Rescan, Fields..., separator, "Window" label and combo, Hold, separator, the filter field (placeholder "Filter tiles  (Ctrl+F)"). Same height and position as the Tuning and Diagnostics toolbars. Every button shows a vector glyph icon (no emoji, no missing-glyph boxes).
+2. Open the picker with several sessions listed. Expected: each entry reads "<tag><label>  .  <started>  .  <n> ch" (plus "[unreadable]" when the file cannot be read); the dropdown popup is wide enough to show the full text of every entry, with no truncation.
+3. Select a long entry, then narrow the window. Expected: the closed picker elides its text when narrow instead of widening the page, and hovering it shows the full label as a tooltip.
+4. Hover Rescan. Expected: tooltip "Rescan the truck-mcp session folders  (F5)". Add a new fixture file to the sessions folder and click Rescan. Expected: it appears in the picker; the currently selected session stays selected and its tiles are NOT rebuilt (the displayed values keep updating without a flicker or a reset of min/max).
+5. Wait 5 s without clicking (automatic rescan). Expected: the same: the selection and the grid are not torn down on every rescan.
+6. Narrow until the toolbar cannot fit everything. Expected: the remaining actions go to the ">>" overflow menu; the toolbar never forces the page wider.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-09 Window span: live only, persisted - P1
+Setup: clean `livedata/span`; S-SIM and S-ARCH available.
+1. Select S-SIM. Expected: the Window combo reads "1 min" and sits in the toolbar (not above the chart).
+2. Choose "5 min". Expected: the chart and the Min / Max / Avg columns re-window immediately.
+3. Quit (File -> Quit), relaunch, open S-SIM. Expected: the Window combo reopens on "5 min". Check the QSettings file: `livedata/span` = "5 min".
+4. Select S-ARCH. Expected: the combo reads "All" (an archived drive always opens on the whole drive), regardless of the saved span.
+5. Choose "30 s" while on S-ARCH, then select S-SIM. Expected: the archived view re-windows to 30 s, but S-SIM opens on "5 min" (the saved live span). A span chosen on an archived drive is applied to that view only and is never written to `livedata/span`; check the QSettings file still reads "5 min".
+6. Delete `livedata/span`, relaunch. Expected: a live session opens on "1 min" without error.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### 7B.3 Hold
+
+### LD-10 Hold freezes tiles, table and chart [BOTH] - P0
+Setup: S-SIM running, a moving channel (rpm) visible in the table.
+1. Note the rpm tile value `________`, the table Value `________`, and the chart's trace end. Click Hold. Expected: the Hold button shows checked; the breadcrumb gets an amber "held" chip next to "live"; the chart label (top-right) reads "held".
+2. Expected: every tile that was live now uses the not-advancing palette (not green) and its caption reads "held · not updating".
+3. Wait 20 s while the logger keeps recording. Expected: tile values, table values (Value, Min, Max, Avg) and the chart trace do not change; the note's "as of" time does not advance (nothing was read).
+4. Expected: tiles that were already stale/carried keep their own caption ("not advancing" / "carried ...") rather than "held"; Hold changes only live tiles.
+5. While held open Fields... and hide one field, then show it again. Expected: the layout change applies at once (the tile disappears and reappears), the re-created tiles show their current value but are frozen again (palette not live, caption "held · not updating"); the page stays held.
+6. Expected: the chips still include "held" and the "live" chip is unchanged, so the held state is never mistaken for live.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-11 Release catches up on everything recorded meanwhile [BOTH] - P0
+1. Continue from LD-10 after at least 30 s of hold (note the time `________`). Click Hold again to release. Expected: the "held" chip disappears, the chart label returns to "live", tiles return to the live palette with caption "live" on the next tick.
+2. Expected: the chart trace shows the samples recorded during the hold (a continuous line with no gap from the hold time to now; the time axis end is "0:00" = now); the Min / Max footers and the table Min / Max / Avg include the values from the hold period (a spike you made in the simulator during the hold is in them).
+3. Expected: the tile value equals the newest recorded value, not the value at the moment of hold.
+4. Hold again and release immediately several times in a row. Expected: no error, no duplicated chart points, no stuck "held" chip.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-12 Archived drives ignore Hold - P0
+1. Select S-ARCH. Expected: Hold is disabled (LD-03).
+2. Hold S-SIM, then select S-ARCH in the picker. Expected: the hold is released by the switch: the "held" chip is gone, the Hold button is unchecked and disabled, the archived tiles use the archive palette (not the held caption).
+3. Select S-SIM again. Expected: it is NOT held (Hold does not carry over between sessions); tiles are live.
+4. Press F5 or the Rescan button while S-ARCH is selected. Expected: no error; Hold stays disabled.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-13 A drive that ends while held is released - P0
+Setup: S-SIM running and held.
+1. While held, end the simulated drive cleanly in truck-mcp (so `ended_utc` is written).
+2. Within a few seconds. Expected: Hold releases by itself: the "held" chip disappears, the Hold button unchecks and greys out, and the first chip becomes "archived" (muted); the tiles show the archive palette and caption "archived drive"; the chart label reads "archived drive" and the axis switches to clock time.
+3. Expected: the page does not stay frozen with the live palette, and it does not show an error. The values shown are the final recorded values (everything recorded while held is now visible).
+4. Repeat without Hold. Expected: the same switch to "archived" within one tick (a drive that ends while bound stops looking live at once).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### 7B.4 Tiles
+
+### LD-14 Tile anatomy [BOTH] - P1
+1. Expected on each tile, top to bottom: the channel name left and its unit RIGHT-aligned on the same row; the big bold value; the small state caption; a muted footer "min <x> . max <y>".
+2. Expected: the unit is not repeated inside the value text. A channel without a unit shows an empty right side (no "None").
+3. Resize narrower. Expected: a long channel name elides with an ellipsis and the unit stays visible; hover the tile for the tooltip "<name>: drag onto the graphed-channels table to chart it; right-click for options".
+4. Expected: the cursor over a tile is the open hand; right-click opens a menu with Hide, Add to / Remove from graph and Move to lane.
+5. Expected: tiles in one group line up in uniform columns; a group with a single tile does not stretch across the page. Resize the window wider and narrower: the column count changes with the width (a normal window shows every tile without a horizontal scrollbar).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-15 Display honesty: stale, carried, archived, held and failed never look live [BOTH] - P0
+Setup: S-SIM (live), S-STALE, S-ARCH. The palette meaning must be the same on every tile.
+1. On S-SIM: a tile for a channel sampled this tick is green with caption "live".
+2. On S-SIM, find a channel whose value is carried (not freshly measured; e.g. a slow DID channel). Expected: caption "carried . <age>s old" (or "carried . age unknown") in the carried palette, NOT the live green; the age grows each tick until a fresh read.
+3. On S-STALE: every tile "not advancing" (LD-02). On S-ARCH: every tile "archived drive" (LD-03).
+4. Hold S-SIM: tiles "held . not updating" in the not-advancing palette (LD-10).
+5. Channel with no data: caption "no data"; a channel never read: "not read" with the value "- not read"; a module error: "module error"; a value the store contract rejects: value "BAD" with the reason text, red.
+6. During a read failure (LD-07): "read failed".
+7. Expected across all of the above: green is used ONLY for a fresh value on a live, advancing, un-held session. Take a screenshot of one tile in each state and confirm the palettes are distinguishable without reading the caption (colour is backed by the caption text, never the only cue).
+8. Open the graphed-channels table: its Value column follows the same rules as the tiles in every state (for example a held or archived value is not shown as a live number).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-16 Min / max footer: measured (fresh) samples only - P0
+Setup: S-SIM live, then S-ARCH.
+1. On S-SIM note a moving channel's footer `________`. Let the value rise above the old max (use the simulator or wait). Expected: the max grows, the min never rises; the footer format is "min <x> . max <y>" with thousands separators for values of 1000 or more (e.g. "min 900 . max 2,500").
+2. Find a channel whose only samples are carried (not fresh). Expected: its footer reads "min -- . max --" and never takes the carried value as a min or max.
+3. On S-ARCH with the Window set to "All": for a channel, compare the tile footer with the Min and Max columns of the graphed-channels table. Expected: they match (both are computed from fresh samples; the footer covers the session from its start).
+4. Select another session and back. Expected: the footer is recomputed for the new session (it does not keep the previous session's min/max).
+5. Hold and release (LD-10/11). Expected: the footer includes samples recorded during the hold after release.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-17 Collapsible groups, counts, persistence - P1
+Setup: clean `livedata/groups_collapsed`.
+1. Expected: tiles are in groups in this order (only groups that have members): Engine, Fuel, Spark, Trans, Sensors, Other. Each header reads "<Group>  .  <n>" with n equal to the number of tiles under it.
+2. Click the "Trans" header. Expected: its tiles hide, the arrow turns from down to right, the header count stays. Click again: they return.
+3. Collapse Trans and Sensors, quit and relaunch, open Live Data. Expected: both reopen collapsed, Engine open. The QSettings key `livedata/groups_collapsed` holds the JSON list of the collapsed names.
+4. Expand them all. Expected: the key is removed from the settings file (not left as an empty list).
+5. Set `livedata/groups_collapsed` to garbage text and relaunch. Expected: no crash; all groups open.
+6. Collapse a group while filtering (LD-18). Expected: collapsing and the filter work independently.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-18 Tile filter is display-only; Ctrl+F focuses, Esc clears [BOTH] - P0
+Setup: S-ARCH with at least 20 tiles; note the Fields... menu state `________` and whether the `livedata/layout` key exists (absent on a default layout).
+1. On Live Data press Ctrl+F. Expected: the filter field takes focus and any text in it is selected.
+2. Type `rp`. Expected: after each keystroke only tiles whose name or group contains the text remain (rpm in the sample), groups with no match disappear completely, and the header of a partly shown group reads "<Group>  .  <shown> of <total>".
+3. Type a group name (e.g. `sensors`). Expected: every tile of that group matches. Type upper case. Expected: case-insensitive.
+4. Type nonsense. Expected: no tiles, no crash, no error banner; clear the text and everything returns.
+5. With the filter active open Fields.... Expected: every channel is still listed and checked as before; the table and chart still show their rows and traces (the filter does not remove anything from the graph).
+6. Expected: `livedata/layout` in the settings file is unchanged (still absent on a default layout) and the "<n> channels" chip does not change while filtering.
+7. Put the cursor in the filter and press Esc. Expected: the field clears and all tiles return, with the saved group collapse state intact.
+8. Click the field's clear button. Expected: the same as Esc.
+9. Quit and relaunch with text left in the filter. Expected: the filter is empty on startup (it is not persisted) and all tiles show.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### 7B.5 Graphed-channels table
+
+### LD-19 Columns, swatch, window statistics - P1
+1. Expected columns in order: Field, Value, Unit, Min, Max, Avg, Lane. Hover each header. Expected: a tooltip on every one (Value mentions the live / not advancing / archived / carried rules; Min/Max/Avg mention the visible chart window).
+2. Expected: each Field cell has a colour swatch icon (not a "■" character) matching its trace colour on the chart and the colour of the name; rows are compact and uniform.
+3. Expected: the Lane column shows a neutral chip "Lane <n>" per row; channels in the same lane show the same number.
+4. Set the Window to "All" on S-ARCH, then to "30 s" on S-SIM. Expected: Min, Max and Avg re-compute over the visible window each time (shorter window: min/max narrow; Avg changes), and a channel with no samples in the window shows "-" in all three.
+5. Expected: the table height fits its rows (no empty band under a two-row table) up to a maximum, then it scrolls; the chart keeps the remaining room.
+6. Right-click a row. Expected: the same channel menu as the tile (Hide, Remove from graph, Move to lane).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-20 Empty-state row and drop semantics - P1
+1. Remove every field from the graph (right-click each row -> Remove from graph (keep tile)). Expected: one row spanning the table with the centered muted text "Drag a tile here to graph it"; the chart shows "No fields on the graph - drag a tile onto the table above."; the "<m> graphed" chip reads "0 graphed".
+2. Drag a numeric tile onto that empty row. Expected: a new lane is created and the field is graphed; the empty row is gone; the chip counts up.
+3. Drag another numeric tile onto an existing row. Expected: it joins THAT row's lane (same Lane number, the same chart lane).
+4. Drag a tile onto the table below the last row (blank area). Expected: it starts a new lane.
+5. Drag a text/enum tile (a non-chartable channel) onto the table. Expected: the pointer shows the forbidden cursor and the drop is refused visibly; nothing is added (it is never accepted and silently lost).
+6. Use Fields... -> "Reset layout to defaults". Expected: the original lanes return.
+7. Customise the layout again, quit and relaunch. Expected: the customised layout is restored (`livedata/layout` key present); after "Reset layout to defaults" the key is removed.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### 7B.6 Strip chart
+
+### LD-21 Time axis: relative for live, clock for archived [BOTH] - P1
+1. S-SIM with Window "1 min". Expected: a time axis under the last lane with the left caption "time (m:ss ago)"; labels count back from the right edge: "0:00" at the right edge, "-0:10", "-0:20" ... (steps adapt to the width; labels never overlap and the edge labels stay inside the plot).
+2. Set the Window to "5 min". Expected: the labels re-space ("-1:00", "-2:00" ...); over an hour a label like "-1:00:00" is correct.
+3. S-ARCH. Expected: the caption reads "time (HH:MM:SS)" and the ticks are wall-clock times on whole multiples of the step (e.g. 10:00:30, 10:01:00); they do not move when you wait.
+4. Switch from S-ARCH to S-SIM and back. Expected: the axis mode follows the session each time.
+5. Resize the chart narrower and wider. Expected: the tick count follows the width; no crash with a very narrow chart, and the chart cannot be made narrower than its minimum width.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-22 Hover cursor, readout box and "@ Cursor" [BOTH] - P1
+1. Move the mouse over the plot area of the chart. Expected: a vertical hairline follows the pointer and a readout box appears with the first row the time under the cursor (S-SIM: "-m:ss"; S-ARCH: "HH:MM:SS") and one row per graphed channel, "<name>  <value> <unit>", each row in the colour of its trace.
+2. At the same time look at the table. Expected: the Value column header reads "@ Cursor" and each row shows that channel's value at the cursor time (the last measured sample at or before that instant); a channel with no sample yet at that time shows "-" (the cursor never invents a value).
+3. Move to the right half so the box would leave the plot. Expected: the box flips to the left of the hairline instead of clipping.
+4. Leave the chart (mouse out). Expected: the hairline and box vanish, the header returns to "Value", and the table shows the live values again (not the last cursor values).
+5. Move the mouse over the label column or the scale column at the right (outside the plot). Expected: no cursor and the header stays "Value".
+6. On S-SIM keep the mouse still over the plot for 10 s. Expected: the readout follows the scrolling window (it shows the value at the instant now under the pointer).
+7. Hover in a session with no samples yet. Expected: no cursor, no crash.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-23 Session event markers - P1
+1. Select S-ARCH, Window "All". Expected: a faint dashed vertical line crosses every lane at the time of the event, with its label (e.g. "wot") at the top of the line.
+2. On S-SIM choose a window shorter than the age of an old event. Expected: markers outside the window are not drawn.
+3. Hover near a marker. Expected: the marker is a decoration: it does not intercept the cursor, and its label does not cover the state label at the top-right.
+4. On S-SIM record a new event while it runs. Expected: it appears within a few seconds and scrolls left with the data.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-24 Session file without an event table: no markers, no error - P0
+Setup: S-NOEVT (event table dropped).
+1. Select S-NOEVT. Expected: the session opens normally: tiles, table and traces appear.
+2. Expected: no marker lines, no red banner, no popup, no console traceback in the launching shell, and no failure chip: a missing event table is not a read failure.
+3. Leave it selected for 30 s. Expected: still no error; the view state chip is "archived" (or "live" for a live copy).
+4. Switch to S-ARCH. Expected: its markers appear again (the "no events" state did not stick to the next session).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-25 Chart view-state label at the top-right [BOTH] - P0
+1. Expected on S-SIM: the label "live" at the top-right of the plot, in the live colour.
+2. Expected: "not advancing" on S-STALE; "archived drive" on S-ARCH; "held" while held; "read failed" during a read failure (LD-07).
+3. Expected: the label text and colour match the chip in the breadcrumb at every moment (they never disagree, e.g. the chart saying "live" while the chip says "held").
+4. With a hover readout open the label stays visible and readable at the right edge.
+5. With no fresh numeric samples at all (a session with only carried values), expected: the chart text "No fresh numeric samples yet." in the plot and never a flat trace that looks like data.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-26 Session with no chartable channels - P0
+Setup: S-TEXT.
+1. Select S-TEXT. Expected: the tiles appear for every channel, the "0 graphed" chip shows, and the table shows the empty-state row.
+2. Expected: the chart area shows the centered text "No chartable channels in this session." (not a blank black area and not a traceback).
+3. Expected: Hold (if live), Fields..., the filter and the Window combo still work; no red banner.
+4. Drag a tile onto the table. Expected: refused (LD-20 step 5).
+5. Open Fields.... Expected: each non-chartable channel is listed with the suffix "(<kind> channel - tile only)" or "(no numeric data yet - tile only)".
+6. Right-click the chart area. Expected: no crash (no menu, or the Add field menu only).
+7. Switch from S-TEXT to S-ARCH. Expected: the chart and table are fully functional again.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### 7B.7 Shortcuts
+
+### LD-27 F5 rescans only while Live Data is showing - P0
+1. On Live Data add a new fixture file to the sessions folder and press F5. Expected: the picker updates (same as Rescan); the selected session and the Hold state are unchanged.
+2. Switch to the Dashboard with a log loaded (replay possible) and press F5. Expected: the Dashboard does what it did before (starts the replay), and Live Data does NOT rescan (add another fixture file first: it does not appear until you return to Live Data).
+3. Switch to Diagnostics -> Module Map and press F5 (with the GT absent, a scan failure banner is fine). Expected: only the Diagnostics scan runs; Live Data does nothing.
+4. Switch to Tuning and Active Tests and press F5. Expected: no Live Data effect.
+5. Return to Live Data. Expected: F5 works again immediately.
+6. Hover Rescan. Expected: tooltip ends with "(F5)".
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-28 Ctrl+F and Esc are scoped to Live Data - P0
+1. On Live Data click on a tile or the chart and press Ctrl+F. Expected: focus jumps to the tile filter with its text selected.
+2. Type `eng`, press Esc. Expected: the filter clears (LD-18). Press Esc again with the filter empty. Expected: nothing happens (no session switch, no dialog, no state change).
+3. Click a tile (focus outside the filter) and press Esc. Expected: no effect on Hold, the selection or the layout.
+4. Switch to the Dashboard and press Ctrl+F. Expected: nothing (no focus jump, the Live Data filter does not receive focus, the tab does not switch).
+5. Switch to Active Tests and press Ctrl+F. Expected: nothing.
+6. Switch to Tuning and press Ctrl+F. Expected: it still focuses the Tuning table search (X-06). On Diagnostics -> Codes & Readiness it focuses the code search (G-30), on Module Map nothing.
+7. Return to Live Data and press Ctrl+F. Expected: the filter is focused again.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-29 Live Data keys do not leak into the Dashboard or other tabs [BOTH] - P0
+1. Start a Dashboard replay or live connection (so R, M and Space have effects: Record, Mark, pause).
+2. Switch to Live Data. Click a tile and the table rows, then press R, M, Space, P and the arrow keys. Expected: no recording starts, no marker is dropped, no replay pauses on the Dashboard (extends X-05); the table and the tile area ignore the keys harmlessly.
+3. Type `rm ` into the filter. Expected: the letters go into the field only (no Record/Mark/pause); Space inserts a space.
+4. Press F5, Ctrl+F and Esc on Live Data, then switch to the Dashboard. Expected: the Dashboard state is unchanged (no replay started or stopped by the Live Data F5, the status line and Record button as before).
+5. Hold on Live Data, switch to the Dashboard. Expected: the Dashboard is unaffected, and when you return to Live Data the page is still held (or released if the drive ended).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### 7B.8 Layout, persistence and cross-cutting
+
+### LD-30 Page minimum width 348 px [1366] - P1
+1. Launch at 1366x768 on S-ARCH with at least 20 tiles and the chart visible. Select a session with a very long label and put long text in the filter.
+2. Drag the window narrower until it stops. Expected: the Live Data page minimum width is 348 px (measure on a screenshot); the window minimum width is under 1000 px (X-01).
+3. At the narrowest width expected: no horizontal scrollbar on the page; the breadcrumb chips and note clip or elide; the toolbar overflows into ">>" with Rescan, Fields..., Window, Hold and the filter still reachable; the chart keeps its own minimum width and nothing paints garbage.
+4. Widen to 1920x1080. Expected: tiles reflow into more columns, the chart fills the width; nothing is stretched into an unusable layout.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-31 1366x768 fit with 20+ tiles [1366] - P0
+Setup: S-ARCH or S-SIM with at least 20 channels (so at least 20 tiles, ideally 24+).
+1. Launch at 1366x768, maximise, open Live Data. Expected: the whole window including the status bar is on screen; no part is below the taskbar.
+2. Expected: the tile area (scrolls vertically if needed), the graphed-channels table and the chart are all visible at once; the chart is not collapsed to a sliver (its minimum height is kept) and the table shows its rows or its own scroll bar.
+3. Drag the splitter between the tiles and the chart both ways. Expected: neither pane can be dragged to zero (children cannot be collapsed); the tile area scrolls and the chart keeps its trace area.
+4. Collapse groups (LD-17). Expected: more room goes to the chart.
+5. Scroll the tile area to the bottom. Expected: the last tile is fully visible; no tile is cut off or overlapped.
+6. Expected: no horizontal scrollbar on the tile area at the default width.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-32 Persistence and the keys written - P0
+Setup: clean `livedata/` keys.
+1. Drag the splitter to a clearly different position, collapse one group, choose a live Window of "5 min", and move one field to a new lane (so the layout is custom).
+2. Quit (File -> Quit) and relaunch; open Live Data. Expected: the splitter, the collapsed group, the Window span (live sessions) and the lane layout all reopen as set. The filter text and Hold state are NOT restored (the page opens unfiltered and not held).
+3. Expected in the QSettings file: `livedata/split`, `livedata/span`, `livedata/groups_collapsed`, `livedata/layout`; the page wrote no other `livedata/` keys that you cannot account for.
+4. Delete the `livedata/` keys and relaunch. Expected: defaults without an error (default splitter sizes, Window "1 min" for live, all groups open).
+5. Corrupt `livedata/split` (replace with garbage) and relaunch. Expected: no crash; the default split is used.
+6. Select a different session. Expected: group collapse, the splitter and the layout stay (they are global, not per session).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-33 Dark palette consistent with Tuning and Diagnostics [BOTH] - P0
+1. Place Live Data next to Tuning (Editor) and Diagnostics in turn. Expected: the same breadcrumb height, the same 36 px toolbar, the same chip look, the same greys; no white or light-grey backgrounds, no default-blue selection colour, no light scroll bars (extends X-02).
+2. Check the tile cards in every state (LD-15), the group headers, the filter field, the Window combo and its popup, the picker popup, the danger banner, the empty-state text, the table (swatches, header, chips), the chart canvas, the readout box, the axis and the right-click menus. Expected: all dark; text contrast at least 4.5:1, including the muted min/max footer and the faint state caption.
+3. Expected: red, amber and green carry meaning only as in LD-15; the "held" chip is amber like the other warnings.
+4. Open the Fields... menu. Expected: dark-themed, readable checkmarks.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-34 Switching sessions rebinds cleanly, including rapid switching - P1
+1. With S-SIM, S-ARCH, S-STALE and S-NOEVT in the picker, switch through all of them one after another. Expected each time: the breadcrumb, chips, note, tiles, table rows, chart traces, markers and axis all belong to the newly selected session (no leftovers of the previous one: no stale tile, no old marker, no old banner).
+2. Switch quickly (mouse wheel or arrow keys on the closed picker) 20 times. Expected: no crash, no freeze, no growing memory use or open file handles you can see in Task Manager, and the final state matches the last selection.
+3. Re-select the session that is already selected. Expected: nothing is rebuilt (values keep updating, min/max keep).
+4. Delete the selected session's scratch copy (S-STALE) if the OS allows it, then press F5. Expected: the picker drops it; the page falls back to the next session or the empty state without a crash. If the OS refuses the delete because the file is open, record that as an observation.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LD-35 Live drive end to end - P1 **[GT]**
+Setup: truck on the road or a stationary run, truck-mcp logging a real drive (`session_drive_log`, source live) on the same machine, ignition ON.
+1. Open Live Data and select the new session. Expected: green "live" chip, no provenance chip (real drive), tiles move with the engine, the note shows the real VIN.
+2. Drive for a few minutes with a WOT pull. Expected: the footers grow, the table Min/Max/Avg change, a "wot" marker line appears on the chart when the event is recorded, and the relative time axis scrolls.
+3. Hold during a pull. Expected: the display freezes within a tick; release catches up with the whole pull (no missing samples); the OpenOBD UI never touches the serial port (the logger keeps running and there is no COM port contention).
+4. Stop truck-mcp logging without ending the session (kill the logger). Expected: within the stale limit the chip changes to "not advancing" and all tiles lose the live palette.
+5. End the session cleanly. Expected: "archived" chip, clock time axis, Hold disabled.
+6. Unplug the GT mid-drive. Expected: the tiles go to "not advancing" (not "read failed"): the session file is still readable, so Live Data reports that the logger stopped, not a read failure.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+---
+
+**Run log addendum (Live Data)**: add the 21 P0 cases of section 7B to the P0 pass count (after 7A the total is 63; with 7B it becomes 84) and record LD-nn ids for any defects.
+
 ## 8. Cross-cutting
 
 ### X-01 Minimum width under 1000 px [1366] - P0
@@ -924,7 +1310,7 @@ Pass: [ ]  Fail: [ ]
 Pass: [ ]  Fail: [ ]
 
 ### X-11 About and version - P2
-1. Help -> About. Expected: "OpenOBD 0.36.0", vehicle and controller info, and the safety text.
+1. Help -> About. Expected: "OpenOBD 0.37.0", vehicle and controller info, and the safety text.
 
 Pass: [ ]  Fail: [ ]
 
@@ -945,5 +1331,5 @@ Pass: [ ]  Fail: [ ]
 | Build version | |
 | Screen sizes run | 1366x768 [ ]   1920x1080 [ ] |
 | GT bench run | Yes [ ]   No [ ] |
-| P0 pass count | ___ / 63 |
+| P0 pass count | ___ / 84 |
 | Defects raised (ids) | |
