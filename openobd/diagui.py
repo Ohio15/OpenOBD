@@ -28,6 +28,7 @@ time; every job-starting action is disabled until it finishes.
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Optional
@@ -53,6 +54,8 @@ from .tuningui import (
     empty_state_label, make_toolbar, repolish, set_chip,
 )
 from .vehnet import HS, SW, ScanResult, SegStatus, Status, Verdict
+
+_log = logging.getLogger(__name__)
 
 
 STATUS_COLORS = {
@@ -192,9 +195,25 @@ class GtJob(QObject):
         g = _gt.ObdxGt()
         g.open()
         try:
-            return fn(g)
-        finally:
+            result = fn(g)
+        except BaseException:
+            # fn's error is the job's error; a close failure must not mask it
+            try:
+                g.close()
+            except Exception:   # noqa: BLE001 — secondary to fn's error
+                _log.warning("closing the temporary GT link failed",
+                             exc_info=True)
+            raise
+        # fn has run (a clear may have been ACCEPTED): a close failure now is
+        # a non-fatal note on the result, never the job error
+        try:
             g.close()
+        except Exception as e:   # noqa: BLE001 — reported as a note
+            why = str(e) or type(e).__name__
+            _log.warning("closing the temporary GT link failed: %s", why)
+            if isinstance(result, dict):
+                result = {**result, "link_close_error": why}
+        return result
 
 
 def clear_and_reread(gt) -> dict:

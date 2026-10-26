@@ -86,6 +86,11 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
 - The page stays busy while a Clear-codes outcome dialog is open, so no job
   can start underneath it (the busy flag was being cleared before the
   dialogs, contradicting the code's own comment).
+- When a Diagnostics job opened its own GT link and closing that link failed
+  after the job had run, the close error replaced the result, so a confirmed
+  clear was reported as "Couldn't reach the truck". The result is kept (a
+  dict result gets a `link_close_error` note and the failure is logged); a
+  close failure after a job that raised never masks the job's own error.
 
 ## 0.35.0 — 2026-10-26
 

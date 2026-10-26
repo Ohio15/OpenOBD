@@ -1088,3 +1088,57 @@ def test_busy_is_held_through_the_clear_dialog(page, monkeypatch):
     assert page.busy() is None and page._pending is None
     assert all(a.isEnabled() for a in
                (page.act_scan, page.act_read, page.act_clear))
+
+
+class CloseFailsGt(FakeGt):
+    """A temporary GT link whose close() raises after the job ran."""
+    opened = closed = 0
+
+    def open(self):
+        CloseFailsGt.opened += 1
+
+    def close(self):
+        CloseFailsGt.closed += 1
+        raise OSError("port vanished on close")
+
+
+def test_close_failure_after_clear_keeps_the_result(page, qapp, monkeypatch):
+    import types
+    from openobd import gt as gt_mod
+    from openobd.diagui import GtJob
+    page.job.run = GtJob.run.__get__(page.job)      # real run AND real _call
+    page.job.dashboard = types.SimpleNamespace(source=None)   # no live link
+    CloseFailsGt.opened = CloseFailsGt.closed = 0
+    monkeypatch.setattr(gt_mod, "ObdxGt", lambda: CloseFailsGt(
+        read_raises=IOError("no reply to 03"), ready=CLEAN_READY))
+    got = []
+    page.job.finished.connect(lambda r, e: got.append((r, e)))
+    calls = []
+    confirm_then_record(monkeypatch, page, calls)
+    page.act_clear.trigger()
+    wait_idle(page, qapp)
+    assert CloseFailsGt.opened == 1 and CloseFailsGt.closed == 1
+    assert len(got) == 1
+    result, error = got[0]
+    assert error is None
+    assert result["clear"] == CLEAR_OK
+    assert result["link_close_error"] == "port vanished on close"
+    assert "Couldn't reach the truck" not in page.codes_banner.text()
+    assert page.codes_banner.text() == (
+        "Clear confirmed by 7E8; codes re-read failed: no reply to 03")
+    assert page.busy() is None and page.act_read.isEnabled()
+
+
+def test_close_failure_never_masks_the_job_error(qapp, monkeypatch):
+    import types
+    from openobd import gt as gt_mod
+    from openobd.diagui import GtJob
+    job = GtJob(types.SimpleNamespace(source=None))
+    monkeypatch.setattr(gt_mod, "ObdxGt", lambda: CloseFailsGt())
+
+    def bad(_gt):
+        raise TimeoutError("0101 timed out")
+    with pytest.raises(TimeoutError, match="0101 timed out"):
+        job._call(bad)
+    # a non-dict result is returned as is
+    assert job._call(lambda _gt: "plain") == "plain"
