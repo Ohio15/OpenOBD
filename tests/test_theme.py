@@ -84,6 +84,55 @@ def test_heights_and_tokens():
         theme.token("no-such-token")
 
 
+def _make_toolbar_names_in_source():
+    """Every objectName passed to make_toolbar() anywhere in openobd/, from
+    the AST, so a toolbar built under a name the theme does not know (and
+    therefore gets no QSS) fails here. A non-literal name fails too: the
+    coverage can only be proven for names visible in the source."""
+    import ast
+    import inspect
+    from openobd import tuningui
+    default = inspect.signature(tuningui.make_toolbar).parameters[
+        "object_name"].default
+    names, bad = set(), []
+    for path in sorted(glob.glob(os.path.join(ROOT, "openobd", "*.py"))):
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), filename=path)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            fname = (fn.id if isinstance(fn, ast.Name)
+                     else fn.attr if isinstance(fn, ast.Attribute) else None)
+            if fname != "make_toolbar":
+                continue
+            arg = (node.args[0] if node.args else next(
+                (k.value for k in node.keywords if k.arg == "object_name"),
+                None))
+            if arg is None:
+                names.add(default)
+            elif isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                names.add(arg.value)
+            else:
+                bad.append(f"{os.path.basename(path)}:{node.lineno}")
+    return names, bad
+
+
+def test_toolbar_names_cover_every_make_toolbar_call():
+    names, bad = _make_toolbar_names_in_source()
+    assert not bad, f"make_toolbar() with a non-literal objectName: {bad}"
+    assert names, "no make_toolbar() calls found; the scan is broken"
+    assert "activeToolbar" in names  # the instance that produced this test
+    missing = names - set(theme.TOOLBAR_NAMES)
+    assert not missing, f"toolbars without theme QSS: {sorted(missing)}"
+    unused = set(theme.TOOLBAR_NAMES) - names
+    assert not unused, f"TOOLBAR_NAMES entries never built: {sorted(unused)}"
+    assert len(set(theme.TOOLBAR_NAMES)) == len(theme.TOOLBAR_NAMES)
+    qss = theme.toolbar_qss()
+    for n in theme.TOOLBAR_NAMES:
+        assert f'QToolBar#{n} QToolButton[primary="true"]' in qss, n
+
+
 def test_qss_helpers_use_tokens_only():
     qss = (theme.tuning_qss() + theme.record_button_qss()
            + theme.mark_button_qss())

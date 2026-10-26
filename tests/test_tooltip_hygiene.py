@@ -496,12 +496,14 @@ def test_gauge_label_tooltip_renders_markup_literally(qapp):
 
 
 def test_action_chokepoints_escape_their_tip(qapp):
-    """diagui._action / livedata._action / app._new_action wrap the tip, so
-    a future runtime tip cannot inject markup (gate SC-16 residual)."""
+    """diagui._action / livedata._action / activetests._action /
+    app._new_action wrap the tip, so a future runtime tip cannot inject
+    markup (gate SC-16 residual)."""
     from PySide6.QtWidgets import QWidget
-    from openobd import app, diagui, livedata
+    from openobd import activetests, app, diagui, livedata
     host = QWidget()
-    for fn in (diagui.DiagnosticsPage._action, livedata.LiveDataPage._action):
+    for fn in (diagui.DiagnosticsPage._action, livedata.LiveDataPage._action,
+               activetests.ActiveTestsPage._action):
         a = fn(host, "open", "T", "<b>x</b>\nnext", lambda: None)
         assert a.toolTip() == "<qt>&lt;b&gt;x&lt;/b&gt;<br>next</qt>"
     a = app.MainWindow._new_action(host, "open", "T", "<i>y</i>", lambda: None,
