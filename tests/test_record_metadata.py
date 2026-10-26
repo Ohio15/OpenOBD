@@ -618,6 +618,7 @@ class FakeGt(GtDataSource):
             possible_keys=lambda: ["rpm", "vss", "app", "load", "map"])
         self._t0 = 0.0
         self.now = 0.0
+        self._thread = object()            # live: only a live GT records
 
     def clock(self):
         return self.now
@@ -753,7 +754,7 @@ def test_a_vin_connection_seeds_only_its_own_and_saves_at_once(dash, timed_gt):
     src._new_link()                                      # what start() does
     save_pedal_cal(VIN, PedalCal(19.6, 60.0, f"settings:{VIN}"))
     d.bind_source(src)
-    d._on_gt_ready(src)
+    d._bind_gt(src)
     d.timer.stop()
     assert d._pedal_key == VIN and f"VIN {VIN}" in d.status.text()
     cal = src.pedal_calibration()
@@ -774,7 +775,7 @@ def test_reconnect_to_another_truck_resets_and_never_cross_applies(
     src = FakeGt(ctx_gt=g)
     src._new_link()
     d.bind_source(src)
-    d._on_gt_ready(src)
+    d._bind_gt(src)
     d.timer.stop()
     d.toggle_record()
     rec = d._recorder
@@ -946,7 +947,7 @@ def test_an_unreadable_settings_store_is_never_written_over(dash, timed_gt,
     src = FakeGt(ctx_gt=g)
     src._new_link()
     d.bind_source(src)
-    d._on_gt_ready(src)
+    d._bind_gt(src)
     d.timer.stop()
     assert "unreadable" in d.status.text() and "hive locked" in d.status.text()
     assert src.pedal_calibration().rest is None          # nothing seeded

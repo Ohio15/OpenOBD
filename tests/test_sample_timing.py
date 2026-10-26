@@ -561,6 +561,7 @@ def test_closing_the_app_mid_record_finalizes_csv_and_sidecar(qapp, tmp_path):
                               possible_keys=lambda: ["rpm", "load", "voltage"],
                               port_name="COM5")
     src.stop = lambda: None
+    src._thread = object()        # live: only a live GT records
     d.bind_source(src)
     try:
         d.toggle_record()

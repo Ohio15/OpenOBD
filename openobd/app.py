@@ -34,6 +34,7 @@ import csv
 import os
 import sys
 import threading
+import time
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, QEvent, QPoint, Signal
@@ -207,6 +208,18 @@ def save_pedal_cal(vin: str, cal: PedalCal) -> None:
 
 #: How often the Dashboard looks for the OBDX Pro GT while none is bound.
 GT_SCAN_INTERVAL_MS = 2000
+#: A connect that has not finished after this long is marked failed (and its
+#: late result dropped). Every serial call in ObdxGt.open is bounded (2 s
+#: write timeout, 1.2 s read deadline), but the OS-level port open is not,
+#: and the sum of bounded steps can exceed this on a sick link.
+GT_CONNECT_TIMEOUT_MS = 20_000
+#: Wait before retrying after a failed open: 5 s, then 15 s, then every 30 s.
+GT_RETRY_BACKOFF_S = (5.0, 15.0, 30.0)
+#: Appended to the status line when the GT appears while the user has a log
+#: replay or truck-mcp session bound (auto-connect leaves their choice be).
+GT_DETECTED_HINT = ("· OBDX Pro GT detected — Settings → Reconnect GT now "
+                    "to switch")
+REPLAY_RECORD_REASON = "Recording needs a live GT; this is a replay."
 #: Menu items the Dashboard's instructions name (MainWindow builds them).
 RECONNECT_GT_LABEL = "Reconnect GT now"
 DISCONNECT_GT_LABEL = "Disconnect GT"
@@ -294,20 +307,26 @@ def poll_cost_model() -> dict:
 class Dashboard(QWidget):
     # GT connect runs on a worker thread (serial open + first poll can take
     # seconds); these marshal the result back onto the GUI thread.
+    # Payloads carry the connect's token: (connect_id, source) / (connect_id,
+    # message), so a result that outlived its connect (watchdog, cancel) is
+    # recognised and dropped.
     gt_ready = Signal(object)
-    gt_error = Signal(str)
+    gt_error = Signal(object)
     # The recording-start vehicle read (identity + DTCs, poll thread held)
     # runs on a worker thread too: (recorder, context dict).
     record_ctx_ready = Signal(object)
 
     def __init__(self, style: str = "classic", ports_provider=None,
                  scan_interval_ms: int = GT_SCAN_INTERVAL_MS,
-                 gt_factory=None):
+                 gt_factory=None, now=None,
+                 connect_timeout_ms: int = GT_CONNECT_TIMEOUT_MS):
         """ports_provider: callable returning the GT's COM ports (default
         detect_gt_ports, the live USB enumeration); scan_interval_ms: the
         auto-connect scan period; gt_factory: builds the source the connect
         worker start()s (default GtDataSource). They exist so tests can
-        simulate a GT arriving, leaving and connecting without hardware."""
+        simulate a GT arriving, leaving and connecting without hardware.
+        now: the monotonic clock the retry backoff runs on (default
+        time.monotonic); connect_timeout_ms: the connect watchdog."""
         super().__init__()
         self.style = style if style in DASHBOARD_STYLES else "classic"
         self.source: Optional[DataSource] = None
@@ -343,6 +362,19 @@ class Dashboard(QWidget):
         # the gt_ready / gt_error signals.
         self._ports_provider = ports_provider
         self._gt_factory = gt_factory or GtDataSource
+        self._now = now or time.monotonic
+        # Token of the connect in flight; bumped by every new connect, a
+        # cancel (Disconnect) and the watchdog, so a late result is dropped.
+        self._connect_id = 0
+        # Retry backoff after a failed open (GT_RETRY_BACKOFF_S), reset when
+        # the port disappears, on success, and by "Reconnect GT now".
+        self._fail_count = 0
+        self._retry_at: Optional[float] = None
+        self._gt_port: Optional[str] = None      # last port the scan saw
+        self._connect_watchdog = QTimer(self)
+        self._connect_watchdog.setSingleShot(True)
+        self._connect_watchdog.setInterval(connect_timeout_ms)
+        self._connect_watchdog.timeout.connect(self._on_connect_timeout)
         self._gt_connecting = False
         self._connect_auto = False
         self._connect_epoch = 0
@@ -668,17 +700,29 @@ class Dashboard(QWidget):
             return True
         return super().eventFilter(obj, event)
 
-    def _teardown_source(self):
-        """Stop and drop the current source. Always called before a new one is
-        bound so a live GT poll thread can't keep running invisibly."""
-        if self.recording:
-            self._finalize_record()
+    def _halt_source(self) -> bool:
+        """Stop the bound source, THEN finalize an active recording (no
+        dialog). The order matters: GtDataSource.stop() joins the poll thread
+        for up to 3 s while it keeps publishing, and those samples are only
+        on disk if the final drain runs after the thread has stopped. True
+        when a recording was finalized (its outcome is in the status line).
+        Every stop path goes through here: stop(), Disconnect GT, a rebind
+        and app close."""
         self.timer.stop()
         if self.source:
             try:
                 self.source.stop()
             except Exception:
                 pass
+        if self.recording:
+            self._finalize_record()
+            return True
+        return False
+
+    def _teardown_source(self):
+        """Stop and drop the current source. Always called before a new one is
+        bound so a live GT poll thread can't keep running invisibly."""
+        self._halt_source()
         self._demote_live_badges()
         self.source = None
         self.btn_start.setEnabled(True)
@@ -765,16 +809,7 @@ class Dashboard(QWidget):
         """Stop the bound source (replay Stop, Settings → Disconnect GT).
         An active recording is finalized first, without a dialog; its
         outcome (saved path, or the error) stays in the status line."""
-        saved = None
-        if self.recording:
-            self._finalize_record()
-            saved = self.status.text()
-        self.timer.stop()
-        if self.source:
-            try:
-                self.source.stop()
-            except Exception:
-                pass
+        saved = self.status.text() if self._halt_source() else None
         self._demote_live_badges()
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
@@ -800,18 +835,21 @@ class Dashboard(QWidget):
         return isinstance(src, GtDataSource) and src._thread is not None
 
     def _record_block_reason(self) -> Optional[str]:
-        """Why Record cannot start right now, or None when it can."""
+        """Why Record cannot start right now, or None when it can. Only a
+        live GT records."""
         src = self.source
         if src is None:
             return ("No live source: plug in the OBDX Pro GT (it connects "
-                    "by itself) or load a log.")
+                    "by itself).")
         if getattr(src, "is_store_record", False):
             return tmsource.record_refusal_message(
                 live=isinstance(src, tmsource.TmLiveSource),
                 provenance=getattr(src, "provenance",
                                    tmstore.PROVENANCE_REAL),
                 connect_label=RECONNECT_GT_MENU_PATH)
-        if isinstance(src, GtDataSource) and src._thread is None:
+        if not isinstance(src, GtDataSource):
+            return REPLAY_RECORD_REASON
+        if src._thread is None:
             return (f'The GT is disconnected: choose "{RECONNECT_GT_MENU_PATH}"'
                     " (or unplug and replug it).")
         return None
@@ -861,20 +899,38 @@ class Dashboard(QWidget):
             self.btn_stop.setEnabled(False)
 
     # -- OBDX Pro GT: auto-connect, connect, disconnect ---------------------- #
-    def _scan_blocked(self) -> bool:
-        """No scan while a connect is in flight, a GT is live, or the user
-        bound another source (a truck-mcp session or a log replay)."""
-        if self._shut_down or self._gt_connecting or self._gt_live():
-            return True
+    def _user_source_bound(self) -> bool:
+        """The user bound a non-GT source (log replay, truck-mcp session):
+        auto-connect leaves it alone."""
         src = self.source
         return src is not None and not isinstance(src, GtDataSource)
 
+    def _set_detected_hint(self, present: bool) -> None:
+        """Show (GT port present while the user's source is bound) or clear
+        the 'GT detected' hint on the status line. Re-appended when another
+        message replaced the line (e.g. a replay's Stop), never doubled."""
+        text = self.status.text()
+        has = GT_DETECTED_HINT in text
+        if present and not has:
+            self.status.setText(f"{text} {GT_DETECTED_HINT}".strip())
+        elif not present and has:
+            self.status.setText(
+                text.replace(f" {GT_DETECTED_HINT}", "")
+                .replace(GT_DETECTED_HINT, "").strip())
+
+    def _reset_retry(self) -> None:
+        self._fail_count = 0
+        self._retry_at = None
+
     def _scan_for_gt(self) -> None:
-        """GUI-thread scan tick: enumerate ports (cheap) and, when the GT's
-        USB ID is present, connect through connect_gt (serial open on the
-        worker). A failed connect is retried on the next tick, not in a
-        loop."""
-        if self._scan_blocked():
+        """GUI-thread scan tick: enumerate ports (cheap, opens nothing).
+        When the GT's USB ID is present and nothing stands in the way,
+        connect through connect_gt (serial open on the worker). Nothing
+        stands in the way unless: a connect is in flight, a GT is live, the
+        user bound a log/session (then only the 'detected' hint shows), a
+        Disconnect is in force, or a failed open's backoff has not run
+        out."""
+        if self._shut_down or self._gt_connecting or self._gt_live():
             return
         provider = self._ports_provider or detect_gt_ports
         try:
@@ -883,31 +939,52 @@ class Dashboard(QWidget):
             self.status.setText(
                 f"Could not list serial ports: {type(exc).__name__}: {exc}")
             return
+        self._gt_port = ports[0] if ports else None
+        user_bound = self._user_source_bound()
         if not ports:
-            # Unplugged: a deliberate Disconnect ends here, so the next
-            # plug-in connects again.
+            # Unplugged: a deliberate Disconnect and any retry backoff end
+            # here, so the next plug-in connects at once.
             self._auto_connect_suppressed = False
-            if self.status.text() != LOOKING_FOR_GT:
+            self._reset_retry()
+            self._set_detected_hint(False)
+            if not user_bound and self.status.text() != LOOKING_FOR_GT:
                 self.status.setText(LOOKING_FOR_GT)
             return
+        if user_bound:
+            self._set_detected_hint(True)
+            return
         if self._auto_connect_suppressed:
+            return
+        if self._retry_at is not None and self._now() < self._retry_at:
             return
         self.connect_gt(auto=True)
 
     def reconnect_gt_now(self) -> None:
-        """Settings → Reconnect GT now: lifts a Disconnect and connects (or
-        cuts a live link's reconnect backoff short)."""
+        """Settings → Reconnect GT now: lifts a Disconnect and the retry
+        backoff, and connects (or cuts a live link's reconnect wait)."""
         self._auto_connect_suppressed = False
+        self._reset_retry()
         self.connect_gt()
+
+    def _cancel_connect(self) -> None:
+        """Forget the connect in flight: its late result is released, not
+        bound (the token no longer matches)."""
+        self._connect_id += 1
+        self._gt_connecting = False
+        self._connect_auto = False
+        self._connect_watchdog.stop()
 
     def disconnect_gt(self) -> None:
         """Settings → Disconnect GT: stop the GT (an active recording is
-        finalized) and keep auto-connect from re-opening it until it is
-        unplugged and replugged or "Reconnect GT now" is chosen."""
+        finalized after the poll thread stopped) and keep auto-connect from
+        re-opening it until it is unplugged and replugged or "Reconnect GT
+        now" is chosen. A connect still opening is cancelled the same way."""
         if self._gt_connecting:
             self._auto_connect_suppressed = True
+            self._cancel_connect()
             self.status.setText("GT connect cancelled; it will not be bound. "
                                 f'Choose "{RECONNECT_GT_MENU_PATH}" to connect.')
+            self._sync_controls()
             return
         if not self._gt_live():
             self.status.setText("No GT is connected.")
@@ -921,9 +998,10 @@ class Dashboard(QWidget):
 
     def connect_gt(self, auto: bool = False):
         """Connect the OBDX Pro GT on a worker thread (serial IO blocks).
-        auto: started by the scan, not by the user; an automatic connect
-        that finishes after the user bound another source (or chose
-        Disconnect) is dropped instead of replacing that choice."""
+        auto: started by the scan, not by the user. Whoever started it, a
+        connect that lands after the user bound another source or chose
+        Disconnect (or after the watchdog gave up on it) is released, not
+        bound."""
         src = self.source
         if isinstance(src, GtDataSource) and src._thread is not None:
             # Already connected: a second open of the same COM port can only
@@ -942,10 +1020,16 @@ class Dashboard(QWidget):
             if not auto:
                 self.status.setText("Already connecting to the OBDX Pro GT…")
             return
+        self._connect_id += 1
+        cid = self._connect_id
         self._gt_connecting = True
         self._connect_auto = auto
         self._connect_epoch = self._bind_epoch
-        self.status.setText("Connecting to OBDX Pro GT…")
+        self._connect_watchdog.start()
+        if not (auto and self._fail_count):
+            # An automatic retry after a failure keeps the one stable
+            # "found but could not be opened" line instead of flickering.
+            self.status.setText("Connecting to OBDX Pro GT…")
         factory = self._gt_factory
 
         def worker():
@@ -954,12 +1038,12 @@ class Dashboard(QWidget):
                 src.start()
             except Exception as e:
                 try:
-                    self.gt_error.emit(str(e))
+                    self.gt_error.emit((cid, str(e)))
                 except RuntimeError:
                     pass  # widget destroyed while connecting
                 return
             try:
-                self.gt_ready.emit(src)
+                self.gt_ready.emit((cid, src))
             except RuntimeError:
                 src.stop()
 
@@ -972,19 +1056,37 @@ class Dashboard(QWidget):
         threading.Thread(target=src.stop, name="gt-release",
                          daemon=True).start()
 
-    def _on_gt_ready(self, src):
-        auto = self._connect_auto
+    def _on_gt_ready(self, payload):
+        """A connect landed. Bound only when it is still THE connect (not
+        cancelled, not timed out), the app is open, the user has not chosen
+        Disconnect, and no other source was bound while it opened."""
+        cid, src = payload
+        if cid != self._connect_id or not self._gt_connecting:
+            self._release_off_thread(src)     # cancelled or timed out
+            return
         self._gt_connecting = False
         self._connect_auto = False
+        self._connect_watchdog.stop()
         if self._shut_down:
             self._release_off_thread(src)
             return
-        if auto and (self._auto_connect_suppressed
-                     or self._bind_epoch != self._connect_epoch):
-            # The user chose Disconnect, or bound another source, while this
-            # automatic connect was opening the port: their choice stands.
+        if self._auto_connect_suppressed:
             self._release_off_thread(src)
+            self.status.setText("OBDX Pro GT opened after Disconnect; "
+                                "released, not bound.")
             return
+        if self._bind_epoch != self._connect_epoch:
+            self._release_off_thread(src)
+            self.status.setText(
+                f"{self.status.text()} · OBDX Pro GT opened while you chose "
+                f'another source; released, not bound ("{RECONNECT_GT_MENU_PATH}"'
+                " to switch).")
+            return
+        self._reset_retry()
+        self._bind_gt(src)
+
+    def _bind_gt(self, src):
+        """Bind a connected GT and build its live status line."""
         self.bind_source(src)          # tears down the old source first
         self.timer.start(100)
         dev = getattr(src, "device", "OBDX Pro GT")
@@ -1016,13 +1118,38 @@ class Dashboard(QWidget):
         self.status.setText(self._live_status)
         self._sync_controls()
 
-    def _on_gt_error(self, msg):
-        auto = self._connect_auto
+    def _on_gt_error(self, payload):
+        cid, msg = payload
+        if cid != self._connect_id or not self._gt_connecting:
+            return                            # cancelled or timed out already
         self._gt_connecting = False
         self._connect_auto = False
-        retry = (" · retrying while it stays plugged in"
-                 if auto and not self._auto_connect_suppressed else "")
-        self.status.setText(f"GT connect failed: {msg}{retry}")
+        self._connect_watchdog.stop()
+        self._connect_failed(msg)
+
+    def _on_connect_timeout(self) -> None:
+        """Watchdog: the connect worker has not answered in time. Mark it
+        failed (backoff applies) and drop whatever it delivers later."""
+        if not self._gt_connecting:
+            return
+        secs = self._connect_watchdog.interval() / 1000
+        self._cancel_connect()
+        self._connect_failed(f"no answer within {secs:g} s")
+
+    def _connect_failed(self, msg: str) -> None:
+        """A failed open: schedule the retry (GT_RETRY_BACKOFF_S) and show
+        ONE stable status line that later identical failures don't rewrite."""
+        self._fail_count += 1
+        delay = GT_RETRY_BACKOFF_S[min(self._fail_count,
+                                       len(GT_RETRY_BACKOFF_S)) - 1]
+        self._retry_at = self._now() + delay
+        if self._gt_port:
+            text = (f"OBDX Pro GT found on {self._gt_port} but it could not be "
+                    f"opened ({msg}) · retrying")
+        else:
+            text = f"GT connect failed: {msg}"
+        if self.status.text() != text:
+            self.status.setText(text)
         self._sync_controls()
 
     # -- truck-mcp drive-log sessions as a gauge source ---------------------- #
@@ -1111,21 +1238,15 @@ class Dashboard(QWidget):
         self._sync_controls()     # Record's refusal names the provenance
 
     def toggle_record(self):
-        if not self.source:
-            self.status.setText(self._record_block_reason())
-            return
-        if not self.recording and getattr(self.source, "is_store_record", False):
-            # A truck-mcp session IS already a record, with per-sample
-            # freshness/quality this CSV cannot carry — re-recording it would
-            # persist carried/archived values as if they were measurements,
-            # decimated to the poll rate on the observer's clock.
-            self.status.setText(tmsource.record_refusal_message(
-                live=isinstance(self.source, tmsource.TmLiveSource),
-                provenance=getattr(self.source, "provenance",
-                                   tmstore.PROVENANCE_REAL),
-                connect_label=RECONNECT_GT_MENU_PATH))
-            return
         if not self.recording:
+            # One gate with the button (_record_block_reason): only a live
+            # GT records. A truck-mcp session IS already a record, with
+            # per-sample freshness/quality this CSV cannot carry, and a log
+            # replay would only copy an existing log into a new CSV.
+            why = self._record_block_reason()
+            if why:
+                self.status.setText(why)
+                return
             # Columns = everything the source can EVER produce, not just what
             # answered so far, so a channel that comes alive mid-drive is kept.
             avail = set(self.source.recordable_channels())
@@ -1337,14 +1458,8 @@ class Dashboard(QWidget):
         it lands (_on_gt_ready)."""
         self._shut_down = True
         self._scan_timer.stop()
-        if self.recording:
-            self._finalize_record()
-        self.timer.stop()
-        if self.source:
-            try:
-                self.source.stop()
-            except Exception:
-                pass
+        self._connect_watchdog.stop()
+        self._halt_source()
 
     def _tick(self):
         if not self.source:

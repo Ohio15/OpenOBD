@@ -401,6 +401,7 @@ class FakeLiveGt(GtDataSource):
                                    port_name="COM5")
         self._keys = ["voltage"]           # first poll only had ATRV
         self.stopped = False
+        self._thread = object()            # live: only a live GT records
 
     def feed(self, t, **vals):
         s = Sample(t, vals)

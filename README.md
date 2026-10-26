@@ -187,7 +187,7 @@ RPM drops) so you can compare real WOT shifts to the setpoint tables.
 
 **Dashboard** — a gauge cluster with rolling sparklines and min/max capture
 (click a gauge to reset). Replay has full transport controls — pause/resume,
-speed (0.5–8×), and a seek slider. The big **⏺ RECORD** button (R) streams every sample losslessly
+speed (0.5–8×), and a seek slider. With a live GT, the big **⏺ RECORD** button (R) streams every sample losslessly
 to disk (drain-based, not UI-tick-sampled) and offers the saved CSV straight
 back to Log Analysis. Fed by a `LogReplaySource` or live by `GtDataSource`
 (OBDX Pro GT), both behind the same `DataSource` seam.

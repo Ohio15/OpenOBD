@@ -21,6 +21,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from openobd.transport import DataSource, GtDataSource, Sample  # noqa: E402
+from vclock import Clock  # noqa: E402
 
 NEVER_MS = 3_600_000       # the scan timer never fires inside a test
 
@@ -74,13 +75,19 @@ class Factory:
     def __init__(self):
         self.built: list[FakeGt] = []
         self.fail_next: str | None = None
+        self.fail_always: str | None = None      # a port held elsewhere
+        self.attempts = 0
         self.gate: threading.Event | None = None
+        self.cls = FakeGt
 
     def __call__(self):
+        self.attempts += 1
+        if self.fail_always:
+            raise OSError(self.fail_always)
         if self.fail_next:
             msg, self.fail_next = self.fail_next, None
             raise OSError(msg)
-        src = FakeGt()
+        src = self.cls()
         gate = self.gate
         if gate is not None:
             real_start = src.start
@@ -160,11 +167,12 @@ def rig(qapp, tmp_path, monkeypatch):
     from openobd.app import Dashboard
     monkeypatch.setattr(QMessageBox, "question",
                         lambda *a, **k: QMessageBox.No)
-    ports, factory = Ports(), Factory()
+    ports, factory, clock = Ports(), Factory(), Clock(start=1000.0)
     d = Dashboard(ports_provider=ports, scan_interval_ms=NEVER_MS,
-                  gt_factory=factory)
+                  gt_factory=factory, now=clock)
     d._record_dirs = lambda: [str(tmp_path / "Logs")]
-    yield SimpleNamespace(d=d, ports=ports, factory=factory, app=qapp)
+    yield SimpleNamespace(d=d, ports=ports, factory=factory, app=qapp,
+                          clock=clock)
     if factory.gate is not None:
         factory.gate.set()
     _settle(qapp)
@@ -218,34 +226,168 @@ def test_no_scan_while_a_connect_is_in_flight(rig):
 
 @pytest.mark.parametrize("source_cls", [StoreSource, ReplaySource,
                                         LiveFollowSource])
-def test_no_scan_while_the_user_bound_another_source(rig, source_cls):
+def test_no_connect_while_the_user_bound_another_source(rig, source_cls):
+    from openobd.app import GT_DETECTED_HINT
     d, ports, factory = rig.d, rig.ports, rig.factory
     d.bind_source(source_cls())
     ports.present = ["COM7"]
-    looked = ports.calls
     for _ in range(3):
         d._scan_for_gt()
-    assert ports.calls == looked and factory.built == []
+    _settle(rig.app)
+    assert factory.attempts == 0 and not d._gt_connecting
+    assert d.status.text().count(GT_DETECTED_HINT) == 1   # once, not 3x
     d._teardown_source()                             # unbound: scan resumes
     d._scan_for_gt()
-    assert ports.calls == looked + 1
     _settle(rig.app)
     assert d._gt_live()
 
 
-def test_a_failed_connect_is_reported_and_retried_on_the_next_tick(rig):
-    d, ports, factory = rig.d, rig.ports, rig.factory
-    factory.fail_next = "could not open port 'COM7': Access is denied"
+def test_detected_hint_survives_a_replay_stop_and_clears_on_unplug(rig):
+    from openobd.app import GT_DETECTED_HINT
+    d, ports = rig.d, rig.ports
+    d.bind_source(ReplaySource())
+    d._scan_for_gt()
+    assert GT_DETECTED_HINT not in d.status.text()   # no GT yet
+    ports.present = ["COM7"]
+    d._scan_for_gt()
+    assert d.status.text().endswith(GT_DETECTED_HINT)
+    d.stop()                                         # replay Stop: rewrites
+    assert d.status.text() == "Stopped."
+    d._scan_for_gt()
+    assert d.status.text() == f"Stopped. {GT_DETECTED_HINT}"
+    ports.present = []                               # GT unplugged
+    d._scan_for_gt()
+    assert d.status.text() == "Stopped."
+    assert rig.factory.attempts == 0
+
+
+def test_a_failed_open_backs_off_5_15_30_with_one_stable_status_line(rig):
+    from openobd.app import GT_RETRY_BACKOFF_S
+    d, ports, factory, clock = rig.d, rig.ports, rig.factory, rig.clock
+    assert GT_RETRY_BACKOFF_S == (5.0, 15.0, 30.0)
+    factory.fail_always = "COM7 is in use by another program"
+    ports.present = ["COM7"]
+    writes = []
+    real_set = d.status.setText
+    d.status.setText = lambda text: (writes.append(text), real_set(text))
+    line = ("OBDX Pro GT found on COM7 but it could not be opened "
+            "(COM7 is in use by another program) · retrying")
+
+    def tick_at(t):
+        clock.now = t
+        d._scan_for_gt()
+        _settle(rig.app)
+
+    tick_at(1000.0)
+    assert factory.attempts == 1 and d.status.text() == line
+    schedule = []
+    t = 1000.0
+    for _ in range(5):                    # 2 s ticks, record retry times
+        attempts = factory.attempts
+        while factory.attempts == attempts:
+            t += 2.0
+            tick_at(t)
+        schedule.append(t)
+    gaps = [b - a for a, b in zip([1000.0] + schedule, schedule)]
+    assert gaps == [6.0, 16.0, 30.0, 30.0, 30.0]   # 5/15/30 s on 2 s ticks
+    assert d.status.text() == line
+    assert writes.count(line) == 1, writes        # never rewritten
+    assert "Connecting to OBDX Pro GT…" not in writes[1:], writes
+    assert d.source is None and not d._gt_connecting
+    # the port going away resets the backoff: the replug connects at once
+    ports.present = []
+    tick_at(t + 2.0)
+    factory.fail_always = None
+    ports.present = ["COM7"]
+    tick_at(t + 4.0)
+    assert d._gt_live()
+
+
+def test_reconnect_now_skips_the_backoff(rig):
+    d, ports, factory, clock = rig.d, rig.ports, rig.factory, rig.clock
+    factory.fail_next = "Access is denied"
     ports.present = ["COM7"]
     d._scan_for_gt()
     _settle(rig.app)
-    assert d.source is None and not d._gt_connecting
-    assert "GT connect failed" in d.status.text()
-    assert "Access is denied" in d.status.text()
-    assert "retrying" in d.status.text()
-    d._scan_for_gt()                                 # next tick: retry
+    d._scan_for_gt()                                 # inside the 5 s wait
     _settle(rig.app)
-    assert d._gt_live() and len(factory.built) == 1
+    assert factory.attempts == 1
+    d.reconnect_gt_now()
+    _settle(rig.app)
+    assert d._gt_live() and factory.attempts == 2
+
+
+def test_held_port_through_the_real_transport_open(qapp):
+    """No factory fake: a real GtDataSource on a port that cannot be opened
+    fails in pyserial and lands as the stable 'could not be opened' line."""
+    from openobd.app import Dashboard
+    ports = Ports()
+    ports.present = ["COM7"]
+    d = Dashboard(ports_provider=ports, scan_interval_ms=NEVER_MS,
+                  gt_factory=lambda: GtDataSource(
+                      port="OPENOBD_TEST_NO_SUCH_PORT"),
+                  now=Clock(start=0.0))
+    try:
+        _settle(qapp)                                # creation scan connected
+        text = d.status.text()
+        assert text.startswith("OBDX Pro GT found on COM7 but it could not "
+                               "be opened (") and text.endswith("· retrying")
+        assert "OPENOBD_TEST_NO_SUCH_PORT" in text
+        assert d.source is None and not d._gt_connecting and d._fail_count == 1
+    finally:
+        d.shutdown()
+
+
+def test_connect_watchdog_fails_a_hung_open_and_drops_its_result(rig):
+    from openobd.app import GT_CONNECT_TIMEOUT_MS
+    d, ports, factory = rig.d, rig.ports, rig.factory
+    assert d._connect_watchdog.interval() == GT_CONNECT_TIMEOUT_MS == 20_000
+    factory.gate = threading.Event()
+    ports.present = ["COM7"]
+    d._scan_for_gt()
+    assert d._gt_connecting and d._connect_watchdog.isActive()
+    d._connect_watchdog.timeout.emit()               # 20 s, on test time
+    assert not d._gt_connecting
+    assert "could not be opened (no answer within 20 s) · retrying" in \
+        d.status.text()
+    factory.gate.set()                               # the open finally lands
+    _settle(rig.app)
+    assert d.source is None and factory.built[0].stopped
+    assert d._fail_count == 1 and d._retry_at == rig.clock.now + 5.0
+
+
+def test_watchdog_stops_once_the_connect_lands(rig):
+    d, ports = rig.d, rig.ports
+    ports.present = ["COM7"]
+    d._scan_for_gt()
+    _settle(rig.app)
+    assert d._gt_live() and not d._connect_watchdog.isActive()
+
+
+def test_manual_connect_dropped_when_disconnect_comes_during_the_open(rig):
+    d, factory = rig.d, rig.factory
+    factory.gate = threading.Event()
+    d.reconnect_gt_now()                             # manual, not auto
+    assert d._gt_connecting
+    d.disconnect_gt()
+    assert "cancelled" in d.status.text() and not d._gt_connecting
+    factory.gate.set()
+    _settle(rig.app)
+    assert d.source is None and factory.built[0].stopped
+    assert "cancelled" in d.status.text()
+
+
+def test_manual_connect_dropped_when_another_source_is_bound_meanwhile(rig):
+    d, factory = rig.d, rig.factory
+    factory.gate = threading.Event()
+    d.connect_gt()                                   # manual
+    store = StoreSource()
+    d.bind_source(store)
+    factory.gate.set()
+    _settle(rig.app)
+    assert d.source is store and factory.built[0].stopped
+    assert "released, not bound" in d.status.text()
+    assert not d._gt_connecting
 
 
 def test_disconnect_suppresses_until_the_port_goes_away_and_comes_back(rig):
@@ -414,6 +556,73 @@ def test_marker_needs_a_recording_and_m_still_marks(rig):
     assert "mark 1 at 2.0 s" in d.status.text()
 
 
+class PublishingGt(FakeGt):
+    """stop() behaves like GtDataSource.stop(): the poll thread keeps
+    publishing until the join returns. Those samples must reach the CSV."""
+
+    def stop(self):
+        for k in range(3):
+            self.feed(self.now + 0.25, rpm=900.0 + k)
+        super().stop()
+
+
+@pytest.mark.parametrize("path", ["stop", "disconnect", "rebind", "close"])
+def test_samples_published_during_stop_land_in_the_csv(rig, monkeypatch, path):
+    import csv
+    from PySide6.QtWidgets import QMessageBox
+    from openobd.app import MainWindow
+    d, ports, factory = rig.d, rig.ports, rig.factory
+    factory.cls = PublishingGt
+    ports.present = ["COM7"]
+    d._scan_for_gt()
+    _settle(rig.app)
+    src = d.source
+    assert isinstance(src, PublishingGt) and d._gt_live()
+    d.toggle_record()
+    path_csv = d.last_record_path
+    src.feed(1.0, rpm=700.0)
+    d._tick()
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *a, **k: pytest.fail("dialog on " + path))
+    if path == "stop":
+        d.stop()
+    elif path == "disconnect":
+        d.disconnect_gt()
+    elif path == "rebind":
+        d.bind_source(StoreSource())
+    else:
+        MainWindow._shutdown_pages(
+            SimpleNamespace(dashboard=d, livedata=None, active_tests=None))
+    assert src.stopped and not d.recording
+    with open(path_csv, newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))[1:]
+    assert [r[0] for r in rows] == ["0.000", "0.250", "0.500", "0.750"]
+    if path in ("stop", "disconnect"):
+        assert "Saved 4 samples" in d.status.text()
+
+
+def test_record_is_disabled_for_a_log_replay(rig):
+    from openobd.app import REPLAY_RECORD_REASON
+    d = rig.d
+    d.bind_source(ReplaySource())
+    assert not d.btn_record.isEnabled()
+    assert d.btn_record.toolTip() == REPLAY_RECORD_REASON
+    assert REPLAY_RECORD_REASON == "Recording needs a live GT; this is a replay."
+    d.toggle_record()                                # R / direct call too
+    assert not d.recording and d.status.text() == REPLAY_RECORD_REASON
+
+
+def test_record_is_disabled_for_a_stopped_gt(rig):
+    d, ports = rig.d, rig.ports
+    ports.present = ["COM7"]
+    d._scan_for_gt()
+    _settle(rig.app)
+    assert d.btn_record.isEnabled()
+    d.disconnect_gt()
+    assert not d.btn_record.isEnabled()
+    assert "The GT is disconnected" in d.btn_record.toolTip()
+
+
 def test_elapsed_formatting():
     from openobd.app import format_elapsed, format_record_label
     assert format_elapsed(None) == "00:00"
@@ -463,8 +672,9 @@ def test_space_toggles_pause_on_a_replay(rig):
 
 def test_r_toggles_record(rig):
     d = rig.d
-    rp = ReplaySource()
-    d.bind_source(rp)
+    rig.ports.present = ["COM7"]
+    d._scan_for_gt()
+    _settle(rig.app)
     assert d.shortcut_tooltip(d.btn_record).endswith("(R)")
     _shortcut(d, "R").activated.emit()
     assert d.recording

@@ -350,7 +350,7 @@ from vclock import Clock as _VClock  # noqa: E402
 _hclock = _VClock(start=500.0)
 gsrc = GtDataSource(now=_hclock)
 gsrc._keys = ["rpm", "voltage"]
-win.dashboard._on_gt_ready(gsrc)
+win.dashboard._bind_gt(gsrc)
 win.dashboard.timer.stop()
 live_caption = win.dashboard.status.text()
 assert "live" in live_caption
@@ -377,7 +377,7 @@ print("GT poll health OK: failed state + reason shown, live caption restored")
 # constant on a whole drive). An unfiltered GT source must leave the Trans
 # gauge dimmed — never a live-looking number — and every other gauge intact.
 gfull = GtDataSource()
-win.dashboard._on_gt_ready(gfull)
+win.dashboard._bind_gt(gfull)
 win.dashboard.timer.stop()
 assert "tft" not in gfull.channels() and "tft" not in gfull.recordable_channels()
 assert win.dashboard.gauges["tft"].available is False
@@ -389,40 +389,49 @@ print("GT without trans temp OK: Trans gauge dimmed, cluster paints")
 # recording path, through the REAL toggle_record (the old hand-built recorder
 # bypassed it, which is how GT recording being refused went unnoticed): rows
 # stream drain-based into the final CSV in the log folder, no save dialog.
+# Only a live GT records (v0.34.0), so the source is a GtDataSource whose
+# poll thread is stood in for: the section queues the fixture log's rows as
+# the poll thread would, between ticks.
 import csv as _csv  # noqa: E402
-import openobd.transport as _transport  # noqa: E402
+from types import SimpleNamespace as _NS  # noqa: E402
+from openobd.transport import Sample as _Smp  # noqa: E402
 
 
-class _FakeClock:
-    """Replay time advances only when this section says so, so the 19.9 s log
-    cannot loop (a loop legitimately repeats timestamps) on a slow machine."""
-    now = 1000.0
+class _SmokeLiveGt(GtDataSource):
+    def __init__(self):
+        super().__init__(port="COM9")
+        self._gt = _NS(close=lambda: None, supported=set(), port_name="COM9",
+                       possible_keys=lambda: ["rpm", "vss", "app"])
+        self._thread = object()               # "running"
+        self.stopped = False
 
-    @classmethod
-    def monotonic(cls):
-        return cls.now
+    def stop(self):
+        self._thread = None
+        self.stopped = True
 
 
-_real_transport_time = _transport.time
-_transport.time = _FakeClock
 d = win.dashboard
 _rec_dir = os.path.join(_tmp_root, "logs")
 d._record_dirs = lambda: [_rec_dir]
-d.bind_source(LogReplaySource(win.log, speed=50.0))
-d.start()
+_live = _SmokeLiveGt()
+d.bind_source(_live)
 d.timer.stop()
+assert d.btn_record.isEnabled(), d.btn_record.toolTip()
 d.toggle_record()
 assert d.recording, d.status.text()
 rec_path = d.last_record_path
 assert os.path.dirname(rec_path) == _rec_dir and os.path.exists(rec_path)
+_rpm, _vss = win.log.series("rpm"), win.log.series("vss")
+_i = 0
 for _ in range(8):
-    _FakeClock.now += 0.02
+    for _ in range(10):
+        _live._queue.append(_Smp(_i * 0.1, {"rpm": _rpm[_i], "vss": _vss[_i]}))
+        _i += 1
     app.processEvents()
     d._tick()
-assert d.source.playing and d.source.position() < d.source.duration(),     "replay looped/finished during the recording section (precondition broken)"
 rec_n = d._recorder.count
 d._finalize_record()          # non-interactive: no dialog, file already final
-_transport.time = _real_transport_time
+assert rec_n == 80, rec_n
 assert not d.recording and d._recorder is None
 assert "Saved" in d.status.text() and rec_path in d.status.text()
 with open(rec_path, newline="", encoding="utf-8") as fh:
@@ -647,7 +656,7 @@ def _cycle(t, vals):
 gsrc._publish(_cycle(0.0, {"rpm": 3000.0, "vss": 40.0, "maf": 12.34,
                            "voltage": 13.81}))
 _fclock.now = gsrc._t0 + 0.05          # cycle 1's last reply
-d._on_gt_ready(gsrc)
+d._bind_gt(gsrc)
 d.timer.stop()                      # tick by hand; the frame animator runs
 d._tick()
 rpm = d.gauges["rpm"]

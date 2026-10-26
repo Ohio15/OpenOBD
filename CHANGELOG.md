@@ -13,9 +13,16 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   connect is in flight, while a GT is live (the poll thread re-opens a dropped
   link itself), or while the user has bound a truck-mcp session or a log
   replay. A failed connect shows in the status line and is retried on the
-  next scan tick. While nothing is found the status reads "Looking for OBDX
-  Pro GT… (plug in the USB)". An automatic connect that finishes after the
-  user bound another source, or chose Disconnect, is released, not bound.
+  next scan, after a backoff of 5 s, then 15 s, then every 30 s (reset
+  when the port disappears or on Reconnect GT now), under one stable status
+  line "OBDX Pro GT found on COMx but it could not be opened (<reason>) ·
+  retrying". A 20 s watchdog marks a connect that never returns as failed
+  and drops its late result. While nothing is found the status reads
+  "Looking for OBDX Pro GT… (plug in the USB)". While a log or session is
+  bound, a GT that appears adds "· OBDX Pro GT detected — Settings →
+  Reconnect GT now to switch" to the status line instead of connecting. Any
+  connect (automatic or Reconnect GT now) that finishes after the user bound
+  another source, or chose Disconnect, is released, not bound.
   The scan is injectable (`Dashboard(ports_provider=, scan_interval_ms=,
   gt_factory=)`). The "Connect GT Pro" button is gone; **Settings → Reconnect
   GT now** (Ctrl+G) forces a connect, and **Settings → Disconnect GT** stops
@@ -26,9 +33,10 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   high, red "⏺  RECORD" when idle, "⏹  STOP  ·  1,234 samples  ·  02:14"
   while recording (elapsed from the first recorded sample, on the source's
   clock). Clicking it while recording stops and finalizes as before (offers
-  Log Analysis). Disabled, with the reason as its tooltip, when there is no
-  source it can record (nothing bound, a disconnected GT, or a truck-mcp
-  session). Styled by a stylesheet on the button only.
+  Log Analysis). Only a live GT records: the button is disabled, with the
+  reason as its tooltip, for nothing bound, a disconnected GT, a truck-mcp
+  session, or a log replay ("Recording needs a live GT; this is a replay").
+  Styled by a stylesheet on the button only.
 - **Mark beside it**, same height, shown only while recording (M still
   marks).
 - **Replay transport.** Start and Stop moved into the replay strip with
@@ -43,6 +51,12 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   "Settings → Reconnect GT now".
 - **Keys:** R toggles record (Ctrl+R still works), M marks, Space toggles
   pause on a replay (P still works), listed in the status line's tooltip.
+- **Fixed: samples lost at stop.** Every stop path (replay Stop,
+  Disconnect GT, binding another source, app close) finalized the recording
+  BEFORE stopping the source, and GtDataSource.stop() joins the poll thread
+  for up to 3 s while it keeps publishing; those samples never reached the
+  CSV. The source now stops first, then the final drain and close run
+  (`Dashboard._halt_source`).
 - Tests: `tests/test_dashboard_controls.py` (fake ports provider, fake GT
   factory, hand-driven scan ticks, virtual clock); `tests/conftest.py` makes
   the default ports provider report no GT so no test can open real hardware;
