@@ -1241,6 +1241,367 @@ Pass: [ ]  Fail: [ ]  Notes: ____
 
 **Run log addendum (Live Data)**: add the 21 P0 cases of section 7B to the P0 pass count (after 7A the total is 63; with 7B it becomes 84) and record LD-nn ids for any defects.
 
+## 7C. Active Tests (v0.38.0)
+
+**Covers**: v0.38.0 Active Tests tab UX overhaul (PR #57). Sources: `CHANGELOG.md` section 0.38.0, `openobd/activetests.py` (`ActiveTestsPage`), `openobd/ctljournal.py` (`control_state()` verdicts clean / outstanding / unknown), `openobd/tmstore.py` (`control_root_candidates()`), `README.md` (Active Tests paragraph), `tests/test_activetests_ui.py`. IDs are `AT-nn`. Cases marked [BOTH] are checked at 1366x768 and 1920x1080, [1366] only at 1366x768, [GT] need a live truck-mcp control session on the truck (bench decision; AT-26 only). Every other case runs against the synthetic journal fixtures below, so the whole section can be executed on the bench with no truck and no GT.
+
+**This page is a read-only audit.** OpenOBD holds no control lease, owns no console, writes no journal and sends no frame; arm, fire and release exist only in the truck-mcp CLI. "No control exists in OpenOBD" is a P0 assertion (AT-02), not an omission.
+
+**Preconditions addendum (Active Tests)**
+- The page reads the truck-mcp control journal `<root>\control\control-journal.jsonl` (JSON lines, `at` = epoch seconds, `event`, `module`, `cpid`, other keys shown as `k=v`). It never writes it. Prepare everything in `D:\Scratch\<yyyy-mm-dd>-activetests-fixtures\` (never in the repo, never the real truck-mcp data root, never a real journal). The fixture dir below is written `$fx`.
+- How the app finds journals (`tmstore.control_root_candidates()`): it ALWAYS unions four roots and never collapses to one, even under the override: (1) `%TRUCK_MCP_DATA%`, (2) `%LOCALAPPDATA%\Programs\truck-mcp-app` (field kit), (3) the hard-coded dev checkout `D:\Projects\truck-mcp`, (4) `%USERPROFILE%\truck-mcp`. Only existing directories count. There is no data-root setting in the app for this page. So `TRUCK_MCP_DATA` alone does NOT isolate the test: the real field kit and checkout journals would be mixed into the verdict. Launch OpenOBD from a PowerShell where all of these are set (shell-local, restored on closing it):
+  ```
+  $fx = "D:\Scratch\<yyyy-mm-dd>-activetests-fixtures"
+  $env:TRUCK_MCP_DATA = "$fx\root"                 # fixture root A (journal swapped per case)
+  $env:LOCALAPPDATA   = "$fx\localappdata"          # field kit root B = $fx\localappdata\Programs\truck-mcp-app
+  $env:USERPROFILE    = "$fx\home"                  # root D = $fx\home\truck-mcp (leave absent unless a case says so)
+  python -m openobd                                 # from the feat-activetests-ux worktree, or the deployed exe
+  ```
+  Create `$fx\root`, `$fx\localappdata\Programs\truck-mcp-app` and `$fx\home` as empty directories first. The one root that cannot be redirected is `D:\Projects\truck-mcp` (hard-coded): AT-01 checks it. If it holds a `control\control-journal.jsonl`, run this section on a machine or VM where it does not (do not move, edit or lock the real file) and record the build and machine here: `________`.
+- Fixture generator: save the script below as `$fx\make_fixtures.py` (OUTSIDE `library\`) and run `python -I $fx\make_fixtures.py $fx\library`. It writes one `.jsonl` per fixture with timestamps relative to NOW, so re-run it before each session (and again if a case runs past 24 h). To "load" a fixture into root A: `Copy-Item $fx\library\<name>.jsonl $fx\root\control\control-journal.jsonl -Force` (create `$fx\root\control` once). The open page picks the change up within 3 s (poll) or at once with F5; relaunch is not needed.
+  ```python
+  import json, sys, time, pathlib
+  out = pathlib.Path(sys.argv[1]); out.mkdir(parents=True, exist_ok=True)
+  N = time.time()
+  def line(l):
+      if isinstance(l, bytes): return l
+      return (l if isinstance(l, str) else json.dumps(l)).encode()
+  def w(name, lines):
+      (out / (name + ".jsonl")).write_bytes(b"".join(line(l) + b"\n" for l in lines))
+  arm  = {"at": N-60, "event": "arm", "module": "BCM", "cpid": "0x10"}
+  act  = {"at": N-50, "event": "activate", "module": "BCM", "cpid": "0x10", "release": "AE 10 00"}
+  rel  = {"at": N-40, "event": "released", "module": "BCM", "cpid": "0x10"}
+  ecm  = {"at": N-30, "event": "activate", "module": "ECM", "cpid": "0x2A", "release": "AE 2A 00 00"}
+  clean = [arm, act, rel]
+  w("F-CLEAN", clean)
+  w("F-OUT", clean + [ecm])
+  w("F-DAMAGED", clean + ["{not json"])
+  w("F-NONDICT", clean + ["[1, 2, 3]", "\"just a string\"", "42"])
+  w("F-NOTS", clean + [{"event": "arm", "module": "TCM", "cpid": "0x05"}])
+  w("F-EMPTY", [])
+  w("F-NONUTF8", [b"\xff\xfe\x80\x81 garbage"])
+  w("F-HOSTILE", [{"at": N-20, "event": "arm", "module": "<b>ECM</b>", "cpid": "<i>1</i>", "note": "<a href=x>y</a>"}])
+  w("F-HOSTILE-OUT", [{"at": N-20, "event": "activate", "module": "<b>ECM</b>", "cpid": "<i>1</i>", "release": "<b>AE 01</b>", "note": "<img src=x onerror=alert(1)>"}])
+  H = 3600
+  w("F-OLD", [{"at": N-3*86400, "event": "fire_refused:no_lease", "module": "TCM", "cpid": "0x01"},
+              {"at": N-3*86400+10, "event": "arm", "module": "BCM", "cpid": "0x10"},
+              {"at": N-3*86400+20, "event": "activate", "module": "BCM", "cpid": "0x10", "release": "AE 10 00"},
+              {"at": N-3*86400+30, "event": "return_to_normal", "module": "BCM", "cpid": "0x10"},
+              {"at": N-25*H, "event": "arm", "module": "OLD25H", "cpid": "0x20"},
+              {"at": N-23*H, "event": "arm", "module": "NEW23H", "cpid": "0x21"}] + clean)
+  w("F-BIG", [{"at": N-60*i, "event": "arm", "module": "BCM", "cpid": "0x%02X" % (i % 200)} for i in range(150, 0, -1)])
+  w("F-XA-ACT", [{"at": N-30, "event": "activate", "module": "ECM", "cpid": "0x2A", "release": "AE 2A 00 00"}])
+  w("F-XB-REL-NEWER", [{"at": N-10, "event": "released", "module": "ECM", "cpid": "0x2A"}])
+  w("F-XB-REL-OLDER", [{"at": N-100, "event": "released", "module": "ECM", "cpid": "0x2A"}])
+  ```
+- Fixture reference: **F-CLEAN** arm / activate / released on BCM 0x10; **F-OUT** F-CLEAN plus an ECM 0x2A activate with release bytes `AE 2A 00 00` and no release; **F-DAMAGED** F-CLEAN plus one malformed line; **F-NONDICT** F-CLEAN plus three valid-JSON non-object lines; **F-NOTS** F-CLEAN plus a record with no `at`; **F-EMPTY** zero bytes; **F-NONUTF8** non-UTF-8 bytes; **F-HOSTILE** / **F-HOSTILE-OUT** HTML in module, cpid, detail and release; **F-OLD** entries 3 days, 25 h and 23 h old plus F-CLEAN (9 records); **F-BIG** 150 records; **F-XA-ACT**, **F-XB-REL-NEWER**, **F-XB-REL-OLDER** for the two-journal ordering case. Missing journal = delete `$fx\root\control\control-journal.jsonl` (and keep roots B and D without one).
+- Clean state: before the first case delete the `activetests/` keys from the OpenOBD QSettings file (`activetests/show`, `activetests/sources_collapsed`) so persistence cases start from defaults. Start each case from F-CLEAN loaded in root A and no journal in roots B and D unless the case says otherwise.
+- Cases that change a fixture change the scratch COPY in `$fx` only. Never edit, lock or delete anything under the real truck-mcp data root, the field kit, `D:\Projects\truck-mcp` or `%USERPROFILE%\truck-mcp` of the real profile.
+- Read-failure harness (AT-11 to AT-13, AT-20 step 6): a "read failed" needs `control_state()` itself to raise, which no journal file can cause (file damage is reported as "unknown", never as a failure). Save the script below as `$fx\run_failing.py` (outside the repo) and launch it INSTEAD of `python -m openobd` (same shell, same environment variables); create / delete the flag file `$fx\FAIL` to make every read raise / succeed. Set `$env:FX = $fx` and `$env:OPENOBD_SRC = "<path of the feat-activetests-ux worktree>"` before launching:
+  ```python
+  import os, sys
+  sys.path.insert(0, os.environ["OPENOBD_SRC"])
+  from openobd import ctljournal
+  import openobd.app as app
+  FLAG = os.path.join(os.environ["FX"], "FAIL")
+  _real = ctljournal.control_state
+  def _control_state():
+      if os.path.exists(FLAG):
+          raise OSError("simulated read failure <b>x</b>")
+      return _real()
+  ctljournal.control_state = _control_state
+  sys.exit(app.main(["openobd"]))
+  ```
+  The page looks the function up at call time, so the patch takes effect on the next poll (within 3 s) or on F5.
+
+Open Active Tests from the main tab bar (fifth tab). It is one page: the chrome (breadcrumb "Active Tests > Control journal" with chips and the note, a 36 px toolbar), a muted explainer line, an optional banner, the journal table, and the collapsible "Journal sources" panel at the bottom.
+
+### 7C.1 Read-only guarantee and test isolation
+
+### AT-01 Fixture isolation: only the scratch roots are read - P1
+Run this first; a Fail blocks the rest of the section. Setup: environment from the Preconditions addendum, F-CLEAN in root A.
+1. Before launching, run `Test-Path D:\Projects\truck-mcp\control\control-journal.jsonl`. Expected: `False`. If `True`, stop, record the machine, and move the section to a machine where it is `False` (the real file must not be touched).
+2. Launch OpenOBD, open Active Tests, expand "Journal sources". Expected: the panel lists exactly the roots that exist: a `journal      <fx>\root\control\control-journal.jsonl  (3 records)` line for root A and `no journal   <fx>\localappdata\Programs\truck-mcp-app` for the field kit; no path under the real `%LOCALAPPDATA%`, the real user profile or any other drive appears (`D:\Projects\truck-mcp` is absent because it does not exist).
+3. Expected: the chips "1 journal" and "3 records" match the single fixture journal; the breadcrumb note lists the same roots after "searched".
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-02 No arm / fire / activate / release control exists anywhere [BOTH] - P0
+Setup: F-OUT loaded (an outstanding control is the situation where a recovery button would be most tempting). The GT is NOT connected and no truck-mcp process is running. Compute the SHA-256 of `$fx\root\control\control-journal.jsonl` now: `________`.
+1. Read the toolbar. Expected: exactly Refresh, Copy report, a separator, the "Filter journal  (Ctrl+F)" field, the "Show" label and combo, and nothing else. No button, menu, checkbox or combo whose text or tooltip contains arm, fire, activate, release, recover, clear, start, run, send or test (hover every control and read the tooltip).
+2. Read the whole page, including the danger banner of an outstanding control. Expected: the banner states that OpenOBD will not send the release and that truck-mcp recovery must be run; it contains no button or link. The muted line reads "No executable vehicle controls are known to OpenOBD. This page is a read-only audit of truck-mcp's control journal."
+3. Open every top-level menu of the main window and every submenu. Expected: no menu item arms, fires, activates or releases a control; any items that mention Active Tests only switch tabs.
+4. Right-click on a journal row, on the empty table area, on the banner, on the breadcrumb and on the Journal sources text. Expected: either no menu or only the standard text/selection menu (Copy / Select All); no control action.
+5. Press F5, Enter, Space, Delete, R, M, A, F, Ctrl+Return and Ctrl+Shift+R with the table focused and with the page focused. Expected: F5 re-reads (AT-15); the others do nothing on this page.
+6. Select a row and drag it. Expected: nothing is started; no drop target accepts it.
+7. Recompute the SHA-256 of the journal file. Expected: identical to the value taken in Setup, and no new file appeared under `$fx\root\control\` or any other fixture root (the page does not write a journal, a lock file or a backup).
+8. Expected: nothing in this case needed the GT; the status bar shows no serial activity and no connect attempt was made by opening or using the tab.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### 7C.2 Verdict, chips and banners
+
+### AT-03 Clean verdict: green chip, no banner [BOTH] - P0
+Setup: F-CLEAN in root A.
+1. Open Active Tests. Expected: the breadcrumb reads "Active Tests > Control journal" (the product draws a chevron; "Control journal" bold). The first chip is green "clean"; then neutral "1 journal" and "3 records"; then a muted "Polling" (AT-14).
+2. Expected: NO banner anywhere above the table (the green chip carries the verdict).
+3. Expected: the explainer line is visible.
+4. Expected: the note reads "as of HH:MM:SS . searched <root A>, ..." with the time of the latest successful read, and the searched list contains root A.
+5. Expected: the table lists 3 rows, newest first (released, activate, arm).
+6. Append one fresh `arm` line (current epoch) to the scratch journal. Within 3 s expected: "4 records" and 4 rows, the verdict still "clean".
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-04 Outstanding control: danger chip and banner [BOTH] - P0
+Setup: page open on F-CLEAN; then load F-OUT (the chip changes live).
+1. Within 3 s of the copy. Expected: the first chip becomes red "CONTROL LEFT ACTIVE" (not "clean"); counts read "1 journal" and "4 records".
+2. Expected: a red (danger) banner appears above the table. It begins "CONTROL LEFT ACTIVE. A control session ended without a recorded release; the truck may be holding an actuator:" and lists, for the one outstanding control: `module ECM  CPID 0x2A  release bytes AE 2A 00 00` and a second line `journal <fx>\root\control\control-journal.jsonl`.
+3. Expected: the banner ends with the sentence "OpenOBD will not send the release; run truck-mcp recovery, which replays the exact release bytes from the journal."
+4. Expected: the activate row for ECM is red in the Event column; the BCM pair (activate then released) does not appear in the banner (only the unreleased control does).
+5. Append `{"at": <current epoch>, "event": "activate", "module": "TCM", "cpid": "0x05", "release": "AE 05 00"}` to the scratch journal. Expected: the banner lists BOTH controls, each with module, CPID, release bytes and journal path.
+6. Load F-CLEAN. Expected: the chip returns to green "clean" and the banner disappears within 3 s without restarting the app.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-05 Two journals: verdict follows wall-clock order across roots - P1
+Setup: root A (`$fx\root`) gets F-XA-ACT; root B (`$fx\localappdata\Programs\truck-mcp-app\control\control-journal.jsonl`, create the `control` folder) gets F-XB-REL-NEWER.
+1. Expected: chips "2 journals" and "2 records"; the verdict is green "clean": the release in the field-kit journal (10 s before generation) is newer than the activate in root A (30 s before generation), so the control is not outstanding.
+2. Expected: Journal sources lists both journals, each with "1 record".
+3. Replace root B's file with F-XB-REL-OLDER (release 100 s before generation, older than the activate). Expected within 3 s: red "CONTROL LEFT ACTIVE" and the banner lists ECM 0x2A with root A's journal path. An old, already-resolved release in one file must never cancel a newer activate in another.
+4. Delete root B's journal. Expected: "1 journal", verdict still outstanding. Clean up: delete root B's `control` folder and load F-CLEAN in root A.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-06 Unknown (damaged line): warning chip and banner, never clean [BOTH] - P0
+Setup: F-DAMAGED in root A.
+1. Expected: the first chip is amber "journal unknown" (warning), NOT green "clean"; counts "1 journal", "3 records" (the damaged line is not counted as a record).
+2. Expected: a warning banner (amber, visibly different from the red danger banner of AT-04) begins "CONTROL STATE UNKNOWN. Journal damaged or partly unreadable" and names `control-journal.jsonl: 1 damaged line(s)`.
+3. Expand Journal sources. Expected: the journal line reads `journal      <path>  (3 records, 1 damaged line(s))`.
+4. Expected: the 3 readable rows are still listed.
+5. Load F-NONUTF8. Expected: chip "journal unknown"; the banner mentions the file name with a decoding error; Journal sources shows `unreadable   <path>  (<reason>)`; "0 records"; the table shows the "No journal entries" row.
+6. Load F-CLEAN. Expected: the chip returns to "clean" and the banner is gone.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-07 Unknown (missing journal): not the same as nothing commanded [BOTH] - P0
+Setup: delete the journal in root A; roots B and D have none.
+1. Expected: the first chip is amber "journal unknown" (not "clean"); chips "0 journals" and "0 records".
+2. Expected: a warning banner "CONTROL STATE UNKNOWN. No control journal located in any truck-mcp data root. Control state cannot be confirmed" followed by the sentence that this is not the same as "nothing is commanded".
+3. Expected: the table shows the single muted row "No journal entries"; the explainer line is still shown.
+4. Expand Journal sources. Expected: one `no journal   <root>` line per existing root (root A, field kit root); no root is hidden.
+5. Copy F-CLEAN into root A. Expected within 3 s: chip "clean", banner gone, 3 rows.
+6. Delete the whole `$fx\root` folder while the page is open. Expected: still "journal unknown" with no crash; Journal sources no longer lists the removed root (only existing directories are searched). Recreate `$fx\root\control` afterwards.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-08 Non-dict journal line is damage, not data - P0
+Setup: F-NONDICT in root A (lines `[1, 2, 3]`, `"just a string"`, `42` are valid JSON but not records).
+1. Expected: chip amber "journal unknown", NOT "clean"; "3 records" (only the 3 real records); the banner reports `3 damaged line(s)`.
+2. Expected: none of the three non-dict lines appears as a table row, and the table does not crash or show an empty/garbled row.
+3. Expand Journal sources. Expected: `(3 records, 3 damaged line(s))`.
+4. Load F-CLEAN. Expected: back to green "clean".
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-09 Record with no usable timestamp downgrades to unknown - P1
+Setup: F-NOTS in root A.
+1. Expected: chip amber "journal unknown"; banner includes "1 record(s) with no usable timestamp"; "4 records".
+2. Expected: the table lists the record without a timestamp LAST (below the oldest dated row), with an empty When cell; no crash.
+3. Load F-CLEAN. Expected: green "clean".
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-10 Empty journal file - P1
+Setup: F-EMPTY (zero bytes) in root A.
+1. Expected: the journal exists and is readable: green "clean", "1 journal", "0 records", no banner. (An empty journal is not damage; this is different from a missing journal, AT-07.)
+2. Expected: the table shows the muted row "No journal entries"; the row cannot be selected.
+3. Type `x` in the filter. Expected: the "No journal entries" row stays visible (the filter never hides it); clear with Esc.
+4. Load F-CLEAN. Expected: the three rows replace the empty-state row.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### 7C.3 Read failure honesty
+
+### AT-11 Failed read keeps the table but never presents it as current [BOTH] - P0
+Setup: launch via the read-failure harness (`run_failing.py`), no `FAIL` flag, F-CLEAN loaded. Note the time in the note: `________`.
+1. Create the flag file `$fx\FAIL` and press F5. Expected: the first chip is red "read failed" (danger); the green "clean" chip is gone (a stale all-clear is never shown).
+2. Expected: the note reads `Read failed: simulated read failure <b>x</b> . last good read HH:MM:SS` where HH:MM:SS is the time noted before the failure, not the current time, and the `<b>x</b>` is shown literally.
+3. Expected: a red banner reads "Could not read the control journal: simulated read failure <b>x</b>. The table below is the last good read (HH:MM:SS), not current."
+4. Expected: the 3 rows from the last good read are still in the table (the table is kept, the banner and chip label it).
+5. Leave the flag for 20 s. Expected: the last good time does NOT advance (a failed poll is never "as of now"); the chip, banner and rows remain.
+6. Delete the flag, wait up to 3 s (or F5). Expected: the "read failed" chip, the banner and the "last good read" note are gone; chip "clean"; the note reads "as of <new time>".
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-12 Failed read keeps an unsafe last-good verdict visible; recovery - P0
+Setup: harness, F-OUT loaded, page showing the red "CONTROL LEFT ACTIVE" banner.
+1. Create `$fx\FAIL`; press F5. Expected: chips "read failed" (red) AND "CONTROL LEFT ACTIVE" (red) both present; the page does not fall back to a green or empty state.
+2. Expected: the banner contains BOTH the read-failure paragraph and the CONTROL LEFT ACTIVE paragraph with the CPID `0x2A`, release bytes `AE 2A 00 00`, the journal path and the sentence "OpenOBD will not send the release".
+3. While failing, load F-CLEAN into root A, then delete the flag. Expected: after the next successful read the unsafe verdict clears: chip "clean", no banner, new rows. (The verdict is never changed by a failed read, only by a successful one.)
+4. Repeat steps 1 and 2 starting from F-DAMAGED (unknown). Expected: "read failed" plus the amber "journal unknown" chip; the banner shows the read-failure paragraph only (the unknown warning is not repeated while a failure is shown).
+5. Repeat from F-CLEAN. Expected: "read failed" only, with no "clean" chip (as AT-11 step 1).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-13 First read fails: nothing to show, nothing implied - P1
+Setup: harness, create `$fx\FAIL` BEFORE launching, F-CLEAN loaded.
+1. Launch and open Active Tests. Expected: chip "read failed" (red); NO "clean", journal-count or record-count chip.
+2. Expected: the note reads "Read failed: simulated read failure <b>x</b> . no successful read yet"; the banner reads "Could not read the control journal: ... No journal has been read yet."
+3. Expected: the table is empty (not a "No journal entries" row implying an empty journal) and Journal sources, when expanded, has no lines (no root is shown as read).
+4. Delete the flag and press F5. Expected: normal green "clean" display, the failure text gone.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### 7C.4 Chrome, polling and shortcuts
+
+### AT-14 Breadcrumb, chips, note and "Polling" only while shown [BOTH] - P1
+1. With Active Tests showing, read the chips. Expected: verdict chip, "n journal(s)" and "n record(s)" (singular "1 journal", "1 record"; plural otherwise), then a muted "Polling".
+2. Note the "as of" time. Without touching anything wait 10 s. Expected: the time advances about every 3 s (poll); the note does not widen the page.
+3. Change the fixture (F-CLEAN to F-OUT). Expected: within 3 s the chips, banner and rows update with no click.
+4. Switch to the Dashboard (or Live Data), change the fixture back, wait 10 s, switch back. Expected: on return the page refreshes at once (the "as of" time is fresh) and the "Polling" chip is present again.
+5. Expected: polling runs only while the tab is showing (see AT-15 step 4); the "Polling" chip is present only while the page is shown.
+6. Narrow the window. Expected: chips and note elide; they do not widen the page. Hover the elided note. Expected: a tooltip shows the full text including every searched root.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-15 F5 refreshes only while Active Tests shows - P0
+Setup: F-CLEAN; Process Monitor (Sysinternals) optional for step 4.
+1. Hover Refresh. Expected: tooltip "Re-read every truck-mcp control journal now  (F5)"; Refresh is the highlighted (primary) button.
+2. With Active Tests showing, load F-OUT and press F5 within a second of the last poll. Expected: the chip, banner and rows change immediately (not after the 3 s poll).
+3. Click Refresh with F-CLEAN loaded. Expected: the same re-read; the "as of" time updates.
+4. Switch to the Dashboard and press F5. Expected: it does what it did before (starts a replay when a log is loaded; nothing otherwise). On Diagnostics press F5: Expected: it does what G-29 says (scan / read), and nothing on Active Tests. On Live Data F5 is its Rescan. With Process Monitor filtered on `control-journal.jsonl`, stay on the Dashboard for 10 s and press F5 several times. Expected: no read of the journal at all while the tab is hidden (no F5 re-read, no poll). If Process Monitor is unavailable, record N/A for the Process Monitor part (covered by `test_f5_and_polling_only_while_showing`).
+5. Return to Active Tests and press F5. Expected: refresh works again.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-16 Ctrl+F focuses the journal filter only here; Esc clears - P0
+1. On Active Tests click the table and press Ctrl+F. Expected: the filter field takes focus with its text selected.
+2. Type `ecm`, press Esc. Expected: the field clears and every row returns. Press Esc again with the field empty. Expected: nothing else happens (no tab switch, no dialog).
+3. With text in the field click the table and press Esc. Expected: the text stays (Esc clears only from inside the field).
+4. Click the field's clear button. Expected: same as Esc in step 2.
+5. Switch to the Dashboard and press Ctrl+F. Expected: nothing. On Tuning (Editor) Expected: it still focuses the table search (X-06). On Diagnostics Codes & Readiness it focuses the code search (G-30); on Module Map nothing. On Live Data it focuses the tile filter. None of these touches the journal filter.
+6. Switch back to Active Tests. Expected: the filter keeps whatever text it had; Ctrl+F works again.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### 7C.5 Filter and Show (display only)
+
+### AT-17 Journal filter is display-only - P0
+Setup: F-OUT loaded (red chip, 4 rows).
+1. Type `ecm` (lower case). Expected: only the ECM activate row remains; all 4 records still counted in the chips ("4 records"); the verdict chip stays red "CONTROL LEFT ACTIVE" and the banner still lists the ECM control.
+2. Type `ECM` / `Ecm`. Expected: case-insensitive, same result.
+3. Type `release=` and then `AE 10`. Expected: the filter matches the Detail text (`release=AE 10 00`).
+4. Type `released` and then `activate`. Expected: matches the Event column.
+5. Type `0x2A` (the CPID). Expected: the ECM row remains (CPID text also matches); the verdict is unchanged. Record this if the CPID is NOT matched.
+6. Type nonsense. Expected: no rows, no crash, no "No journal entries" row, chips and banner unchanged.
+7. With `ecm` still typed load F-CLEAN, wait 3 s. Expected: the filter is re-applied to the new data (nothing matches `ecm`; the filtered table is empty) while the verdict is "clean" and "3 records". Clear with Esc: 3 rows appear.
+8. Filter to one row, click Copy report. Expected: the report's "Entries shown" count is the visible count (see AT-20) while its "Verdict" and "records" lines still describe the whole journal.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-18 Show combo: modes, persistence, never changes the verdict - P0
+Setup: F-OLD loaded (3-day-old fire_refused:no_lease on TCM, BCM pair, `OLD25H` arm 25 h ago, `NEW23H` arm 23 h ago, plus F-CLEAN). `activetests/show` deleted.
+1. Open the combo. Expected: three entries "All entries", "Activate + refused only", "Last 24 h"; the default is "All entries" and lists every record (newest first; "9 records" chip).
+2. Choose "Activate + refused only". Expected: only `activate` rows and `fire_refused...` rows remain (BCM activate x2, TCM `fire_refused:no_lease`); `arm`, `released` and `return_to_normal` rows are hidden.
+3. Choose "Last 24 h". Expected: `OLD25H` and everything older than 24 h are gone; `NEW23H` and the three F-CLEAN rows remain.
+4. For every mode expected: the verdict chip stays "clean", the record chip stays "9 records" and no banner appears or disappears (Show is display only).
+5. Quit (File -> Quit) with "Last 24 h" chosen and relaunch. Expected: the combo reopens on "Last 24 h"; the QSettings file holds `activetests/show` = `24h`.
+6. Delete the `activetests/show` key and relaunch. Expected: "All entries" without error. Set the key to garbage (`activetests/show` = `zzz`) and relaunch. Expected: "All entries", no crash.
+7. In "Last 24 h", load F-OUT (an outstanding control from 30 s ago). Expected: the ECM row is visible and the red banner shows. Now load a copy of F-OLD edited so its 3-day-old `activate` line has module `TCM` and its `return_to_normal` line is deleted (no later release matches it). Expected: the chip is red "CONTROL LEFT ACTIVE" and the banner lists the TCM control even though the "Last 24 h" table hides that old row (an old unreleased control must not be hidden by the display mode).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### 7C.6 Journal table, report and sources
+
+### AT-19 Journal table anatomy: order, date, colours, detail, cap [BOTH] - P1
+Setup: F-OLD loaded, "All entries".
+1. Expected columns left to right: When, Event, Module, CPID, Detail. Rows are newest first.
+2. Expected: the first row (and the first row after the calendar day changes) shows the full "YYYY-MM-DD HH:MM:SS"; consecutive rows on the same calendar day show only "HH:MM:SS". Check across the 3-day-old rows and the 25 h / 23 h rows.
+3. Expected Event colours: `activate` and `fire_refused:no_lease` red; `released` and `return_to_normal` green; `arm` neutral (default text colour). The event word is also written out, so colour is never the only cue.
+4. Expected: Detail shows the remaining keys as `k=v` joined with ", " (e.g. `release=AE 10 00`); the `at`, `event`, `module` and `cpid` keys are not repeated in Detail.
+5. Hover the When cell: tooltip shows the full timestamp. Hover the Detail cell: tooltip shows the detail and "journal: <path>".
+6. Load F-BIG (150 records). Expected: the chip reads "150 records" but the table lists only the newest 100 rows. Record that limit as observed behaviour (the cap is by design); scroll to the end: the oldest listed row is the 100th newest.
+7. Select several rows with Shift+click and Ctrl+click. Expected: extended selection works; selecting changes nothing else.
+8. Resize the columns narrower. Expected: When, Event, Module and CPID size to contents; Detail takes the rest and elides; no horizontal growth of the page.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-20 Copy report: plain-text summary - P1
+Setup: F-OUT loaded, filter `ecm` typed.
+1. Hover Copy report. Expected: tooltip names the verdict, any outstanding control and listed entries. Click it, paste into Notepad.
+2. Expected first line "OpenOBD Active Tests - control journal report (read-only)", then "Last successful read: YYYY-MM-DD HH:MM:SS", then "Verdict: CONTROL LEFT ACTIVE", the detail line, "Journals: 1, records: 4".
+3. Expected: an "Outstanding controls:" block with `module ECM  CPID 0x2A  release bytes AE 2A 00 00  journal <path>` followed by the sentence "OpenOBD will not send the release; run truck-mcp recovery...".
+4. Expected: a "Journal sources:" block with every searched root and its record count / damage (including the roots without a journal).
+5. Expected: "Entries shown (1, newest first):" followed by exactly the visible (filtered) rows, as plain columns separated by two spaces. Clear the filter, copy again: "Entries shown (4, newest first)".
+6. Load F-CLEAN: the report has no "Outstanding controls" block. Run it from the failure harness with the flag set (AT-11): the report starts with "Read failed: ..." and shows the last-good time.
+7. Paste the F-HOSTILE report. Expected: the hostile strings appear verbatim in the text.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-21 Journal sources panel and persisted settings - P1
+1. Fresh settings: open Active Tests. Expected: "Journal sources" is COLLAPSED (disclosure button only).
+2. Expand it. Expected: plain-text lines, one per searched root: `journal      <path>  (n records)` (plus `, n damaged line(s)` when relevant), `no journal   <root>`, or `unreadable   <path>  (<error>)`. The text can be selected with the mouse and copied.
+3. Put F-CLEAN in root A and F-DAMAGED in root B (field kit, `control\control-journal.jsonl`). Expected: one `journal` line with "3 records" and one with "3 records, 1 damaged line(s)"; chips "2 journals" and "6 records"; the verdict "journal unknown". Remove root B's journal afterwards.
+4. Quit and relaunch. Expected: the panel reopens expanded (the choice is persisted); collapse it, relaunch, expect collapsed.
+5. Check the QSettings file. Expected: the only keys written by this page are `activetests/show` and `activetests/sources_collapsed` (`false` when expanded, `true` when collapsed).
+6. Delete both keys and relaunch. Expected: defaults (All entries, sources collapsed), no error.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### 7C.7 Hostile text, layout and theme
+
+### AT-22 Hostile strings render literally, everywhere - P0
+Setup: F-HOSTILE-OUT in root A (outstanding control with `<b>ECM</b>` module, `<i>1</i>` CPID, `<b>AE 01</b>` release bytes, `<img ... onerror=alert(1)>` detail). Also rename the fixture root folder to `a&b%41` (update `TRUCK_MCP_DATA` to `$fx\a&b%41` and relaunch) so a root path contains `&` and `%41`.
+1. Expected: no bold or italic text and no image anywhere; no dialog; no network request. The table cells show the raw text `<b>ECM</b>`, `<i>1</i>` and the detail `note=<img src=x onerror=alert(1)>` as typed.
+2. Expected: the danger banner shows `module <b>ECM</b>  CPID <i>1</i>  release bytes <b>AE 01</b>` and the journal path with `&` and `%41` literally (no entity decoding, no formatting).
+3. Hover the Module and Detail cells. Expected: the tooltip also shows the literal text (no rendered markup, no link).
+4. Expand Journal sources and read the note. Expected: raw text, the `&` shown as `&`, not as an entity.
+5. Type `<b>` in the filter. Expected: the hostile row matches and stays; nothing renders.
+6. Click Copy report and paste into Notepad. Expected: the hostile strings appear verbatim.
+7. Load F-HOSTILE (clean fixture). Expected: chip "clean"; the `<b>ECM</b>` row is listed literally; no banner.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-23 Minimum width at 1366x768; long paths elide [1366] - P0
+Setup: copy F-OUT into a deep fixture root so the journal path is very long (create e.g. `$fx\root-with-a-very-long-folder-name-for-width-testing\second-very-long-nested-folder-name\control\control-journal.jsonl`, keep the path under 260 characters, point `TRUCK_MCP_DATA` at the parent of `control` and relaunch), expand Journal sources.
+1. Launch at 1366x768, maximise. Expected: no horizontal scrollbar; the whole window including the status bar fits the screen.
+2. With the outstanding banner (long journal path), the expanded sources panel and all chips showing, drag the window narrower until it stops. Expected: the Active Tests page minimum width is under 700 px and the window minimum width is under 1000 px (measure); the banner and sources text clip at the right edge instead of widening the page (the full path is in Copy report); chips and note elide.
+3. At the narrowest width expected: the toolbar stays usable (">>" overflow if needed) and the filter field and Show combo are reachable.
+4. Check 1920x1080. Expected: the table fills the area; nothing is stretched into an unusable layout.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-24 Dark palette consistent with the other tabs; state is not colour-only [BOTH] - P1
+1. Place Active Tests next to Tuning, Diagnostics and Live Data in turn. Expected: the same breadcrumb height, the same 36 px toolbar, the same chip look, the same greys; no white or light-grey backgrounds, no default-blue selection, no light scroll bars (extends X-02).
+2. Load, in turn, F-CLEAN, F-OUT, F-DAMAGED and the failure harness state. Expected: green chip (clean), red banner (outstanding / read failed), amber banner (unknown) are three distinguishable looks, each with text contrast of at least 4.5:1; each state is also stated in words in the chip.
+3. Check the table in all four states: red / green event text readable on the dark row background, selected row readable.
+4. Check the muted explainer, the "No journal entries" row and the disclosure button. Expected: all in the dark palette.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### AT-25 Keyboard-only pass - P2
+1. Without the mouse: Tab from the tab bar to Refresh (Enter), Copy report (Space), the filter, the Show combo (arrow keys), the table (arrow keys, Ctrl+A), and the Journal sources disclosure button (Space).
+2. Expected: every control works and shows a visible focus indicator; Ctrl+F then typing then Esc works; the table rows are selectable by keyboard.
+3. Expected: no keyboard path arms, fires, activates or releases anything (AT-02).
+
+Pass: [ ]  Fail: [ ]
+
+### 7C.8 Live truck-mcp session
+
+### AT-26 Live control session seen from OpenOBD (read-only) [GT] - P2 (bench truck only, Ron's decision)
+Setup: ONLY if Ron chooses to run a real control session with the truck-mcp CLI on the bench truck, following truck-mcp's own control runbook (arm behind its console nonce, one supported activation, release). OpenOBD is open on Active Tests with the REAL data root (launch without the fixture environment variables for this case only) and is NOT used to send anything. Record N/A if not run.
+1. Before the session. Expected: green "clean" (or amber "journal unknown" if no journal yet); no banner.
+2. In the truck-mcp CLI arm and activate the control. Expected: within 3 s a new red `activate` row, chip "CONTROL LEFT ACTIVE" and the danger banner with the real module, CPID, release bytes and journal path; OpenOBD shows no button to release.
+3. Release the control from the truck-mcp CLI (never from OpenOBD). Expected: within 3 s a green `released` row, the banner disappears and the chip returns to "clean"; "n records" increased.
+4. Expected: OpenOBD opened no serial port and sent no frame during the session; the journal file was only appended to by truck-mcp.
+5. If the session is cut short or the CLI is closed with a control still active, do NOT use OpenOBD to recover: run truck-mcp recovery and confirm the page returns to "clean" afterwards.
+
+Pass: [ ]  Fail: [ ]  N/A: [ ]  Notes: ____
+
+---
+
+**Run log addendum (Active Tests)**: add the 14 P0 cases of section 7C to the P0 pass count (after 7A and 7B the total is 84; with 7C it becomes 98) and record AT-nn ids for any defects.
+
 ## 8. Cross-cutting
 
 ### X-01 Minimum width under 1000 px [1366] - P0
@@ -1310,7 +1671,7 @@ Pass: [ ]  Fail: [ ]
 Pass: [ ]  Fail: [ ]
 
 ### X-11 About and version - P2
-1. Help -> About. Expected: "OpenOBD 0.37.0", vehicle and controller info, and the safety text.
+1. Help -> About. Expected: "OpenOBD 0.38.0", vehicle and controller info, and the safety text.
 
 Pass: [ ]  Fail: [ ]
 
@@ -1331,5 +1692,5 @@ Pass: [ ]  Fail: [ ]
 | Build version | |
 | Screen sizes run | 1366x768 [ ]   1920x1080 [ ] |
 | GT bench run | Yes [ ]   No [ ] |
-| P0 pass count | ___ / 84 |
+| P0 pass count | ___ / 98 |
 | Defects raised (ids) | |

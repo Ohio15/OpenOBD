@@ -153,7 +153,8 @@ class ElidedLabel(QLabel):
     def setText(self, text: str) -> None:  # noqa: N802 (Qt override)
         self._full = text or ""
         super().setText(self._full)
-        self.setToolTip(self._full)
+        # Breadcrumb notes carry exception text and filesystem paths.
+        self.setToolTip(plain_tooltip(self._full) if self._full else "")
 
     def full_text(self) -> str:
         return self._full

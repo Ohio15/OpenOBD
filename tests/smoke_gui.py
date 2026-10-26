@@ -122,6 +122,18 @@ assert win.main_tabs.tabText(3) == "Live Data"
 assert win.main_tabs.tabText(4) == "Active Tests"
 print("workspace structure OK (Dashboard, Tuning, Diagnostics, Live Data, Active Tests)")
 
+# Active Tests: the read-only control-journal audit under the workspace
+# chrome, offscreen. It READS every truck-mcp root (never writes a journal).
+from openobd.activetests import ActiveTestsPage  # noqa: E402
+_at = ActiveTestsPage(app_settings())
+assert _at.crumb.path_text() == "Active Tests › Control journal",     _at.crumb.path_text()
+assert _at.verdict() in ("clean", "outstanding", "unknown", "read failed")
+assert _at.crumb.chips(), "Active Tests breadcrumb has no verdict chip"
+assert win.active_tests.crumb.path_text() == _at.crumb.path_text()
+print("activetests OK:", _at.verdict(), _at.crumb.chips())
+_at.shutdown()
+_at.deleteLater()
+
 # Live Data is ONE combined view: compact tiles above the strip chart in a
 # splitter — no sub-tabs (HP Tuners benchmark: numbers read against traces).
 assert win.livedata._split.count() == 2
