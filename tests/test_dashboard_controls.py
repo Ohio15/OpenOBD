@@ -895,3 +895,21 @@ def test_record_tooltip_renders_a_hostile_path_literally(rig, monkeypatch):
     d._record_tip = ""
     d._set_record_tooltip(d._record_tip)
     assert d.btn_record.toolTip() == ""
+
+
+def test_shortcut_tooltip_unwraps_a_wrapped_action_tip_once(rig):
+    """A tooltip already wrapped by an action chokepoint (with its own key
+    hint and a line break) is unwrapped exactly once: no double escaping,
+    the newline survives as <br>, and the dashboard key is appended."""
+    from PySide6.QtWidgets import QWidget
+    from openobd.app import MainWindow
+    d = rig.d
+    host = QWidget()
+    a = MainWindow._new_action(host, "open", "T", "<i>y</i> & z\nmore",
+                               lambda: None, shortcut_hint="Ctrl+Y")
+    assert a.toolTip() == (
+        "<qt>&lt;i&gt;y&lt;/i&gt; &amp; z<br>more  (Ctrl+Y)</qt>")
+    d.btn_pause.setToolTip(a.toolTip())
+    assert d.shortcut_text(d.btn_pause) == "<i>y</i> & z\nmore  (Ctrl+Y) (Space)"
+    assert d.shortcut_tooltip(d.btn_pause) == (
+        "<qt>&lt;i&gt;y&lt;/i&gt; &amp; z<br>more  (Ctrl+Y) (Space)</qt>")

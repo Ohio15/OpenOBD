@@ -501,7 +501,7 @@ class LiveDataPage(QWidget):
 
     def _action(self, glyph: str, text: str, tip: str, slot) -> QAction:
         a = QAction(theme.glyph_icon(glyph), text, self)
-        a.setToolTip(tip)  # tooltip: literal (callers pass literal tips)
+        a.setToolTip(plain_tooltip(tip))
         a.triggered.connect(slot)
         return a
 

@@ -385,7 +385,7 @@ class Dashboard(QWidget):
 
         root = QVBoxLayout(self)
         self.status = QLabel(LOOKING_FOR_GT)
-        self.status.setToolTip(DASHBOARD_KEYS_HELP)  # tooltip: literal
+        self.status.setToolTip(plain_tooltip(DASHBOARD_KEYS_HELP))
         root.addWidget(self.status)
 
         # The primary row: one big Record/Stop button, Mark beside it while
@@ -688,11 +688,19 @@ class Dashboard(QWidget):
         stored tooltip may already be plain_tooltip-escaped (the record
         button carries a file path); it is unwrapped and the whole composed
         text re-escaped, so the shown tooltip is literal end to end."""
+        return plain_tooltip(self.shortcut_text(btn))
+
+    def shortcut_text(self, btn) -> str:
+        """shortcut_tooltip before escaping: the stored tooltip unwrapped
+        from plain_tooltip (its <br> back to newlines, entities decoded;
+        a literal "<br>" in the source text was escaped, so every raw <br>
+        here is a converted newline) plus the shortcut key."""
         what, key = self._shortcut_hints[btn]
         tip = btn.toolTip()
         if tip.startswith("<qt>") and tip.endswith("</qt>"):
-            tip = html.unescape(tip[len("<qt>"):-len("</qt>")])
-        return plain_tooltip(f"{tip or what} ({key})")
+            tip = html.unescape(
+                tip[len("<qt>"):-len("</qt>")].replace("<br>", "\n"))
+        return f"{tip or what} ({key})"
 
     def _set_record_tooltip(self, text: str) -> None:
         """Record-button tooltip: a recording path or block reason is
@@ -702,8 +710,8 @@ class Dashboard(QWidget):
     def eventFilter(self, obj, event):
         if (event.type() == QEvent.ToolTip
                 and obj in getattr(self, "_shortcut_hints", {})):
-            QToolTip.showText(event.globalPos(), self.shortcut_tooltip(obj),
-                              obj)
+            QToolTip.showText(event.globalPos(),
+                              plain_tooltip(self.shortcut_text(obj)), obj)
             return True
         return super().eventFilter(obj, event)
 
@@ -1889,8 +1897,8 @@ class MainWindow(QMainWindow):
     def _new_action(self, glyph: str, text: str, tip: str, slot,
                     shortcut_hint: str = "") -> QAction:
         a = QAction(theme.glyph_icon(glyph), text, self)
-        a.setToolTip(  # tooltip: literal (callers pass literal tips)
-            f"{tip}  ({shortcut_hint})" if shortcut_hint else tip)
+        a.setToolTip(plain_tooltip(
+            f"{tip}  ({shortcut_hint})" if shortcut_hint else tip))
         a.triggered.connect(slot)
         return a
 

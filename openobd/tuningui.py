@@ -55,8 +55,11 @@ def plain_tooltip(text: str) -> str:
     """A tooltip that renders `text` literally. QToolTip auto-detects rich
     text, so a session-derived name containing markup would render as HTML;
     escaping it and wrapping it in <qt> makes Qt show the characters as
-    written. Route every tooltip that interpolates DB / session text here."""
-    return f"<qt>{html.escape(str(text))}</qt>"
+    written. Rich text collapses newlines, so each becomes <br> after
+    escaping (a literal "<br>" in the text is escaped and shows as text).
+    Route every tooltip that interpolates DB / session text here."""
+    escaped = html.escape(str(text)).replace("\n", "<br>")
+    return f"<qt>{escaped}</qt>"
 
 
 def restore_splitter_state(splitter, value) -> bool:
@@ -561,7 +564,7 @@ class CollapsiblePanel(QWidget):
         self.toggle.setText(title)
         self.toggle.setCheckable(True)
         self.toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.toggle.setToolTip(f"Show / hide {title}")  # tooltip: literal
+        self.toggle.setToolTip(plain_tooltip(f"Show / hide {title}"))
         self.toggle.toggled.connect(self._on_toggle)
         lay.addWidget(self.toggle, 0, align)
         self.frame = QFrame()

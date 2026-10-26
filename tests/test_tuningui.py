@@ -1028,7 +1028,7 @@ def test_runtime_tooltips_render_markup_literally(qapp, tmp_path):
     tables[0].note = "<i>note</i>"
     nav = Navigator(tables, nav_settings(tmp_path))
     assert nav._leaves[hostile][0].toolTip(0) == (
-        "<qt>&lt;b&gt;x&lt;/b&gt;\n&lt;i&gt;note&lt;/i&gt;</qt>")
+        "<qt>&lt;b&gt;x&lt;/b&gt;<br>&lt;i&gt;note&lt;/i&gt;</qt>")
     tree = ScalarsTree([Scalar(name="s", value=1.0, note=hostile)])
     assert tree._rows[0][0].toolTip() == "<qt>&lt;b&gt;x&lt;/b&gt;</qt>"
     view = CalTableView()
@@ -1036,3 +1036,27 @@ def test_runtime_tooltips_render_markup_literally(qapp, tmp_path):
     assert view.corner_label.toolTip() == "<qt>&lt;b&gt;x&lt;/b&gt;</qt>"
     view.set_corner_text("")
     assert view.corner_label.toolTip() == ""
+
+
+def test_plain_tooltip_keeps_line_breaks_and_escapes_literal_br(qapp,
+                                                                tmp_path):
+    """Review MINOR (DR-032 868953ce): <qt> is rich text, which collapses
+    newlines; a multi-line calibration note keeps its lines as <br>, while a
+    note containing the text "<br>" is escaped and shows as written."""
+    from openobd.calspec import Scalar
+    from openobd.tuningui import (
+        CalTableView, Navigator, ScalarsTree, plain_tooltip)
+    assert plain_tooltip("a\nb") == "<qt>a<br>b</qt>"
+    assert plain_tooltip("a<br>b") == "<qt>a&lt;br&gt;b</qt>"
+    tree = ScalarsTree([Scalar(name="s", value=1.0, note="line 1\nline 2")])
+    tip = tree._rows[0][0].toolTip()
+    assert tip == "<qt>line 1<br>line 2</qt>" and "\n" not in tip
+    tables = tables_fixture()
+    tables[0].note = "first\nsecond <br> third"
+    nav = Navigator(tables, nav_settings(tmp_path))
+    tip = nav._leaves[tables[0].name][0].toolTip(0)
+    assert "\n" not in tip
+    assert "first<br>second &lt;br&gt; third" in tip
+    view = CalTableView()
+    view.set_corner_text("top\nbottom")
+    assert view.corner_label.toolTip() == "<qt>top<br>bottom</qt>"
