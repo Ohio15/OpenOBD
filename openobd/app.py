@@ -1880,13 +1880,16 @@ class MainWindow(QMainWindow):
         return a
 
     def _sync_find_shortcut(self, *_a) -> None:
-        """Ctrl+F is live on Tuning (table search) and on Diagnostics >
-        Codes & Readiness (code search); nowhere else has a search field."""
+        """Ctrl+F is live on Tuning (table search), on Diagnostics >
+        Codes & Readiness (code search) and on Live Data (tile filter);
+        nowhere else has a search field."""
         cur = self.main_tabs.currentWidget()
         diag = getattr(self, "diag", None)
+        livedata = getattr(self, "livedata", None)
         self._find_shortcut.setEnabled(
             cur is self.tuning_page
-            or (diag is not None and cur is diag and diag.has_search()))
+            or (diag is not None and cur is diag and diag.has_search())
+            or (livedata is not None and cur is livedata))
 
     def _editor_showing(self) -> bool:
         """True while Tuning > Editor (the calibration grid) is on screen."""
@@ -1914,8 +1917,12 @@ class MainWindow(QMainWindow):
 
     def focus_table_search(self):
         """Ctrl+F: the search field of the workspace on screen."""
-        if self.main_tabs.currentWidget() is getattr(self, "diag", None):
+        cur = self.main_tabs.currentWidget()
+        if cur is getattr(self, "diag", None):
             self.diag.focus_search()
+            return
+        if cur is getattr(self, "livedata", None):
+            self.livedata.focus_filter()
             return
         self.navigator.focus_search()
 

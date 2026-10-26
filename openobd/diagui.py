@@ -51,7 +51,8 @@ from . import theme, vehnet
 from .gt import DTC_DESCRIPTIONS
 from .tuningui import (
     CHIP_KIND_ROLE, Breadcrumb, ChipDelegate, CollapsiblePanel,
-    empty_state_label, make_toolbar, repolish, set_chip,
+    empty_state_label, make_toolbar, repolish, restore_splitter_state,
+    set_chip,
 )
 from .vehnet import HS, SW, ScanResult, SegStatus, Status, Verdict
 
@@ -732,8 +733,7 @@ class DiagnosticsPage(QWidget):
             btn.setProperty("primary", True)
 
     def _restore_split(self, split: QSplitter, key: str, default: list[int]):
-        state = self.settings.value(key)
-        if state is None or not split.restoreState(state):
+        if not restore_splitter_state(split, self.settings.value(key)):
             split.setSizes(default)
         split.splitterMoved.connect(
             lambda *_a, s=split, k=key: self.settings.setValue(k, s.saveState()))

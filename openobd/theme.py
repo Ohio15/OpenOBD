@@ -302,7 +302,7 @@ def text_qss(name: str, extra: str = "") -> str:
 
 
 #: objectNames of the workspace toolbars that share one look.
-TOOLBAR_NAMES = ("tuningToolbar", "diagToolbar")
+TOOLBAR_NAMES = ("tuningToolbar", "diagToolbar", "liveToolbar")
 
 
 def _toolbar_block(name: str) -> str:
@@ -429,18 +429,25 @@ def tree_qss() -> str:
     """Compact rows for the navigator, scalars and channel trees."""
     return f"""
 QTreeView#navigatorTree, QTreeView#scalarsTree, QTreeWidget#channelTree,
-QTableWidget#cursorReadout, QTreeView#dtcTree {{
+QTableWidget#cursorReadout, QTreeView#dtcTree, QTableWidget#graphTable {{
     background: {_c('surface-sunken')}; border: 1px solid {_c('border')};
+}}
+QTableWidget#graphTable {{ gridline-color: {_c('surface-raised')}; color: {_c('text')}; }}
+QTableWidget#graphTable QHeaderView::section {{
+    background: {_c('surface-raised')}; color: {_c('text-muted')};
+    border: none; border-bottom: 1px solid {_c('border')};
+    padding: 2px {SPACING['md']}px;
 }}
 QTreeView#navigatorTree::item, QTreeView#scalarsTree::item,
 QTreeWidget#channelTree::item, QTreeView#dtcTree::item {{ min-height: {ROW_HEIGHT}px; }}
-QLineEdit#navSearch, QLineEdit#scalarSearch, QLineEdit#dtcSearch {{
+QLineEdit#navSearch, QLineEdit#scalarSearch, QLineEdit#dtcSearch,
+QLineEdit#liveFilter {{
     background: {_c('surface-sunken')}; color: {_c('text')};
     border: 1px solid {_c('border')}; border-radius: {RADIUS['sm']}px;
     padding: 3px {SPACING['sm']}px;
 }}
 QLineEdit#navSearch:focus, QLineEdit#scalarSearch:focus,
-QLineEdit#dtcSearch:focus {{ border-color: {_c('accent')}; }}
+QLineEdit#dtcSearch:focus, QLineEdit#liveFilter:focus {{ border-color: {_c('accent')}; }}
 """
 
 
@@ -495,6 +502,44 @@ def workspace_qss() -> str:
             + splitter_qss() + tree_qss() + panel_qss() + diag_panel_qss())
 
 
+def livedata_qss() -> str:
+    """Everything the Live Data page needs: the shared workspace chrome plus
+    the tile-group headers, the tile name / unit / footer rows and the
+    session picker inside the 36 px toolbar."""
+    return workspace_qss() + f"""
+QToolButton#tileGroupHeader {{
+    color: {_c('text')}; background: transparent; border: none;
+    border-bottom: 1px solid {_c('border')}; font-weight: bold;
+    padding: 2px {SPACING['xs']}px; text-align: left;
+}}
+QToolButton#tileGroupHeader:hover {{ color: {_c('text-bright')}; }}
+QLabel#tileName {{ color: {_c('text-muted')}; font-size: {FONT_PT['sm']}pt; }}
+QLabel#tileUnit {{ color: {_c('text-muted')}; font-size: {FONT_PT['sm']}pt; }}
+QLabel#tileRange {{ color: {_c('text-disabled')}; font-size: {FONT_PT['sm'] - 1}pt; }}
+QScrollArea#tileScroll {{ background: {_c('surface')}; border: none; }}
+QWidget#tileHost {{ background: {_c('surface')}; }}
+QLabel#chartNote {{ color: {_c('text-muted')}; padding: 0px {SPACING['sm']}px; }}
+"""
+
+
+def swatch_icon(color, size: int = 10):
+    """A filled rounded square in a trace colour (a QColor or '#rrggbb'
+    palette value): the graphed-channels table's legend swatch."""
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+    qc = color if isinstance(color, QColor) else hex_qcolor(color)
+    px = QPixmap(size * 2, size * 2)
+    px.fill(Qt.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(qc)
+    p.drawRoundedRect(QRectF(size * 0.3, size * 0.3, size * 1.4, size * 1.4),
+                      size * 0.3, size * 0.3)
+    p.end()
+    return QIcon(px)
+
+
 def tuning_qss() -> str:
     """Everything the Tuning workspace needs, applied once to its root."""
     return workspace_qss()
@@ -512,7 +557,7 @@ def diag_qss() -> str:
 GLYPHS = ("set", "add", "sub", "mul", "div", "pct", "interp_h", "interp_v",
           "interp_2d", "smooth", "revert", "next", "copy", "paste", "heatmap",
           "diff", "open", "events", "learn", "search", "scan", "read",
-          "clear", "not_examined", "incomplete")
+          "clear", "not_examined", "incomplete", "refresh", "fields", "hold")
 
 
 def glyph_icon(kind: str, color: str = "text", size: int = ICON_SIZE):
@@ -655,6 +700,32 @@ def glyph_icon(kind: str, color: str = "text", size: int = ICON_SIZE):
         for y in (lo + s * 0.04, mid, hi - s * 0.04):
             p.drawEllipse(QPointF(lo + r, y), r, r)
             line(lo + s * 0.25, y, hi, y)
+    elif kind == "refresh":
+        # a circular arrow: rescan
+        rect = QRectF(lo, lo, hi - lo, hi - lo)
+        path = QPainterPath()
+        path.arcMoveTo(rect, 60)
+        path.arcTo(rect, 60, 280)
+        p.drawPath(path)
+        tip = path.pointAtPercent(0.0)
+        line(tip.x(), tip.y(), tip.x() + s * 0.2, tip.y() - s * 0.02)
+        line(tip.x(), tip.y(), tip.x() + s * 0.02, tip.y() - s * 0.2)
+    elif kind == "fields":
+        # a checklist: two ticked boxes and an empty one
+        b = s * 0.18
+        for i, y in enumerate((lo, mid - b / 2, hi - b)):
+            p.drawRect(QRectF(lo, y, b, b))
+            line(lo + b + s * 0.12, y + b / 2, hi, y + b / 2)
+            if i < 2:
+                line(lo + b * 0.2, y + b * 0.5, lo + b * 0.45, y + b * 0.8)
+                line(lo + b * 0.45, y + b * 0.8, lo + b * 0.9, y + b * 0.15)
+    elif kind == "hold":
+        # pause: two bars
+        p.setPen(Qt.NoPen)
+        p.setBrush(qcolor(color))
+        w = s * 0.18
+        p.drawRect(QRectF(mid - w * 1.6, lo, w, hi - lo))
+        p.drawRect(QRectF(mid + w * 0.6, lo, w, hi - lo))
     elif kind == "clear":
         # an eraser: slanted block with its band
         path = QPainterPath(QPointF(lo + s * 0.05, mid + s * 0.12))
@@ -845,6 +916,7 @@ STRIP_CHANNEL_COLORS: list[str] = [
 STRIP_CAPTION_COLORS: dict[str, str] = {
     "live": "#5FD08A", "not advancing": "#D6A93A",
     "archived drive": "#5A7EC3", "read failed": "#CD3C32",
+    "held": "#D6A93A",
 }
 
 STRIP_COLORS: dict[str, str] = {
@@ -864,6 +936,14 @@ STRIP_COLORS: dict[str, str] = {
     "readout-grid": "#262C3A",
     "readout-header-bg": "#1A1E2A",
     "secondary-text": "#9DA3AD",     # readout header / unit / lane, toolbar note
+    # time axis, hover cursor and session-event markers
+    "axis-text": "#8A909A",
+    "axis-tick": "#3A3F4A",
+    "time-grid": "#161B28",
+    "cursor": "#EBEBEB",
+    "cursor-box-bg": "#10131C",
+    "cursor-box-border": "#5A5E66",
+    "event-marker": "#EBAA3C",
 }
 
 

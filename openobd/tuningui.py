@@ -21,11 +21,12 @@ undo stack and the log; nothing here mutates a Calibration on its own.
 """
 from __future__ import annotations
 
+import html
 import json
 from typing import Iterable, Optional
 
 from PySide6.QtCore import (
-    QEvent, QRectF, QSize, QSortFilterProxyModel, Qt, QTimer,
+    QByteArray, QEvent, QRectF, QSize, QSortFilterProxyModel, Qt, QTimer,
     Signal,
 )
 from PySide6.QtGui import (
@@ -48,6 +49,29 @@ RECENT_MAX = 8
 RECENT_GROUP = "Recent"
 
 SEP = " › "
+
+
+def plain_tooltip(text: str) -> str:
+    """A tooltip that renders `text` literally. QToolTip auto-detects rich
+    text, so a session-derived name containing markup would render as HTML;
+    escaping it and wrapping it in <qt> makes Qt show the characters as
+    written. Route every tooltip that interpolates DB / session text here."""
+    return f"<qt>{html.escape(str(text))}</qt>"
+
+
+def restore_splitter_state(splitter, value) -> bool:
+    """Restore a QSplitter from a QSettings value. The INI is user-editable:
+    only a byte blob is accepted, and anything else (str, int, a blob Qt
+    rejects, a raising restore) returns False so the caller applies its
+    default sizes silently. The ONE restoreState call site in openobd."""
+    if isinstance(value, (bytes, bytearray)):
+        value = QByteArray(bytes(value))
+    if not isinstance(value, QByteArray):
+        return False
+    try:
+        return bool(splitter.restoreState(value))
+    except (TypeError, ValueError, RuntimeError):
+        return False
 
 
 def repolish(widget: QWidget) -> None:
@@ -121,6 +145,8 @@ class ElidedLabel(QLabel):
     def __init__(self, text: str = "", parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._full = ""
+        # Session / table names can come from files on disk: never rich text.
+        self.setTextFormat(Qt.PlainText)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.setText(text)
 
@@ -202,6 +228,7 @@ class Breadcrumb(QFrame):
         chips = list(chips)
         while len(self._chips) < len(chips):
             lab = QLabel()
+            lab.setTextFormat(Qt.PlainText)
             lab.setProperty("chip", "neutral")
             self._chip_row.addWidget(lab)
             self._chips.append(lab)
@@ -802,6 +829,12 @@ CHANNEL_GROUPS: dict[str, str] = {
     "ambient": "Sensors", "voltage": "Sensors", "o2": "Sensors",
     "o2_b1s1": "Sensors", "o2_b1s2": "Sensors", "o2_b2s1": "Sensors",
     "o2_b2s2": "Sensors", "cat_b1s1": "Sensors", "cat_b2s1": "Sensors",
+    # truck-mcp drive-log store names (Live Data tile groups)
+    "engine_load": "Engine", "intake_map": "Engine", "throttle_pos": "Engine",
+    "stft_bank1": "Fuel", "ltft_bank1": "Fuel", "stft_bank2": "Fuel",
+    "ltft_bank2": "Fuel", "vehicle_speed": "Trans",
+    "trans_fluid_temp": "Trans", "coolant_temp": "Sensors",
+    "intake_air_temp": "Sensors", "control_voltage": "Sensors",
 }
 GROUP_ORDER = ["Engine", "Fuel", "Spark", "Trans", "Sensors", "Other"]
 

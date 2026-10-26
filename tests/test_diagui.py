@@ -1142,3 +1142,19 @@ def test_close_failure_never_masks_the_job_error(qapp, monkeypatch):
         job._call(bad)
     # a non-dict result is returned as is
     assert job._call(lambda _gt: "plain") == "plain"
+
+
+@pytest.mark.parametrize("bad", ["garbage", "1,2,3", 42])
+def test_tampered_splitter_state_falls_back(qapp, tmp_path, bad):
+    from PySide6.QtWidgets import QSplitter
+    from openobd.diagui import CODES_SPLIT_KEY, MAP_SPLIT_KEY, DiagnosticsPage
+    from openobd.tuningui import restore_splitter_state
+    settings = ini(tmp_path, "tampered.ini")
+    settings.setValue(MAP_SPLIT_KEY, bad)
+    settings.setValue(CODES_SPLIT_KEY, bad)
+    settings.sync()
+    p = DiagnosticsPage(None, ini(tmp_path, "tampered.ini"))
+    assert len(p.map_split.sizes()) == 2
+    assert len(p.codes_split.sizes()) == 2
+    assert restore_splitter_state(QSplitter(), bad) is False
+    p.close()

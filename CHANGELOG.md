@@ -3,6 +3,67 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.37.0 — 2026-10-26
+
+### Changed (Live Data tab UX overhaul; cues from HP Tuners VCM Scanner, EFILive Scan, TunerStudio / Torque)
+- **Shared chrome.** Breadcrumb "Live Data › <session>" with chips for the
+  view state (live / not advancing / archived / read failed), provenance
+  (SIMULATED, PROVENANCE UNKNOWN), channel and graphed counts and "held",
+  plus a muted "<VIN> · source · as of" note; the status line is gone. One
+  36 px toolbar: session picker (same width budget, elide + tooltip, wide
+  popup), Rescan (F5, only while Live Data shows), Fields…, the chart Window
+  span (moved out of the chart pane), Hold and a tile filter (Ctrl+F focuses,
+  Esc clears).
+- **Hold.** Freezes tiles, table and chart for reading; frozen live tiles take
+  the not-advancing palette ("held · not updating") and a warning chip shows.
+  The sample cursors stay put, so un-holding catches up on everything
+  recorded meanwhile. Archived drives cannot be held; a drive that ends while
+  held is let go.
+- **Tiles.** Name with the unit right-aligned, big value, state caption and a
+  muted min / max footer of measured (fresh) samples since bind (new
+  incremental TmSessionReader.range_after; carried values never count).
+  Tiles sit in collapsible Engine / Fuel / Spark / Trans / Sensors / Other
+  groups with counts (collapse persisted under livedata/groups_collapsed).
+  The filter is display only: it never changes the field layout.
+- **Failures and empty states.** Read failures (two in a row) and "Could not
+  open session" are a danger banner; a session that fails to open no longer
+  leaves its reader bound. No data root / no sessions use the shared empty
+  state.
+- **Graphed-channels table.** Compact rows (tree style, ROW_HEIGHT), colour
+  swatch icon instead of the "■" glyph, columns Field | Value | Unit | Min |
+  Max | Avg | Lane (stats over the visible window, Lane as a chip), header
+  tooltips, an empty-state row "Drag a tile here to graph it" and a height
+  that fits its rows. Drop semantics are unchanged.
+- **Strip chart.** Time axis under the last lane (-m:ss back from the right
+  edge when live, HH:MM:SS for archived drives; ticks cached per window),
+  hover cursor with a colour-matched readout box whose values also show in
+  the table's Value column ("@ Cursor") until the mouse leaves, and session
+  events as faint markers. Fonts are built once instead of per paint.
+- **Persistence.** Splitter (livedata/split) and the window span for live
+  sessions (livedata/span); archived drives still open on "All". A window
+  chosen on an archived drive applies to that drive only and is not saved
+  as the live default. A tampered splitter value falls back to the default
+  sizes.
+- **Hold is honest everywhere.** A layout edit while held (dropping a tile
+  on the table, hiding / moving a field) rebuilds the tiles, table and
+  lanes from the frozen snapshot: no trace, tile or table value advances
+  until Release, and a field newly added to the graph is backfilled only
+  up to the hold. The table's Value column is marked "Value · held" in the
+  held colour; a carried tile reads "held · carried" instead of a frozen
+  age.
+- **Incomplete traces say so.** If loading a newly graphed field's history
+  fails, its Min / Max / Avg read "not loaded" in the read-failed colour and
+  the chart stays captioned "read failed" until a later read loads the
+  whole history; the trace is never shown silently partial.
+- **Fixes.** Losing the truck-mcp data root now unbinds the session (the
+  chart no longer stays captioned "live" with an open reader). An archived
+  drive with no fresh numeric samples paints without a time axis instead of
+  aborting the paint (clock labels never raise on out-of-range times).
+  Hover repaints reuse cached decimated trace points; tiles restyle only on
+  a state change; the min / max cursor advances past carried-only rows.
+  Labels showing session-DB or error text (tile unit / value / caption,
+  chart note, breadcrumb title / note / chips) render as plain text.
+
 ## 0.36.0 — 2026-10-26
 
 ### Changed (Diagnostics tab UX overhaul; cues from GM GDS2 / Tech2, HP Tuners VCM Scanner, Autel / Snap-on)
