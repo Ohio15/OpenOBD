@@ -1602,6 +1602,315 @@ Pass: [ ]  Fail: [ ]  N/A: [ ]  Notes: ____
 
 **Run log addendum (Active Tests)**: add the 14 P0 cases of section 7C to the P0 pass count (after 7A and 7B the total is 84; with 7C it becomes 98) and record AT-nn ids for any defects.
 
+## 7D. Log folder and Open session (v0.39.0)
+
+**Covers**: v0.39.0 configurable log folder plus Live Data "Open session..." (PR #60). Sources: `CHANGELOG.md` section 0.39.0, `openobd/recorder.py` (`log_dir`, `probe_log_dir`, `log_dir_unavailable`, `LOG_DIR_KEY`), `openobd/app.py` (`configured_log_dir`, Settings -> "Log folder..." and "Reset log folder to default", Preferences "Log folder:" row, recording start / finalise status and Record tooltip, `_log_browse_dir`), `openobd/livedata.py` (Open session... toolbar button with the recent-files arrow menu, "file . <name>" picker entries, "opened file" chip, path in the note, Hold, danger banner), `tests/test_recorder_dir.py`, and the v0.39.0 tests at the end of `tests/test_livedata_ui.py`, as amended by the fix round on this branch. IDs are `LF-nn`. Cases marked [BOTH] are checked at 1366x768 and 1920x1080, [1366] only at 1366x768, [GT] need the OBDX Pro GT on the truck (recording only starts from a live GT). Every other case runs on the bench with no truck and no GT: the log-folder setting, picker refusal, Load Log and the whole of Open session are fully testable without the GT. The fallback behaviour at recording start (LF-11, LF-24) and the GTPro recording (LF-09) are the cases that need it.
+
+**What this section protects.** Two promises. (1) A recording is never silently saved somewhere other than where the user was told: when the chosen folder cannot be used (missing, unwritable, or not an absolute path) the file goes to the default folder and BOTH the status line and the Record tooltip say so, naming the folder that was skipped. (2) A session file opened from disk is treated exactly like a discovered session: its chip is derived from the data, never from how it was opened. It reads "live" only while its newest sample is advancing and the drive has not ended, "not advancing" when the writer has stopped without ending it, and "archived" once the drive has ended. An "opened file" chip and the file's full path sit on top of the normal chips. A file opened mid-drive therefore never reads "archived" while it advances, and a stopped or copied file never reads "live" indefinitely. The "as of" time in the note, for EVERY session (discovered or opened), is the timestamp of the newest sample, never the wall-clock time of the last read; a session with no samples reads "no samples yet". A file that is not a readable session never replaces the session that was bound. The P0 cases are those honesty, persistence and refusal assertions.
+
+**Connection semantics (as decided in the fix round).** An opened file is opened without locking; OpenOBD never writes rows, but SQLite may create WAL sidecar files (-wal/-shm) next to the file while it is open. So the integrity check for "read-only" is the SHA-256 of the `.tmsession.db` itself only; a `-wal` / `-shm` appearing beside it is allowed and is not a failure.
+
+**Preconditions addendum (Log folder and Open session)**
+- Scratch area: `D:\Scratch\<yyyy-mm-dd>-logfolder-fixtures\` (never in the repo, never the real truck-mcp data root). Below it is written `$fx`. Create these empty folders first: `$fx\truck-mcp\sessions` (the data root OpenOBD scans), `$fx\picked` (where "opened" session files live: deliberately NOT under any scanned sessions folder), `$fx\lf` (log-folder fixtures). Launch OpenOBD from a PowerShell where `TRUCK_MCP_DATA` is shell-local, so Live Data scans only the scratch root:
+  ```
+  $fx = "D:\Scratch\<yyyy-mm-dd>-logfolder-fixtures"
+  $env:TRUCK_MCP_DATA = "$fx\truck-mcp"
+  python -m openobd            # from the feat-log-folder-open-session worktree, or the deployed exe
+  ```
+  The app has no setting for the scanned root; `TRUCK_MCP_DATA` is authoritative and alone for Live Data (the exception is LF-20 step 8, which points it at the logger's root on purpose).
+- Ron's real target folder for the GT recordings is `C:\Users\ohio_\OneDrive\Personal\Vehicle\GTPro` (exists, empty, OneDrive-synced). It is used only by LF-02, LF-06, LF-09 and LF-12. Before LF-02 confirm it is empty and note it: `________`. The test recordings made there are test data: after LF-12, delete them (Recycle Bin) unless Ron wants them, so the folder is left as found, and finish the section by setting the log folder the way Ron wants it left: `________`.
+- Where truck-mcp session files live: `<TRUCK_MCP_DATA or %LOCALAPPDATA%\Programs\truck-mcp-app>\sessions\*.tmsession.db` (the field kit; a dev checkout keeps them under `D:\Projects\truck-mcp\sessions\`). Never open, edit, lock or delete a file under the real data root for these cases: COPY it to `$fx\picked` first (Copy-Item). If a file has `-wal` / `-shm` companions beside it (a drive still being written), copy those too or copy only after the drive ended; a bare copy of a mid-write database can lack the newest samples.
+- Open-session fixtures (record the file names: `________`):
+  - **OS-ARCH**: a copy of an ended drive (`session.ended_utc` set) in `$fx\picked`, renamed `os-arch.tmsession.db`. Reuse the 7B S-ARCH copy. Note its newest sample timestamp (the last point of any channel in truck-mcp's session tools, or the last chart point after opening): `________`.
+  - **OS-B** ... **OS-J**: nine further copies of OS-ARCH in `$fx\picked`, each renamed with a distinct name (`os-b.tmsession.db` to `os-j.tmsession.db`). The copies need a distinct `session.uid` only if the picker complains; they are never opened at the same time as their source.
+  - **OS-EMPTY**: `$fx\picked\os-empty.tmsession.db`, a session with metadata and channels but no samples yet: the first second of a fresh truck-mcp drive log, or a scratch COPY of OS-ARCH whose sample rows were removed with `python -I` and `sqlite3` on the COPY only.
+  - **OS-BAD**: `$fx\picked\not-a-session.tmsession.db`, a plain CSV (any OpenOBD recording, or three lines of text) renamed to that name.
+  - **OS-LIVE**: the live drive of LF-15 and LF-20 (truck-mcp `session_drive_log`, simulated source is fine; no GT is needed). Its logger writes to its OWN data root; only LF-15, LF-20 and LF-23 use it.
+  - **OS-HOSTILE**: a copy of OS-ARCH at `$fx\picked\a&lt;b &amp; 100%41\x.tmsession.db` (folder name contains `&`, `;`, `%41` and the text `&lt;`; Windows forbids `<` and `>` in names).
+- Folder fixtures (LF-05, LF-08, LF-11), made inside `$fx\lf`: `readonly` (write denied by ACL, below), `vol` (a plain folder), and `a&amp;b %41 &lt;i&gt;x&lt;/i&gt;` (markup-looking text in the name; a folder named with a literal `&`, `;`, `%41` and the characters `lt;`, valid on Windows). Deny writes with:
+  ```
+  New-Item -ItemType Directory "$fx\lf\readonly"
+  icacls "$fx\lf\readonly" /deny "${env:USERNAME}:(OI)(CI)(WD,AD)"
+  # cleanup after LF-05, before deleting the fixture area:
+  icacls "$fx\lf\readonly" /remove:d $env:USERNAME
+  ```
+  Read-only FILE attributes do not stop file creation inside a Windows folder, so use the ACL deny, a write-protected removable drive, or a drive letter that does not exist; the read-only attribute alone is not a valid fixture.
+- Clean state: before the first case delete the `logs/dir` and `livedata/recent_files` keys from the OpenOBD settings file, so the defaults apply. Quit OpenOBD (File -> Quit) before editing the file and relaunch afterwards. The only keys this section's features write are `logs/dir` (an absolute path string; absent after Reset) and `livedata/recent_files` (a list of at most 8 paths).
+- Wording the product draws that this document writes in ASCII: the picker entry is `file`, a middle dot, then the file name (written `file . <name>`); status text uses an arrow and an em dash (written `->` and `-`); the Settings items end in an ellipsis (written `...`).
+- Default log folder: `Documents\OpenOBD\Logs`, resolved by Windows known-folder lookup, so on a OneDrive-redirected Documents it is under OneDrive. Note it here: `________`.
+
+### 7D.1 Setting the log folder
+
+### LF-01 Defaults and controls [BOTH] - P1
+Setup: clean state (no `logs/dir` key).
+1. Open the Settings menu. Expected: an item "Log folder..." and an item "Reset log folder to default" are present (next to the other Settings items, not on the File menu).
+2. Settings -> Preferences... (Ctrl+,). Expected: a row labelled "Log folder:" shows `<default folder> (default)` as plain text, with the full path in its tooltip, followed by two buttons "Change..." and "Reset to default".
+3. Expected: the folder named in the row is the default noted in the Preconditions (the real Documents folder, not a hard-coded `C:\Users\<name>\Documents` when Documents is redirected).
+4. Close Preferences with Cancel. Expected: no `logs/dir` key was written.
+5. Repeat steps 1 and 2 at 1366x768 and 1920x1080. Expected: the row fits the dialog; nothing is clipped at 1366x768.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-02 Set the folder from Settings -> Log folder... (GTPro) - P0
+Setup: clean state; GTPro empty (noted in Preconditions).
+1. Settings -> Log folder.... Expected: a folder chooser titled "Log folder" opens, starting in the default folder (or the Documents area), not in an unrelated place.
+2. Choose `C:\Users\ohio_\OneDrive\Personal\Vehicle\GTPro` and confirm. Expected: the chooser closes with no error box; the status bar shows `Log folder: C:\Users\ohio_\OneDrive\Personal\Vehicle\GTPro` for about 6 s.
+3. Open Settings -> Preferences.... Expected: the row shows exactly that path, without the "(default)" suffix.
+4. Look in GTPro in Explorer. Expected: the folder is still empty: the write probe (`.openobd_write_probe_<pid>`) was created and deleted and nothing is left behind, and OneDrive shows no sync error for the folder.
+5. Check the settings file. Expected: `logs/dir` = `C:\Users\ohio_\OneDrive\Personal\Vehicle\GTPro` (normalised backslashes, absolute), and no other key was changed.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-03 Set and reset from the Preferences row - P1
+Setup: clean state.
+1. Settings -> Preferences..., click "Change...". Expected: the same "Log folder" chooser opens.
+2. Choose `$fx\lf\vol`. Expected: the row text changes at once to that path (before the dialog is closed); the status bar shows `Log folder: $fx\lf\vol`.
+3. Close Preferences with Cancel (not OK). Expected: the folder STAYS set (the row applies immediately, like the Settings menu items); reopen Preferences to confirm.
+4. Click "Reset to default". Expected: the row changes at once to `<default folder> (default)`; the status bar shows `Log folder: <default folder> (default)`; the `logs/dir` key is removed (not left empty).
+5. Click "Change..." and choose a folder that does not yet exist by using the chooser's New Folder button (e.g. `$fx\lf\made-in-dialog`). Expected: the folder is accepted and shown.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-04 Cancelling the chooser changes nothing - P1
+Setup: log folder set to `$fx\lf\vol`.
+1. Settings -> Log folder..., then Cancel. Expected: no message box; status bar unchanged; `logs/dir` still `$fx\lf\vol`.
+2. Settings -> Preferences... -> "Change...", then Cancel. Expected: the row still shows `$fx\lf\vol`.
+3. Press Esc in the chooser instead of Cancel; close it with the window's X. Expected: the same.
+4. Repeat step 1 with the folder at the default (no key). Expected: still no `logs/dir` key written (Cancel does not pin the default into the settings).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-05 A folder that cannot be written is refused by the chooser - P0
+Setup: `$fx\lf\readonly` with the ACL deny from the Preconditions. Set the log folder to `$fx\lf\vol` first.
+1. Settings -> Log folder... and choose `$fx\lf\readonly`. Expected: a warning box titled "Log folder": "Recordings cannot be written to:", then the folder, then the reason (a PermissionError / access-denied text), then "The log folder is unchanged.". No status-bar `Log folder:` message.
+2. Dismiss it and open Preferences. Expected: the row still shows `$fx\lf\vol`; `logs/dir` is unchanged (a refused folder is never stored, not even temporarily).
+3. Repeat from Preferences -> "Change...". Expected: the same warning and the row is unchanged.
+4. Repeat with the log folder at the default (no key). Expected: the warning appears and the setting stays at the default (the key is still absent).
+5. Optional, only if a removable USB drive is at hand: choose a folder on it, unplug the drive, then try to choose the same folder path again by typing it in the chooser. Expected: it cannot be chosen (missing drive), or if the chooser lets it through it is refused with the same warning. Record the observed behaviour: `________`.
+6. Clean up: `icacls "$fx\lf\readonly" /remove:d $env:USERNAME`.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-06 The setting survives a restart - P0
+Setup: log folder set via Settings to GTPro (LF-02).
+1. Quit (File -> Quit) and relaunch. Open Preferences. Expected: the row shows the GTPro path; Settings -> Log folder... starts the chooser inside GTPro (its parent area).
+2. Expected: Load Log (LF-12) also still opens in GTPro (checked there).
+3. Quit; in the settings file set `logs/dir` to `   ` (spaces only) and relaunch. Expected: no crash; the row shows `<default folder> (default)`; recording would use the default.
+4. Quit; set `logs/dir` to a non-string such as an integer `5` (or an empty list) and relaunch. Expected: no crash; default shown.
+5. Quit; delete the key and relaunch. Expected: default shown, no error. Re-set GTPro through the Settings menu afterwards if the next case needs it.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-07 Reset log folder to default (Settings menu) - P0
+Setup: log folder set to GTPro.
+1. Settings -> Reset log folder to default. Expected: no confirmation box; the status bar shows `Log folder: <default folder> (default)` for about 6 s, naming `Documents\OpenOBD\Logs` (the resolved path from the Preconditions).
+2. Preferences. Expected: the row shows `<default folder> (default)`.
+3. Check the settings file. Expected: the `logs/dir` key is gone.
+4. Quit and relaunch. Expected: still the default (a reset survives a restart and does not come back).
+5. Run Reset again with nothing set. Expected: no error; the same status text.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-08 Folder text is plain text and long paths elide [1366] - P1
+Setup: set the log folder to `$fx\lf\a&amp;b %41 &lt;i&gt;x&lt;/i&gt;` (create it first through the chooser's New Folder button).
+1. Preferences. Expected: the row shows the folder name exactly as typed, `&`, `%41` and the `&lt;i&gt;` text literal; nothing is italic, no `&amp;` becomes `&`, no mnemonic underline, and `%41` is NOT expanded to `A` or otherwise treated as a variable.
+2. Hover the row. Expected: the tooltip shows the same literal path.
+3. Read the status bar message from the choose action (re-choose the folder if it has gone). Expected: literal text.
+4. Set the log folder to a deep path of about 200 characters (nest folders such as `$fx\lf\a-very-long-folder-name-0123456789\...`). At 1366x768 open Preferences. Expected: the row elides the path with an ellipsis, does not widen the dialog beyond the screen, and the full path is in the tooltip.
+5. With the markup folder set, start a recording if a GT is available (see LF-09 for the steps). Expected: the Record button tooltip, status line and post-Stop status all show the folder text literally. Record N/A if no GT.
+
+Pass: [ ]  Fail: [ ]  N/A: [ ]  Notes: ____
+
+### 7D.2 Recording and Load Log with the log folder
+
+### LF-09 Record into GTPro; the CSV and .meta.json land there and are named [GT] - P0
+Setup: GT connected on the truck (ignition on, Dashboard live); log folder set to GTPro (LF-02); GTPro empty; note the time: `________`.
+1. Hover the Record button before starting. Expected: it is the red RECORD button, enabled.
+2. Start a recording (click RECORD or press R) and let it run about 20 s. Expected: the status line reads `Recording -> C:\Users\ohio_\OneDrive\Personal\Vehicle\GTPro\<file>.csv`, and no "Log folder unavailable" text anywhere.
+3. Hover the Record button while recording. Expected: the tooltip starts `Recording to C:\Users\ohio_\OneDrive\Personal\Vehicle\GTPro\<file>.csv`.
+4. Look in GTPro in Explorer while recording. Expected: the `.csv` already exists there (the file is created in its final folder from the first sample; there is no temp file elsewhere).
+5. Click STOP. Expected: the status line reads `Saved <n> samples -> <path>  .  log folder: C:\Users\ohio_\OneDrive\Personal\Vehicle\GTPro`; the Record tooltip reads `Last recording: <path>` then `Log folder: C:\Users\ohio_\OneDrive\Personal\Vehicle\GTPro`; the "Datalog saved" box offers to load it.
+6. Look in GTPro. Expected: the recording's `.csv` and its `.meta.json` (same stem) are both there, and the `.meta.json` is non-empty valid JSON (open it in a text editor); a long-format sidecar beside them is expected only if the recorder writes one for this run. The file is not zero-length and the sample count in the status matches the CSV rows (+/- 1, as D-13).
+7. Look in the default folder `Documents\OpenOBD\Logs`. Expected: NO new file from this run is there (the recording went only to GTPro).
+8. Check the file in OneDrive (Explorer status icon, or onedrive.live.com). Expected: the files sync (green tick) with no "can't sync" error. Record the state: `________`.
+9. Answer "Yes" in the "Datalog saved" box (or load it with Ctrl+L). Expected: the log opens in Log Analysis.
+
+Pass: [ ]  Fail: [ ]  N/A: [ ]  Notes: ____
+
+### LF-10 After a reset, recordings return to the default folder and say nothing odd [GT] - P1
+Setup: GT live; log folder reset to default (LF-07).
+1. Record about 10 s and stop. Expected: the file and its `.meta.json` are in `Documents\OpenOBD\Logs` (created if it did not exist); no "Log folder unavailable" text in the status, tooltip or after Stop.
+2. Expected: the post-Stop status still names the folder (`log folder: <default folder>`) and the tooltip reads `Log folder: <default folder>`.
+3. Expected: nothing new in GTPro.
+
+Pass: [ ]  Fail: [ ]  N/A: [ ]  Notes: ____
+
+### LF-11 Folder unavailable at record start: default is used and the UI says so [GT] - P0
+Setup: GT live. Set the log folder to `$fx\lf\vol` through Settings (accepted: it is writable now). Then make it unusable WITHOUT changing the setting: with OpenOBD running, delete `$fx\lf\vol` and create a plain FILE with the same name (`Remove-Item -Recurse $fx\lf\vol; New-Item -ItemType File $fx\lf\vol`). (A removed USB drive path is an equivalent fixture; a merely deleted folder is NOT, because the recorder re-creates a missing folder.)
+1. Start a recording. Expected: it starts (not refused), and the status line begins `Log folder unavailable: <fx>\lf\vol (using default)` then a dash and the reason (for example a FileExistsError text), then `Recording -> <default folder>\<file>.csv`. The wording must say the default is being used; a silent fallback is a Fail.
+2. Hover the Record button. Expected: the tooltip's first line is the same `Log folder unavailable: ... (using default)` sentence (with the reason), second line `Recording to <default folder>\<file>.csv`.
+3. Let it run 10 s and click STOP. Expected: the status line still begins with the `Log folder unavailable ... (using default)` sentence and then reads `Saved <n> samples -> <default path>  .  log folder: <default folder>`; the tooltip still carries the unavailable sentence plus `Last recording:` and `Log folder: <default folder>`.
+4. Expected: the file and `.meta.json` are in the default folder and nowhere else; nothing was written to `$fx\lf\vol` or its parent; Preferences STILL shows `$fx\lf\vol` as the log folder (the setting is not silently rewritten or reset).
+5. Restore the folder (delete the file, `New-Item -ItemType Directory "$fx\lf\vol"`) and record again. Expected: the recording goes to `$fx\lf\vol`, the unavailable sentence is gone from the status and the tooltip.
+6. Repeat step 1 with `$fx\lf\readonly` made the log folder by editing the settings file (the chooser refuses it, LF-05) and the ACL deny applied. Expected: the same honest fallback (access-denied reason).
+7. Clean up: restore ACLs, delete the fixture recordings, set the log folder as Ron wants it left.
+
+Pass: [ ]  Fail: [ ]  N/A: [ ]  Notes: ____
+
+### LF-12 Load Log opens in the log folder - P1
+Setup: GTPro holds at least one `.csv` (from LF-09; otherwise copy any recording into it). Log folder set to GTPro.
+1. File -> Load Log... (Ctrl+L). Expected: the file chooser titled "Load log" opens inside `C:\Users\ohio_\OneDrive\Personal\Vehicle\GTPro` and the "Logs (*.csv)" filter is active.
+2. Open the recording. Expected: it loads in Log Analysis with its `.meta.json` events (amber markers) found beside it.
+3. Repeat from the Log Analysis toolbar Load button. Expected: the same start folder.
+4. Reset the log folder to default (LF-07) and Load Log again. Expected: it starts in `Documents\OpenOBD\Logs` if that folder exists, else Qt's default (no error).
+5. Set the log folder to `$fx\lf\vol`, delete `$fx\lf\vol`, then Load Log. Expected: no error; the chooser starts in the default folder (an absent configured folder is skipped).
+6. Clean up: delete the test recordings from GTPro (Recycle Bin) unless Ron keeps them.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### 7D.3 Live Data: Open session...
+
+### LF-13 Open session... button, tooltip and recent menu [BOTH] - P1
+Setup: clean state (no `livedata/recent_files`), data root `$fx\truck-mcp` with nothing or S-ARCH.
+1. Open Live Data. Expected: the toolbar has an "Open session..." button (with its glyph) on the 36 px toolbar, with a small arrow beside it; Rescan, Fields..., Hold, the Window combo and the filter field are still all reachable.
+2. Hover the button. Expected: a plain-text tooltip saying a truck-mcp session file can be opened from any folder, read-only, and that the arrow lists recent files. It must not claim the file is always shown as archived (an opened file's state comes from its data, LF-14 and LF-20). Record the exact wording: `________`.
+3. Click the arrow with no recent files. Expected: one disabled entry "No recent session files".
+4. At 1366x768, narrow the window to its minimum. Expected: the new button does not push the filter field or the picker off the toolbar (an overflow ">>" is acceptable); the page minimum width is not increased noticeably (measure and note it: `________`).
+5. Check the dark palette at both resolutions. Expected: the button, its arrow and the menu use the dark palette; no white menu.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-14 Open a copied (ended) session file: picker entry, chips, note, as-of [BOTH] - P0
+Setup: OS-ARCH in `$fx\picked` (outside the scanned root); the scanned root holds a different drive (S-ARCH or S-SIM) so the picker has its own entries. Compute the SHA-256 of OS-ARCH before opening: `________`. Newest sample timestamp of OS-ARCH (Preconditions): `________`.
+1. Click "Open session...". Expected: a chooser titled "Open session" opens with the filter "truck-mcp session (*.tmsession.db)" selected and "All files (*)" available.
+2. Choose `$fx\picked\os-arch.tmsession.db`. Expected: no popup; the session binds.
+3. Look at the picker. Expected: the new entry is FIRST in the list, reads `file . os-arch.tmsession.db` (not the drive label), and is selected; the scanned drives follow it.
+4. Read the chips. Expected: the normal chips come from the data: the drive has ended, so the first chip is the muted "archived"; then a neutral "opened file" on top of them; then the usual "<n> channels" and "<m> graphed" chips. No green "live" chip.
+5. Read the note beside the breadcrumb. Expected: it begins with the FULL path `$fx\picked\os-arch.tmsession.db`, then the VIN (or "VIN unknown"), `source=<value>` and `as of <time>` where the time is the newest sample timestamp of the file (matches the value noted in Setup, in the same time zone the product shows), NOT the current clock time. Wait 60 s: Expected: the "as of" value does not change (an ended drive's newest sample does not move) while the wall clock does.
+6. Look at every tile and the chart label. Expected: the archive palette, tile caption "archived drive", chart label "archived drive"; no tile reads "live".
+7. Expected: no red banner. Hold is disabled or ignored because the drive has ended (LF-15).
+8. Hover the picker entry. Expected: the tooltip shows the full path as plain text.
+9. Choose a scanned drive from the picker. Expected: it binds with ITS own data-derived state (S-SIM shows the green "live" chip, S-ARCH "archived"), its "as of" is also the newest sample timestamp of THAT drive, and the "opened file" chip disappears; the `file . os-arch...` entry stays in the picker.
+10. Select the `file . os-arch` entry again. Expected: it rebinds with the "opened file" chip.
+11. Open OS-EMPTY (a session with no samples yet). Expected: the note reads `... as of no samples yet` (or the exact "no samples yet" text in the as-of position), never a clock time; tiles show no value; no crash and no banner. Select a scanned drive that also has no samples, if one is at hand, and Expected: the same wording for a discovered session.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-15 Hold: allowed while an opened file is live, ignored once it has ended - P1
+Setup: OS-ARCH opened (ended drive); a truck-mcp simulated drive log running, its data root NOT scanned (as LF-20 Setup), its file opened directly; note the live file: `________`.
+1. Select the opened OS-ARCH (ended). Expected: Hold is disabled (greyed), tooltip still reads as the Hold help text.
+2. Press the Hold keyboard shortcut (see the tooltip) with focus on the page. Expected: nothing happens; no "held" chip appears.
+3. Open the live file directly (LF-20 step 2). Expected: the chips are "live" and "opened file"; Hold is ENABLED (an opened live file is treated like a discovered live session).
+4. Click Hold. Expected: a "held" chip is added (amber) next to "live" and "opened file"; the tiles and chart freeze at the held values; the Hold button shows its pressed state; the "as of" value freezes with them (it does not advance while held).
+5. Wait 20 s while the logger keeps running. Expected: still frozen, still "held"; the logger's terminal shows its sample counter rising.
+6. Click Hold again. Expected: the display catches up to the file's newest samples; the "held" chip disappears; the "as of" value jumps to the newest sample timestamp.
+7. Hold again, then end the truck-mcp session normally from its terminal while held. Expected: within a few ticks the drive is seen as ended: the hold is released (Hold ignored once the drive has ended), the chip changes to "archived", Hold becomes disabled, and the "held" chip is gone. Record the time it took: `________`.
+8. Select a scanned S-SIM drive: Hold is enabled and works as in LD-03/LD-12. Select the ended opened file again: disabled again.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-16 Opening the same file again re-selects it - P1
+Setup: OS-ARCH opened, then a scanned drive picked.
+1. Click "Open session..." and choose OS-ARCH again (or choose it from the arrow menu). Expected: no second entry; the picker still has exactly ONE `file . os-arch.tmsession.db`; it is selected and bound again; no banner.
+2. Open it by a different spelling of the same path (e.g. `$fx\picked\..\picked\OS-ARCH.tmsession.db`, different case, or with forward slashes typed in the file-name box). Expected: still one entry (the same file is recognised case-insensitively).
+3. Open OS-B. Expected: it becomes the FIRST entry; `file . os-arch...` is the second; the scanned drives follow.
+4. Press Rescan (F5) and wait 6 s. Expected: the order is unchanged and the bound entry stays selected (no flicker back to the first scanned drive).
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-17 Recent files: newest first, no duplicates, capped at 8 - P1
+Setup: clean `livedata/recent_files`; OS-ARCH and OS-B to OS-J (ten files).
+1. Open OS-ARCH, then OS-B, OS-C, ... OS-J in that order (ten opens). Open the arrow menu. Expected: exactly 8 entries, newest first (OS-J ... OS-C); OS-ARCH and OS-B are gone; each entry reads `<file name>  -  <folder>` as plain text.
+2. Open OS-D again from the menu. Expected: it moves to the top; still 8 entries, no duplicate.
+3. Choose an entry from the arrow menu. Expected: it opens exactly as via the chooser (picker entry, chips, note); a click on the main button (not the arrow) opens the chooser starting in the folder of the newest recent file.
+4. Check the settings file. Expected: `livedata/recent_files` lists the same 8 paths in the same order, and no other `livedata/` key changed.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-18 Recent list persists and prunes missing files at restart - P0
+Setup: recent list as at the end of LF-17.
+1. Quit and relaunch. Open the arrow menu. Expected: the same 8 entries in the same order.
+2. Quit. Delete one file from the list (say the 3rd) in Explorer. Relaunch and open the arrow menu. Expected: the missing file is gone, 7 entries remain in order; the settings key now holds 7 paths (pruned at startup, not left to fail on click).
+3. Quit; rename the folder `$fx\picked` to `$fx\picked-away` and relaunch. Expected: every entry is dropped ("No recent session files"); no error; rename the folder back.
+4. Quit; edit the settings value to a single string (`livedata/recent_files=C:\...`) and, separately, to garbage (an integer). Relaunch each time. Expected: no crash; a one-entry value is read as one entry if the file exists; garbage reads as an empty list.
+5. Expected: a previously opened file is NOT re-opened automatically at launch (Live Data starts on the scanned sessions); only the menu remembers it.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-19 A file that is not a session: danger banner, bound session kept - P0
+Setup: S-ARCH (or an S-SIM) bound from the scanned root; OS-BAD (`not-a-session.tmsession.db`, really a CSV) in `$fx\picked`. Note the bound session label and recent list: `________`.
+1. Click "Open session..." and choose OS-BAD. Expected: a red (danger) banner above the tiles reading `could not open not-a-session.tmsession.db: <reason>`; no popup dialog.
+2. Expected: the session that was bound stays bound: same picker selection, same breadcrumb label and chips, tiles and chart still present, no "opened file" chip, no `file . not-a-session...` entry in the picker.
+3. Wait 5 s (several ticks and one automatic rescan). Expected: the banner stays (a good poll of the bound session does not clear it); the live tiles continue.
+4. Open the arrow menu. Expected: OS-BAD is NOT in the recent list.
+5. Select another scanned session. Expected: the banner clears.
+6. Repeat with an empty file (0 bytes `empty.tmsession.db`), a file of random bytes and a real SQLite database that is not a truck-mcp session (e.g. create one with `python -I -c "import sqlite3; sqlite3.connect(r'$fx\picked\other.tmsession.db').execute('create table t(x)')"`). Expected: each shows `could not open <name>: <reason>` and keeps the bound session; none crashes the page.
+7. Click "Open session..." and press Cancel, then once more and close it with Esc. Expected: a no-op: no banner, picker and bound session unchanged, recent list unchanged.
+8. Open OS-ARCH (valid) after a failed open. Expected: the banner clears and the file binds normally.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-20 A file still being written reads live, from its data, and never archived while it advances - P0
+Setup: no GT needed. Start a simulated drive log in truck-mcp (`session_drive_log`; stay on the simulated source) with its data root NOT scanned by OpenOBD: let truck-mcp write to its normal root, while OpenOBD is launched with `TRUCK_MCP_DATA=$fx\truck-mcp`. Note the live file: `<logger root>\sessions\<name>.tmsession.db` (the logger root is `%LOCALAPPDATA%\Programs\truck-mcp-app` for the field kit): `________`. The logger keeps a terminal open; its sample counter must keep rising throughout.
+1. (Optional, only if you can open the file within the first second of the drive log.) Open the live file immediately after it starts. Expected: the note reads `as of no samples yet`, then switches to a timestamp once the first sample lands, with no restart of the page.
+2. Open the ORIGINAL live file directly with "Open session..." (read-only open, no locking). Expected: a picker entry `file . <name>.tmsession.db` first in the list; the first chip is the green "live" (the drive has not ended and its newest sample is advancing), followed by "SIMULATED" (red, source simulated) and the neutral "opened file" chip; it is NOT "archived" and NOT "not advancing". Every tile uses the live palette with caption "live"; the chart label reads "live". Hold is enabled (LF-15).
+3. Read the note. Expected: it begins with the file's full path, then VIN, `source=simulated` and `as of <time>` where the time is the newest sample timestamp of the file and moves forward as samples arrive (about once per sample), not the time of the last poll. Compare with the logger terminal: the as-of time is within one sample interval of the logger's latest sample.
+4. Watch for 60 s. Expected: tile values change with the file's newest samples; the chips NEVER read "archived" while the file advances; no banner appears.
+5. Expected: the logger is not disturbed: its terminal shows no error and no "database is locked", its sample counter keeps rising, and the file keeps growing (check its size twice). Opening a file takes no lock and does not stop truck-mcp. A `-wal` / `-shm` pair appearing beside the file is allowed (see Connection semantics).
+6. Copy the file mid-write to `$fx\picked\copy-of-live.tmsession.db` (with its `-wal` / `-shm` files if they exist) and open the copy. Expected: picker entry `file . copy-of-live.tmsession.db` with the "opened file" chip; the copy does not grow, so its state follows the data: it may read "live" for the first moments while its newest sample is recent, then turns to amber "not advancing" within about a minute (as LD-02), never "live" indefinitely; its "as of" stays fixed at the copy's last sample time and does not follow the wall clock. It must never read "archived" (the drive has not ended).
+7. Kill the logger process abruptly (do not end the session) and wait about a minute. Expected: the opened original entry (bind it) turns amber "not advancing"; "as of" stays at the last sample time; "opened file" chip stays.
+8. Stop OpenOBD. Relaunch it with `TRUCK_MCP_DATA` set to the LOGGER's data root (so the scan discovers the live file) and the logger running again on a new drive log. In the picker the live drive appears as a normal entry with the green "live" chip. Open the same file via "Open session...". Expected: no second `file .` entry is created; the picker re-selects the DISCOVERED entry, and Hold is enabled. Pass only if there is exactly one entry for that file.
+9. End the truck-mcp session normally. Expected: the bound live entry (discovered or opened) turns to the muted "archived" within a few ticks, the "as of" value stays at the last sample, and Hold is disabled.
+10. Clean up: delete the copies in `$fx\picked`, never touch the original file.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-21 Rescan keeps an opened entry while it is not discoverable; a discoverable one becomes a normal session - P1
+Setup: OS-ARCH opened; two scanned sessions in `$fx\truck-mcp\sessions`.
+1. Press Rescan (F5). Expected: the `file . os-arch...` entry is still FIRST and still selected; the bound session did not change; the "opened file" chip is still there.
+2. Add a third drive to `$fx\truck-mcp\sessions` and Rescan. Expected: the picker is rebuilt with the new drive; the opened entry stays first and keeps its "opened file" chip.
+3. Copy `os-arch.tmsession.db` into `$fx\truck-mcp\sessions` (it now becomes discoverable) with the opened entry still bound. Rescan. Expected: the separate `file . os-arch...` entry is dropped; the file appears as a normal discovered entry (labelled with the drive label, not `file .`); the "opened file" chip disappears and the session behaves as a discovered session (chips from the data, Hold per LF-15); exactly one entry for that drive.
+4. Select a scanned drive, then delete `os-b.tmsession.db` (opened earlier) in Explorer (the file cannot be deleted while OpenOBD has it bound: select another session first; if Explorer still reports it in use, record that). Rescan. Expected: its `file .` entry disappears from the picker; no error banner; the recent menu still lists the path until the next restart prunes it (LF-18), and choosing it then shows `could not open ...` rather than crashing.
+5. Delete the whole `$fx\truck-mcp` folder while the page is open with an opened file present. Expected: the opened entry remains and stays usable (the empty state "truck-mcp data root not found." appears only when nothing is opened as well); then Rescan with it removed: the empty state returns.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-22 Hostile characters in an opened file's path render literally - P1
+Setup: OS-HOSTILE at `$fx\picked\a&lt;b &amp; 100%41\x.tmsession.db`.
+1. Open it. Expected: the picker entry `file . x.tmsession.db`; the note starts with the full path shown literally (`&lt;b`, `&amp;`, `%41` as typed; no entity decoding, no bold, no underline).
+2. Hover the picker entry and the note. Expected: the tooltips show the path literally.
+3. Open the arrow menu. Expected: the entry is `x.tmsession.db  -  <folder>`; the folder text shows a single `&` where the name has `&` (an ampersand is not eaten as a keyboard mnemonic and no letter is underlined).
+4. Try to open a path that contains `&` in a file name that is not a session (OS-BAD renamed `a&b.tmsession.db`). Expected: the banner reads `could not open a&b.tmsession.db: <reason>` literally.
+
+Pass: [ ]  Fail: [ ]  Notes: ____
+
+### LF-23 Opening never writes rows: the session file itself is byte-identical - P0
+Setup: OS-ARCH and, for step 3, the live file of LF-20; Process Monitor optional.
+1. Compute the SHA-256 of `os-arch.tmsession.db` ONLY and note the `$fx\picked` listing (names, sizes, timestamps). Open the file, let it tick for 30 s, select another session, quit OpenOBD.
+2. Expected: the SHA-256 of `os-arch.tmsession.db` is identical to the value before, and its last-write time is unchanged. A `os-arch.tmsession.db-wal` and / or `-shm` file appearing beside it while it was open is ALLOWED (SQLite may create WAL sidecars; the file is opened without locking and OpenOBD never writes rows); record whether they appeared and whether they are gone after quit: `________`. Any other new file beside it is a Fail.
+3. Repeat with a live file being written by truck-mcp (LF-20): compare nothing about the live file's hash (truck-mcp is appending to it). Instead check that truck-mcp is unaffected: no "database is locked", checkpoint or truncation error in the logger terminal, its sample counter keeps rising, and the file keeps growing. Then take a COPY of the file at a moment the logger has stopped (end the session), open the copy and repeat steps 1 and 2 on the copy.
+4. With Process Monitor filtered on `.tmsession.db` (optional), Expected: OpenOBD performs no `WriteFile`, `SetEndOfFile`, `DeleteFile` or rename on the `.tmsession.db` itself; writes to `-wal` / `-shm` sidecars are allowed. Record N/A if Process Monitor is not available.
+5. Check the settings file after the run. Expected: the keys written by this section are only `logs/dir` and `livedata/recent_files` (plus the existing `livedata/` layout keys from using the page); opening a file wrote nothing into the session file or the scanned root.
+
+Pass: [ ]  Fail: [ ]  N/A: [ ]  Notes: ____
+
+### LF-24 The log folder must be an absolute path; relative values are refused and the default is used [GT] - P0
+Setup: OpenOBD closed. The settings file is edited by hand (the chooser can only produce absolute paths). The setting expands environment variables, then must be absolute. GT live for steps 5 to 7; steps 1 to 4 need no GT.
+1. Set `logs/dir` to the relative value `GTPro` and launch. Open Preferences. Expected: the row does not present `GTPro` as a working folder; it reads the default (or states that the value is refused). Record exactly what it shows: `________`. No folder named `GTPro` is created in the working directory of the launch or anywhere else.
+2. Repeat with `.\logs`, `..\logs` and `logs\sub`. Expected: each is refused the same way; no folder is created relative to the current directory.
+3. Open Settings -> Log folder... and cancel. Expected: a relative value already in the settings is not silently "fixed" by Cancel (the key is unchanged).
+4. Environment variables: set `logs/dir` to `%LOCALAPPDATA%\OpenOBD-lf-test` (a variable that is defined) and then to `%NO_SUCH_VAR_LF%\logs` (undefined, stays relative after expansion). Expected: the defined variable is expanded and the result, being absolute, is the folder used (Preferences shows the expanded path or the setting; record which: `________`); the undefined variable leaves a relative text and is refused like step 1. Record any difference from this reading of the fix round (the fix round states the value "must be absolute"; if the build refuses an env-var value even when it expands to an absolute path, record that and flag it): `________`.
+5. [GT] With a refused value set (`GTPro`), start a recording. Expected: it starts in the DEFAULT folder, and the status line begins `Log folder unavailable: GTPro (using default)` followed by a dash and the reason `Log folder must be an absolute path`, then `Recording -> <default folder>\<file>.csv`. A silent fallback is a Fail.
+6. [GT] Hover the Record button. Expected: the tooltip's first line carries the same sentence with the reason `Log folder must be an absolute path`.
+7. [GT] Stop the recording. Expected: the status still starts with the `Log folder unavailable: GTPro (using default)` sentence followed by `Saved <n> samples -> <default path>  .  log folder: <default folder>`; the file and `.meta.json` are in the default folder only; nothing was written to a relative `GTPro` folder; Preferences still shows the stored value (not silently rewritten).
+8. Clean up: delete the key (or Reset log folder to default) and delete the fixture recordings.
+
+Pass: [ ]  Fail: [ ]  N/A: [ ]  Notes: ____
+
+---
+
+**Run log addendum (Log folder and Open session)**: add the 12 P0 cases of section 7D (LF-02, LF-05, LF-06, LF-07, LF-09, LF-11, LF-14, LF-18, LF-19, LF-20, LF-23, LF-24) to the P0 pass count (after 7A, 7B and 7C the total is 98; with 7D it becomes 110) and record LF-nn ids for any defects. LF-09, LF-11 and LF-24 (steps 5 to 7) need the GT: if they cannot be run on the bench day, record N/A with the reason (covered by `test_setting_is_honoured_and_named_in_tooltip_and_status` and `test_unwritable_setting_falls_back_honestly`, plus the absolute-path test added in the fix round) and carry them to the first truck session; the other nine P0 cases never need the GT.
+
 ## 8. Cross-cutting
 
 ### X-01 Minimum width under 1000 px [1366] - P0
@@ -1671,7 +1980,7 @@ Pass: [ ]  Fail: [ ]
 Pass: [ ]  Fail: [ ]
 
 ### X-11 About and version - P2
-1. Help -> About. Expected: "OpenOBD 0.38.0", vehicle and controller info, and the safety text.
+1. Help -> About. Expected: "OpenOBD 0.39.0", vehicle and controller info, and the safety text.
 
 Pass: [ ]  Fail: [ ]
 
@@ -1692,5 +2001,5 @@ Pass: [ ]  Fail: [ ]
 | Build version | |
 | Screen sizes run | 1366x768 [ ]   1920x1080 [ ] |
 | GT bench run | Yes [ ]   No [ ] |
-| P0 pass count | ___ / 98 |
+| P0 pass count | ___ / 110 |
 | Defects raised (ids) | |
