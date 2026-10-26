@@ -110,6 +110,32 @@ def meta_path(csv_path: str) -> str:
     return stem + META_SUFFIX
 
 
+#: Windows errors that mean "another process has the file open right now"
+#: (ERROR_ACCESS_DENIED 5, ERROR_SHARING_VIOLATION 32): Defender or the
+#: Search indexer scanning the metadata just written. Measured on paxson
+#: 2026-10-26: os.replace over a just-written file failed this way 1 in 400.
+TRANSIENT_WINERRORS = (5, 32)
+#: Sleep before each retry of a transient replace failure (so 1 + 4
+#: attempts; worst case ~0.4 s on the caller's thread).
+REPLACE_BACKOFF_S = (0.02, 0.05, 0.1, 0.2)
+
+
+def _replace_retrying(src: str, dst: str) -> None:
+    """os.replace, retrying ONLY a transient sharing failure (PermissionError
+    with a TRANSIENT_WINERRORS code) a bounded number of times. Any other
+    OSError, and the last transient one, propagates at once: the caller
+    records it and the old document stays intact."""
+    for delay in REPLACE_BACKOFF_S + (None,):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:
+            if (delay is None
+                    or getattr(exc, "winerror", None) not in TRANSIENT_WINERRORS):
+                raise
+        time.sleep(delay)
+
+
 def _is_num(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
@@ -339,7 +365,9 @@ class DriveRecorder:
     def _write_meta(self) -> bool:
         """Atomic rewrite: the whole document to <meta>.tmp, flushed and
         fsynced, then os.replace over the old file. An interruption at any
-        point leaves either the old or the new complete document."""
+        point leaves either the old or the new complete document. A
+        transient Windows sharing failure of the replace is retried
+        (_replace_retrying) before it becomes meta_error."""
         if self.meta_path is None:
             return False
         tmp = self.meta_path + ".tmp"
@@ -348,7 +376,7 @@ class DriveRecorder:
                 fh.write(self._meta_text())
                 fh.flush()
                 os.fsync(fh.fileno())
-            os.replace(tmp, self.meta_path)
+            _replace_retrying(tmp, self.meta_path)
             self.meta_error = None     # the file on disk is current again
             return True
         except (OSError, TypeError, ValueError) as exc:

@@ -57,7 +57,8 @@ import numpy as np
 import pyqtgraph as pg
 
 from . import __version__, editops, theme
-from .appsettings import app_settings
+from .appsettings import (app_settings, read_settings, save_pref,
+                          write_settings)
 from .calspec import Calibration
 from .diagui import DiagnosticsPage
 from .activetests import ActiveTestsPage
@@ -179,13 +180,19 @@ def _pedal_settings_group(vin: str) -> str:
 
 
 def load_pedal_cal(vin: str) -> Optional[PedalCal]:
-    """The stored pedal calibration for a VIN, or None."""
-    st = app_settings()
-    st.beginGroup(_pedal_settings_group(vin))
-    cal = PedalCal.from_dict({"rest": st.value("rest"),
-                              "full": st.value("full"),
-                              "source": st.value("source")})
-    st.endGroup()
+    """The stored pedal calibration for a VIN, or None when none is stored.
+    Raises SettingsReadError when the store reports an error: a value missing
+    from a store that could not be read is NOT "none stored", and treating it
+    so would let a learned value be saved unmerged over the real one."""
+    group = _pedal_settings_group(vin)
+
+    def read(st) -> dict:
+        st.beginGroup(group)
+        vals = {name: st.value(name) for name in ("rest", "full", "source")}
+        st.endGroup()
+        return vals
+    cal = PedalCal.from_dict(read_settings(
+        read, what=f"pedal calibration for VIN {vin}"))
     return None if cal.rest is None and cal.full is None else cal
 
 
@@ -200,16 +207,21 @@ def try_load_pedal_cal(vin: str) -> tuple[Optional[PedalCal], Optional[str]]:
 
 
 def save_pedal_cal(vin: str, cal: PedalCal) -> None:
-    st = app_settings()
-    st.beginGroup(_pedal_settings_group(vin))
-    for name, val in (("rest", cal.rest), ("full", cal.full),
-                      ("source", cal.source)):
-        if val is None:
-            st.remove(name)
-        else:
-            st.setValue(name, val)
-    st.endGroup()
-    st.sync()
+    """Store a VIN's pedal calibration durably, or raise SettingsWriteError
+    (after appsettings' bounded retries): callers must then report it as NOT
+    saved."""
+    group = _pedal_settings_group(vin)
+
+    def apply(st) -> None:
+        st.beginGroup(group)
+        for name, val in (("rest", cal.rest), ("full", cal.full),
+                          ("source", cal.source)):
+            if val is None:
+                st.remove(name)
+            else:
+                st.setValue(name, val)
+        st.endGroup()
+    write_settings(apply, what=f"pedal calibration for VIN {vin}")
 
 
 #: How often the Dashboard looks for the OBDX Pro GT while none is bound.
@@ -337,6 +349,9 @@ class Dashboard(QWidget):
         # Why the stored calibration for _pedal_key could not be READ on
         # this connection; while set, nothing is seeded or saved for it.
         self._pedal_store_error: Optional[str] = None
+        # Why the latest calibration change for _pedal_key could NOT be
+        # saved (cleared by the next successful save); recordings say so.
+        self._pedal_save_error: Optional[str] = None
         # Metadata rewrites (markers, calibration changes, link events) are
         # coalesced: one atomic rewrite at most every 250 ms, so a held M
         # key or a run of calibration updates cannot stall the GUI thread
@@ -562,6 +577,7 @@ class Dashboard(QWidget):
         self._pedal_key = src.vin()
         self._pedal_seen = src.pedal.version
         self._pedal_store_error = None
+        self._pedal_save_error = None
         if self._pedal_key:
             self._seed_from_settings(src, self._pedal_key)
         rec = self._recorder
@@ -592,6 +608,9 @@ class Dashboard(QWidget):
             return (f"settings pedal_cal/{self._pedal_key} UNREADABLE "
                     f"({self._pedal_store_error}): not seeded, not saved "
                     f"this session")
+        if self._pedal_key and self._pedal_save_error:
+            return (f"settings pedal_cal/{self._pedal_key} NOT SAVED "
+                    f"({self._pedal_save_error})")
         return (f"settings pedal_cal/{self._pedal_key}" if self._pedal_key
                 else "session-only (VIN not examined on this connection)")
 
@@ -627,7 +646,9 @@ class Dashboard(QWidget):
         if self._pedal_key and not self._pedal_store_error:
             try:
                 save_pedal_cal(self._pedal_key, cal)
+                self._pedal_save_error = None
             except Exception as exc:       # settings store unavailable
+                self._pedal_save_error = f"{type(exc).__name__}: {exc}"
                 self.status.setText(
                     f"Could not store the pedal calibration: {exc}")
         rec = self._recorder
@@ -1415,6 +1436,7 @@ class Dashboard(QWidget):
             # this connection is identified from here on.
             self._pedal_key = vin
             self._pedal_store_error = None
+            self._pedal_save_error = None
             self._seed_from_settings(src, vin)
         fields = {"vehicle": ident,
                   "dtcs_at_start": ctx.get("dtcs_at_start")}
@@ -1863,7 +1885,7 @@ class MainWindow(QMainWindow):
             return
         style = combo.currentData()
         self.dashboard.set_style(style)
-        self.settings.setValue("dashboard/style", style)
+        save_pref(self.settings, "dashboard/style", style)
         self.statusBar().showMessage(
             f"Dashboard visual: {DASHBOARD_STYLES[style]}", 4000)
 
@@ -2100,8 +2122,8 @@ class MainWindow(QMainWindow):
         self.overlay_panel = CollapsiblePanel(
             "Log overlay", ov, expanded=open_ == "true")
         self.overlay_panel.toggled.connect(
-            lambda on: self.settings.setValue(OVERLAY_PANEL_KEY,
-                                              "true" if on else "false"))
+            lambda on: save_pref(self.settings, OVERLAY_PANEL_KEY,
+                                 "true" if on else "false"))
         body.addWidget(self.overlay_panel, 0)
         lay.addLayout(body, 1)
         self.set_diff_mode(CalTableModel.DIFF_OFF)
@@ -2982,7 +3004,10 @@ class MainWindow(QMainWindow):
         try:
             save_pedal_cal(vin, merged)
         except Exception as exc:
-            self.statusBar().showMessage(f"Could not store it: {exc}", 8000)
+            msg = (f"Pedal calibration {merged.status()} for VIN {vin} was "
+                   f"NOT stored: {exc}")
+            self.statusBar().showMessage(msg, 10000)
+            self.log_report.append("\n" + msg)
             return
         self.log.pedal_cal = merged
         if isinstance(src, GtDataSource) and self.dashboard._pedal_key == vin:

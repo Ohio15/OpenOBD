@@ -3,6 +3,36 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.38.2 — 2026-10-26
+
+### Fixed (transient Windows write failures lost settings silently; brain 8d13ce7f, found in 129af1c0)
+- **Settings writes are checked and retried.** Every QSettings write in
+  OpenOBD now goes through `appsettings.write_settings` (UI preferences
+  through `save_pref`): a FRESH QSettings per attempt, the change re-applied,
+  `status()` checked after `sync()`, and a transient `AccessError` (Defender or
+  the Search indexer holding the INI; about 1 sync in 75 on paxson) retried up
+  to 5 times with a short backoff. Qt 6.11 cannot be left to retry it itself:
+  `QSettings::sync()` clears its pending flag even on failure, a store that was
+  empty drops the unsaved change when its last QSettings is destroyed, and
+  `status()` never returns to NoError on the same object (rationale in
+  `openobd/appsettings.py`).
+- **The pedal calibration is never claimed saved when it was not.**
+  `save_pedal_cal` raises `SettingsWriteError` after the retries; the
+  Dashboard's status line says so, the recording's
+  `pedal_calibration.persistence` reads "NOT SAVED (...)", and Learn reports
+  "NOT stored" without applying the value.
+- **"Store unreadable" is no longer "none stored".** `load_pedal_cal` raises
+  `SettingsReadError` when the store reports an error (retrying a transient
+  one), so `try_load_pedal_cal` returns the error and Learn neither merges with
+  nothing nor saves over the real stored value (the never-loosen invariant).
+- **Recording metadata rewrite retries a transient replace.** The atomic
+  `.meta.json` rewrite retries `os.replace` up to 4 times on a
+  `PermissionError` with winerror 5 / 32 only; any other error still fails at
+  once and is reported in `meta_error`, the old document intact.
+- Tests: `tests/test_settings_persistence.py` injects the failures through the
+  real dependencies (a read-only INI, an exclusively opened INI, a held replace
+  target) and pins the Qt behaviours the fix relies on.
+
 ## 0.38.0 — 2026-10-26
 
 ### Changed (Active Tests tab UX overhaul; cues from HP Tuners VCM Scanner, GM GDS2, Autel special functions)

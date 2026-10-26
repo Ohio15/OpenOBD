@@ -644,8 +644,10 @@ def _settings_groups():
 @pytest.fixture
 def dash(qapp, tmp_path):
     from openobd.app import Dashboard
-    from openobd.appsettings import app_settings
-    app_settings().clear()                    # each test starts unstored
+    from openobd.appsettings import write_settings
+    # each test starts unstored; checked + retried (a bare clear() that
+    # failed transiently left the previous test's calibration behind)
+    write_settings(lambda st: st.clear())
     d = Dashboard()
     d._record_dirs = lambda: [str(tmp_path / "Logs")]
     src = FakeGt()
@@ -964,6 +966,47 @@ def test_an_unreadable_settings_store_is_never_written_over(dash, timed_gt,
     log.meta = {"vehicle": {"vin": {"examined": True, "value": VIN}}}
     msgs = _learn_window(log, d)
     assert "unreadable" in msgs[0] and saved == []
+    d._finalize_record()
+
+
+def test_a_failed_calibration_save_is_reported_never_claimed(dash, timed_gt,
+                                                             monkeypatch):
+    """A save that fails after appsettings' retries: the status line says
+    so and the recording's persistence names it NOT SAVED (it used to claim
+    "settings pedal_cal/<VIN>"); Learn reports NOT stored and does not apply
+    the merged value as if it were."""
+    import openobd.app as appmod
+    from openobd.appsettings import SettingsWriteError
+    d, _old = dash
+    calls = []
+
+    def failing_save(vin, cal):
+        calls.append(vin)
+        raise SettingsWriteError("pedal calibration for VIN x not saved: "
+                                 "AccessError after 5 attempts")
+    monkeypatch.setattr(appmod, "save_pedal_cal", failing_save)
+    g, _clock = timed_gt(pids=TRUCK_PIDS, info=INFO)
+    src = FakeGt(ctx_gt=g)
+    src._new_link()
+    d.bind_source(src)
+    d._bind_gt(src)
+    d.timer.stop()
+    d.toggle_record()
+    rec = d._recorder
+    _calibrate_live(src)
+    d._tick()
+    assert calls == [VIN]
+    assert "Could not store the pedal calibration" in d.status.text()
+    d._flush_meta()
+    pc = read_meta(rec.path)["pedal_calibration"]
+    assert "NOT SAVED" in pc["persistence"]
+    assert "AccessError" in pc["persistence"]
+    log = _drive_log()
+    log.meta = {"vehicle": {"vin": {"examined": True, "value": VIN}}}
+    log.pedal_cal = None
+    msgs = _learn_window(log, d)
+    assert "NOT stored" in msgs[0] and "AccessError" in msgs[0]
+    assert log.pedal_cal is None
     d._finalize_record()
 
 

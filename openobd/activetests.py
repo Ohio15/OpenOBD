@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import ctljournal, theme
-from .appsettings import app_settings
+from .appsettings import app_settings, save_pref
 from .tuningui import (
     Breadcrumb, CollapsiblePanel, empty_state_label, make_toolbar,
     plain_tooltip, repolish,
@@ -179,8 +179,8 @@ class ActiveTestsPage(QWidget):
                                         expanded=not collapsed,
                                         body_width=None, align=Qt.AlignLeft)
         self.sources.toggled.connect(
-            lambda on: self.settings.setValue(
-                SOURCES_COLLAPSED_KEY, "false" if on else "true"))
+            lambda on: save_pref(self.settings, SOURCES_COLLAPSED_KEY,
+                                 "false" if on else "true"))
         body.addWidget(self.sources)
         root.addLayout(body, 1)
 
@@ -245,7 +245,7 @@ class ActiveTestsPage(QWidget):
         return str(self.show_combo.currentData())
 
     def _on_show_changed(self, *_a) -> None:
-        self.settings.setValue(SHOW_KEY, self.show_mode())
+        save_pref(self.settings, SHOW_KEY, self.show_mode())
         self._fill_table()
 
     def verdict(self) -> str:
