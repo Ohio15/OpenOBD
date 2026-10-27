@@ -3,6 +3,51 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.40.0 (unreleased)
+
+### Added
+- **Device-control catalog schema v2 (inert data layer for Active Tests).**
+  `openobd/data/controls.json` now carries `"schema_version": 2`, and every
+  captured control records its role (command or release), hazard class
+  (0 body outputs, 1 powertrain stationary, 2 mechanical motion), Phase 1
+  tier, the release that hands it back to the module, recovery steps for the
+  transfer case motor drive, its interlock profile (Park read from the TCM
+  range signal, parking brake, stopped, RPM window, 12.0–15.5 V) and its
+  admission state (decoded output name, bench verified). The TCCM learn is
+  excluded from the live set with its reason.
+- `openobd/controls.py` loads and validates the catalog and decides live
+  eligibility in code. A control is offered only when it is in an admitted
+  tier (Tier 0, the BCM, at this release), decoded to a named output, bench
+  verified with the observed result written down, not drive capable, and its
+  release and every recovery step are eligible too. Nothing is eligible
+  today: no control has been decoded or bench verified yet, so the transfer
+  case motor drive in particular stays out while the TCCM learn is excluded.
+- Every entry records its diagnostic dialect (`gmlan` for every capture so
+  far). The six names that were filled in from Autel labels and observed
+  actuator travel are back to undecoded: those are not decodes.
+- The loader refuses: an unknown or misspelled key at any level; duplicate
+  JSON keys; two entries with the same bus, module and request; a decoded
+  name on an entry still carrying a capture label; bench verified without an
+  observed result; an RPM window other than the module default (BCM 0 rpm,
+  TCM/TCCM 400–1200 rpm) or no range signal without a written justification;
+  any battery window other than 12.0–15.5 V; a release that is not a
+  captured positive AE00, or its CPID with every following byte cleared (a
+  "commanded OFF" is never a release); nested recovery steps.
+
+### Changed
+- **`devctl --run` only fires admitted controls.** It loads the schema-v2
+  catalog and refuses, with the reasons, any control that is not eligible,
+  before the adapter is opened. Today that is every control.
+- **`devctl` interlocks follow the control's profile (D3).** RPM window per
+  control (BCM controls now run engine off instead of being refused), battery
+  12.0–15.5 V, vehicle speed 0 on two reads in a row, the range read as PARK
+  from the TCM (refused while no PRNDL request has been captured, never taken
+  on attestation alone), and the prompt asks for PARK and the parking brake.
+  The phrase is now "ACTUATE <id> IN PARK". Neutral is gone.
+- `devctl --import` adds newly captured controls as excluded and unclassified
+  under schema v2 with the module's RPM default, and refuses to write a
+  catalog that would not load.
+
 ## 0.39.1 — 2026-10-26
 
 ### Fixed

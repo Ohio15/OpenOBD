@@ -1,4 +1,6 @@
 """Gated device control (openobd.devctl) against a fake raw-CAN truck."""
+import dataclasses
+import json
 import pathlib
 import sys
 
@@ -6,6 +8,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+from openobd import controls as cc  # noqa: E402
 from openobd import devctl as dc  # noqa: E402
 
 ENTRY = {"id": "7E4-AE03-1", "module": "7E4", "request": "AE0302020000",
@@ -20,12 +23,14 @@ class FakeTruck:
     """ECM answers rpm/speed; TCCM answers $2C, streams on $AA, and answers
     the device control with `devctl_reply` frames."""
     def __init__(self, rpm=700, kph=0, devctl_reply=("EE03",),
-                 speed_seq=None):
+                 speed_seq=None, volts=13.8):
         self.rpm, self.kph, self.devctl_reply = rpm, kph, devctl_reply
+        self.volts = volts
         self.speed_seq = list(speed_seq or [])
         self.calls, self.q = [], []
 
     def open(self): self.calls.append("open")
+    def read_vbatt(self): return self.volts
     def close(self): self.calls.append("close")
     def connect(self, proto, baud, flags=0): return 7
     def disconnect(self, ch): self.calls.append(("disconnect", ch))
@@ -76,6 +81,47 @@ def no(plan, phrase):
     return False
 
 
+def reader(value):
+    """A RangeReader that sends nothing and reports `value`."""
+    return dc.RangeReader("tcm_prndl", lambda cid, p: False, (), lambda w: value)
+
+
+PARK = {"tcm_prndl": reader("PARK")}
+
+
+def admitted(entry, rpm=(400, 1200), **fields):
+    """Wrap a test entry as an ADMITTED schema-v2 control: decoded, bench
+    verified, tier 0, paired to a decoded+verified AE00 release on the same
+    module.
+    `fields` patch the command entry. Returns (ControlEntry, ControlsCatalog)."""
+    profile = {"range_required": "PARK", "range_signal": "tcm_prndl",
+               "parking_brake_attested": True, "speed_max_kph": 0,
+               "rpm_window": list(rpm), "voltage_window": [12.0, 15.5]}
+    common = {"bus": entry.get("bus", "hs"), "module": entry["module"],
+              "max_seconds": entry.get("max_seconds", 20), "hazard_class": 0,
+              "tier": 0, "interlock_profile": profile, "drive_capable": False,
+              "dialect": "gmlan", "observed_outcome": "positive",
+              "profile_justification": "test fixture"}
+    release = {**common, "id": "REL", "request": "AE00", "cpid": "00",
+               "name": "return path", "role": "release", "release_pair": None,
+               "admission": {"decoded_name": "return to normal",
+                             "bench_verified": True,
+                             "observed_result": "output returned to normal"}}
+    command = {**common, **entry, "role": "command", "release_pair": "REL",
+               "admission": {"decoded_name": "test output",
+                             "bench_verified": True,
+                             "observed_result": "output actuated"}}
+    command.setdefault("status", "captured")
+    command.update(fields)
+    cat = cc.parse_controls({"schema_version": 2, "controls": [release, command]})
+    return cat[entry["id"]], cat
+
+
+def run(fake, entry, confirm, readers=PARK, rpm=(400, 1200), **kw):
+    e, cat = admitted(entry, rpm)
+    return dc.run_control(fake, e, cat, confirm, range_readers=readers, **kw)
+
+
 # -- import ------------------------------------------------------------------ #
 def test_import_extracts_the_autel_exchange_with_its_outcome():
     recs = [{"t": 13.521, "id": "7E4", "data": "06AE030202000000"},
@@ -123,30 +169,33 @@ def test_merge_is_idempotent():
 # -- refusals before anything actuates -------------------------------------- #
 def test_engine_off_refuses_without_sending_the_control():
     fake = FakeTruck(rpm=0)
-    res = dc.run_control(fake, ENTRY, yes, clock=clock_ticks())
+    res = run(fake, ENTRY, yes, clock=clock_ticks())
     assert res["sent"] is False and "engine not running" in res["aborted"]
     assert ("7E4", "AE0302020000") not in sent(fake)
 
 
 def test_moving_vehicle_refuses():
-    res = dc.run_control(FakeTruck(kph=5), ENTRY, yes, clock=clock_ticks())
+    res = run(FakeTruck(kph=5), ENTRY, yes, clock=clock_ticks())
     assert res["sent"] is False and "moving" in res["aborted"]
 
 
 def test_no_confirmation_refuses():
     fake = FakeTruck()
-    res = dc.run_control(fake, ENTRY, no, clock=clock_ticks())
+    res = run(fake, ENTRY, no, clock=clock_ticks())
     assert res["sent"] is False and res["aborted"] == "not confirmed"
     assert ("7E4", "AE0302020000") not in sent(fake)
 
 
 def test_non_devctl_entry_and_unknown_module_refused():
+    e, cat = admitted(ENTRY)
     with pytest.raises(dc.Refused):
-        dc.run_control(FakeTruck(), {**ENTRY, "request": "0400"}, yes)
+        dc.run_control(FakeTruck(), dataclasses.replace(e, request="0400"), cat,
+                       yes, range_readers=PARK)
     with pytest.raises(dc.Refused):
-        dc.run_control(FakeTruck(), {**ENTRY, "module": "7E7"}, yes)
+        run(FakeTruck(), {**ENTRY, "module": "7E7"}, yes)
     with pytest.raises(dc.Refused):
-        dc.run_control(FakeTruck(), {**ENTRY, "request": "AE" + "00" * 8}, yes)
+        dc.run_control(FakeTruck(), dataclasses.replace(e, request="AE03" + "00" * 7),
+                       cat, yes, range_readers=PARK)
 
 
 def test_tty_confirm_refuses_without_a_terminal(monkeypatch):
@@ -159,7 +208,7 @@ def test_tty_confirm_refuses_without_a_terminal(monkeypatch):
 # -- the run ------------------------------------------------------------------ #
 def test_run_sends_exact_bytes_streams_and_always_returns_control():
     fake = FakeTruck(devctl_reply=("EE03",))
-    res = dc.run_control(fake, ENTRY, yes, seconds=1.0, clock=clock_ticks())
+    res = run(fake, ENTRY, yes, seconds=1.0, clock=clock_ticks())
     assert res["sent"] is True and res["outcome"] == "positive"
     assert res["returned_to_normal"] is True
     s = sent(fake)
@@ -171,14 +220,14 @@ def test_run_sends_exact_bytes_streams_and_always_returns_control():
 
 def test_module_refusal_stops_and_returns_control_with_detail():
     fake = FakeTruck(devctl_reply=("EE03", "7FAEE3000A"))
-    res = dc.run_control(fake, ENTRY, yes, seconds=5.0, clock=clock_ticks())
+    res = run(fake, ENTRY, yes, seconds=5.0, clock=clock_ticks())
     assert res["outcome"] == "negative:E3" and res["detail"] == "000A"
     assert sent(fake)[-2:] == [("7E4", "20"), ("7E4", "AA00")]
 
 
 def test_motion_during_run_aborts_and_returns_control():
     fake = FakeTruck(speed_seq=[0, 0, 3, 3, 3])
-    res = dc.run_control(fake, ENTRY, yes, seconds=10.0, clock=clock_ticks(0.5))
+    res = run(fake, ENTRY, yes, seconds=10.0, clock=clock_ticks(0.5))
     assert res["sent"] is True and "speed" in res["aborted"]
     assert sent(fake)[-2:] == [("7E4", "20"), ("7E4", "AA00")]
 
@@ -193,7 +242,7 @@ def test_allowlist_blocks_everything_else_on_the_wire():
         return orig(self, cid, payload)
     dc.Wire.send = spy
     try:
-        dc.run_control(fake, ENTRY, yes, seconds=0.5, clock=clock_ticks())
+        run(fake, ENTRY, yes, seconds=0.5, clock=clock_ticks())
         w = dc.Wire(fake, lambda c, p: False, [0x7EC])
         w.jt = __import__("openobd.j2534", fromlist=["CAN"])
         w.ch = 1
@@ -260,7 +309,7 @@ SW_ENTRY = {"id": "SW-24D-AE05-2", "bus": "sw", "module": "24D",
 def test_sw_run_checks_interlocks_on_hs_then_actuates_on_the_body_bus():
     from openobd import j2534 as jt
     fake = FakeBothBuses()
-    res = dc.run_control(fake, SW_ENTRY, yes, seconds=0.5, clock=clock_ticks())
+    res = run(fake, SW_ENTRY, yes, seconds=0.5, clock=clock_ticks())
     assert res["sent"] is True and res["outcome"] == "positive"
     assert res["motion_monitoring"] is False
     ev = fake.events
@@ -280,14 +329,14 @@ def test_sw_run_checks_interlocks_on_hs_then_actuates_on_the_body_bus():
 def test_sw_run_refuses_when_hs_interlocks_fail_and_never_touches_sw():
     from openobd import j2534 as jt
     fake = FakeBothBuses(rpm=0)
-    res = dc.run_control(fake, SW_ENTRY, yes, clock=clock_ticks())
+    res = run(fake, SW_ENTRY, yes, clock=clock_ticks())
     assert res["sent"] is False and "engine not running" in res["aborted"]
     assert ("connect", jt.SW_CAN_PS, jt.SW_CAN_BAUD) not in fake.events
 
 
 def test_sw_unknown_address_refused():
     with pytest.raises(dc.Refused):
-        dc.run_control(FakeBothBuses(), {**SW_ENTRY, "module": "7E4"}, yes)
+        run(FakeBothBuses(), {**SW_ENTRY, "module": "7E4"}, yes)
 
 
 def test_list_is_numbered_and_named(capsys):
@@ -297,24 +346,184 @@ def test_list_is_numbered_and_named(capsys):
     assert "TCCM (transfer case)" in out and "Enter the NUMBER" in out
 
 
-def test_run_accepts_the_list_number(monkeypatch):
+def _admit_bcm_pair(doc):
+    """Pretend 241-AE13-17 and its release were decoded and bench-verified
+    (names rewritten off their capture labels, evidence recorded)."""
+    for c in doc["controls"]:
+        if c["id"] == "241-AE00-19":
+            c["name"] = "BCM return all device controls to normal"
+            c["admission"] = {"decoded_name": "return all to normal",
+                              "bench_verified": True,
+                              "observed_result": "test lamp went out"}
+        if c["id"] == "241-AE13-17":
+            c["name"] = "BCM test lamp ON"
+            c["admission"] = {"decoded_name": "test lamp",
+                              "bench_verified": True,
+                              "observed_result": "test lamp lit"}
+
+
+def test_run_accepts_the_list_number(monkeypatch, tmp_path):
     seen = {}
 
-    def fake_run(j, entry, confirm, seconds=None):
-        seen["id"] = entry["id"]
+    def fake_run(j, entry, catalog, confirm, seconds=None):
+        seen["id"] = entry.id
         return {"sent": False, "outcome": None, "aborted": "not confirmed",
                 "returned_to_normal": True, "samples": []}
 
     class J:
         pass
+    with open(cc.DEFAULT_PATH, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    _admit_bcm_pair(doc)
+    p = tmp_path / "controls.json"
+    p.write_text(json.dumps(doc), encoding="utf-8")
+    monkeypatch.setattr(dc, "CATALOG_PATH", str(p))
+    monkeypatch.setattr(dc, "RANGE_READERS", PARK)
     monkeypatch.setattr(dc, "run_control", fake_run)
     import openobd.j2534 as jt
     monkeypatch.setattr(jt, "J2534", lambda *a, **k: J())
-    monkeypatch.chdir(pathlib.Path(__file__).resolve().parent)
-    dc.main(["--run", "1"])
-    assert seen["id"] == "7E4-AE03-1"
-    for f in pathlib.Path(__file__).resolve().parent.glob("devctl-7E4-AE03-1-*.json"):
-        f.unlink()
+    monkeypatch.chdir(tmp_path)
+    n = [c["id"] for c in doc["controls"]].index("241-AE13-17") + 1
+    dc.main(["--run", str(n)])
+    assert seen["id"] == "241-AE13-17"
+
+
+@pytest.mark.parametrize("cid, why", [
+    ("7E4-AE03-1", "excluded (tier null)"),
+    ("241-AE10-26", "not decoded to a named physical output"),
+    ("7E4-AE01-10", "recovery step 7E4-AE03-1 is not eligible"),
+    ("7E2-AE30-11", "tier 1 is not admitted"),
+])
+def test_run_refuses_unadmitted_entry_before_opening_the_adapter(
+        monkeypatch, capsys, cid, why):
+    import openobd.j2534 as jt
+    opened = []
+    monkeypatch.setattr(jt, "J2534", lambda *a, **k: opened.append(1))
+    monkeypatch.setattr(dc, "run_control",
+                        lambda *a, **k: pytest.fail("run_control reached"))
+    assert dc.main(["--run", cid]) == 2
+    out = capsys.readouterr().out
+    assert "REFUSED" in out and why in out
+    assert opened == []
+
+
+def test_run_refuses_without_a_range_reader_before_opening(monkeypatch, capsys,
+                                                           tmp_path):
+    with open(cc.DEFAULT_PATH, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    _admit_bcm_pair(doc)
+    p = tmp_path / "controls.json"
+    p.write_text(json.dumps(doc), encoding="utf-8")
+    monkeypatch.setattr(dc, "CATALOG_PATH", str(p))
+    import openobd.j2534 as jt
+    opened = []
+    monkeypatch.setattr(jt, "J2534", lambda *a, **k: opened.append(1))
+    assert dc.RANGE_READERS == {}            # nothing captured: none shipped
+    assert dc.main(["--run", "241-AE13-17"]) == 2
+    assert "no reader for range signal" in capsys.readouterr().out
+    assert opened == []
+
+
+def test_run_control_refuses_unadmitted_entry_itself():
+    fake = FakeTruck()
+    e, cat = admitted(ENTRY, admission={"decoded_name": "x",
+                                        "bench_verified": False,
+                                        "observed_result": None})
+    with pytest.raises(dc.Refused, match="not bench-verified"):
+        dc.run_control(fake, e, cat, yes, range_readers=PARK)
+    assert "open" not in fake.calls
+
+
+def test_run_control_refuses_without_range_reader_before_open():
+    fake = FakeTruck()
+    with pytest.raises(dc.Refused, match="not only attested"):
+        run(fake, ENTRY, yes, readers={})
+    assert "open" not in fake.calls
+
+
+# -- D3 interlock profile ---------------------------------------------------- #
+BCM_ENTRY = {"id": "B-1", "module": "241", "request": "AE130101000000",
+             "cpid": "13", "name": "bcm test", "max_seconds": 1}
+
+
+def test_koeo_control_runs_with_engine_off_and_refuses_engine_running():
+    res = run(FakeTruck(rpm=0), BCM_ENTRY, yes, rpm=(0, 0), seconds=0.5,
+              clock=clock_ticks())
+    assert res["sent"] is True
+    res = run(FakeTruck(rpm=700), BCM_ENTRY, yes, rpm=(0, 0),
+              clock=clock_ticks())
+    assert res["sent"] is False and "key-on engine-off" in res["aborted"]
+
+
+def test_rpm_above_window_refuses():
+    res = run(FakeTruck(rpm=2500), ENTRY, yes, clock=clock_ticks())
+    assert res["sent"] is False and "too high" in res["aborted"]
+
+
+def test_speed_is_read_twice_and_both_must_be_zero():
+    fake = FakeTruck(speed_seq=[0, 4])
+    res = run(fake, ENTRY, yes, clock=clock_ticks())
+    assert res["sent"] is False and "second read" in res["aborted"]
+    assert sent(fake).count(("7E0", "010D")) == 2
+
+
+def test_range_must_read_park():
+    fake = FakeTruck()
+    res = run(fake, ENTRY, yes, readers={"tcm_prndl": reader("NEUTRAL")},
+              clock=clock_ticks())
+    assert res["sent"] is False and "needs PARK" in res["aborted"]
+    res = run(FakeTruck(), ENTRY, yes, readers={"tcm_prndl": reader(None)},
+              clock=clock_ticks())
+    assert res["sent"] is False and "unreadable" in res["aborted"]
+
+
+def test_battery_outside_window_refuses():
+    res = run(FakeTruck(volts=11.2), ENTRY, yes, clock=clock_ticks())
+    assert res["sent"] is False and "outside 12.0-15.5 V" in res["aborted"]
+
+
+def test_prompt_is_park_and_parking_brake():
+    seen = {}
+
+    def capture(plan, phrase):
+        seen["plan"], seen["phrase"] = plan, phrase
+        return False
+    run(FakeTruck(), ENTRY, capture, clock=clock_ticks())
+    assert seen["phrase"] == f"ACTUATE {ENTRY['id']} IN PARK"
+    assert "PARKING BRAKE" in seen["plan"] and "NEUTRAL" not in seen["plan"]
+
+
+# -- --import writes only a catalog that loads ------------------------------- #
+def _capture(path, req_frame, resp_frame):
+    recs = [{"t": 1.0, "id": "7E4", "data": req_frame},
+            {"t": 1.01, "id": "7EC", "data": resp_frame}]
+    path.write_text("\n".join(json.dumps(r) for r in recs), encoding="utf-8")
+
+
+def test_import_round_trip_writes_a_loadable_catalog(monkeypatch, tmp_path):
+    p = tmp_path / "controls.json"
+    p.write_text(pathlib.Path(cc.DEFAULT_PATH).read_text(encoding="utf-8"),
+                 encoding="utf-8")
+    monkeypatch.setattr(dc, "CATALOG_PATH", str(p))
+    cap = tmp_path / "cap.jsonl"
+    _capture(cap, "04AE050100000000", "02EE050000000000")
+    assert dc.main(["--import", str(cap)]) == 0
+    cat = cc.load_controls(str(p))
+    e = cat["7E4-AE05-28"]
+    assert e.excluded and e.interlock_profile.rpm_window == (400, 1200)
+
+
+def test_import_refuses_to_write_an_unloadable_catalog(monkeypatch, tmp_path,
+                                                       capsys):
+    p = tmp_path / "controls.json"
+    original = pathlib.Path(cc.DEFAULT_PATH).read_text(encoding="utf-8")
+    p.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(dc, "CATALOG_PATH", str(p))
+    cap = tmp_path / "cap.jsonl"
+    _capture(cap, "01AE000000000000", "01EE000000000000")   # bare $AE: no CPID
+    assert dc.main(["--import", str(cap)]) == 2
+    assert "nothing written" in capsys.readouterr().out
+    assert p.read_text(encoding="utf-8") == original
 
 
 def test_shipped_catalog_has_the_captured_tccm_control():
@@ -322,3 +531,20 @@ def test_shipped_catalog_has_the_captured_tccm_control():
     ids = {c["id"]: c for c in cat["controls"]}
     assert ids["7E4-AE03-1"]["request"] == "AE0302020000"
     assert ids["7E4-AE03-1"]["status"] == "captured"
+
+
+def test_attestation_only_profile_runs_without_a_reader():
+    # Only a catalog entry that declares no range signal, with a written
+    # justification, runs on attestation; the plan says the range was not read.
+    seen = {}
+
+    def capture(plan, phrase):
+        seen["plan"] = plan
+        return False
+    e, cat = admitted(ENTRY)
+    profile = dataclasses.replace(e.interlock_profile, range_signal=None)
+    e = dataclasses.replace(e, interlock_profile=profile)
+    res = dc.run_control(FakeTruck(), e, cat, capture, range_readers={},
+                         clock=clock_ticks())
+    assert res["aborted"] == "not confirmed"
+    assert "NOT READ (attestation only: test fixture)" in seen["plan"]

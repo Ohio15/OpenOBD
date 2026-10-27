@@ -9,11 +9,21 @@ actuates the moment it arrives. So nothing here invents or guesses a control.
 and extracts every $AE exchange it saw; those land in openobd/data/
 controls.json as status "captured" until they have run here.
 
-WHAT RUNS. `--run ID` replays the catalog entry's request BYTE FOR BYTE. Before
-sending it:
-  * interlocks are READ from the vehicle: engine running (ECM PID 0C) and
-    vehicle stopped (ECM PID 0D == 0); the transmission in Neutral cannot be
-    measured on this path and is ATTESTED by the operator in the confirmation;
+WHAT RUNS. `--run ID` replays the catalog entry's request BYTE FOR BYTE, and
+only for an entry the schema-v2 catalog admits (openobd.controls: decoded,
+bench-verified, in a tier, not drive-capable, with an eligible release and
+eligible recovery steps -- decision D1 d7fedb9f). Anything else is refused
+before the adapter is opened. Before sending it (decision D3 e2c962dd), from
+the entry's interlock_profile:
+  * the battery voltage (adapter) is inside voltage_window;
+  * engine speed (ECM PID 0C) is inside rpm_window ([0, 0] = engine off);
+  * vehicle speed (ECM PID 0D) is at most speed_max_kph on TWO consecutive
+    reads, so one stale frame cannot pass as a stop;
+  * the range (PARK) is READ from range_signal by a registered RangeReader --
+    with no reader for the signal the run is refused, never attested only;
+    only a profile that declares no range signal (with a written
+    profile_justification in the catalog) runs on attestation alone -- and
+    the operator attests PARK and the parking brake in every case;
   * the operator types an exact confirmation phrase at an interactive terminal
     (refused when stdin is not a TTY -- no script can approve an actuation).
 While it runs: TesterPresent every 1 s, vehicle speed re-read every 1 s (any
@@ -34,7 +44,10 @@ import json
 import os
 import sys
 import time
+from dataclasses import dataclass
 from typing import Callable, Optional
+
+from . import controls as catalog_schema
 
 CATALOG_PATH = os.path.join(os.path.dirname(__file__), "data", "controls.json")
 ECM_REQ, ECM_RESP = 0x7E0, 0x7E8
@@ -164,11 +177,12 @@ def load_catalog(path: str = CATALOG_PATH) -> dict:
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
     except FileNotFoundError:
-        return {"controls": []}
+        return {"schema_version": catalog_schema.SCHEMA_VERSION, "controls": []}
 
 
 def merge_into_catalog(catalog: dict, exchanges: list, source: str) -> list:
-    """Add each new (module, request) as status 'captured'. Returns new ids."""
+    """Add each new (module, request) as status 'captured', excluded from the
+    live set (schema v2 unclassified fields). Returns new ids."""
     have = {(c.get("bus", "hs"), c["module"], c["request"])
             for c in catalog["controls"]}
     new = []
@@ -191,7 +205,9 @@ def merge_into_catalog(catalog: dict, exchanges: list, source: str) -> list:
             "status": "captured", "source": source,
             "observed_outcome": ex["outcome"], "observed_response": ex["response"],
             "observed_counts": {ex["outcome"]: 1},
-            "max_seconds": 20})
+            "max_seconds": 20,
+            # schema v2: excluded until a person classifies it (D1)
+            **catalog_schema.unclassified_fields(ex["module"], bus)})
         have.add(key)
         new.append(cid)
     return new
@@ -302,33 +318,83 @@ class Wire:
         return None
 
 
-def read_interlocks(w: Wire) -> dict:
-    """Engine speed and vehicle speed from the ECM (OBD mode 01)."""
-    out = {"rpm": None, "kph": None}
+@dataclass(frozen=True)
+class RangeReader:
+    """Reads the transmission range for one interlock_profile.range_signal.
+    `allow` admits exactly the requests the read sends; `response_ids` are the
+    CAN ids it listens on; `read` returns the range name ("PARK", ...) or None
+    when it cannot tell."""
+    signal: str
+    allow: Callable[[int, bytes], bool]
+    response_ids: tuple
+    read: Callable[["Wire"], Optional[str]]
+
+
+#: Range readers by signal name. EMPTY on purpose: no TCM PRNDL request has
+#: been captured on this truck, and a request is never invented (D1). Until
+#: one is captured and registered here, every control whose profile names a
+#: range signal is refused rather than run on attestation alone (D3).
+RANGE_READERS: dict = {}
+
+
+def _read_kph(w: Wire) -> Optional[int]:
+    r = w.ask(ECM_REQ, b"\x01\x0d", ECM_RESP)
+    if r and r[:2] == b"\x41\x0d" and len(r) >= 3:
+        return r[2]
+    return None
+
+
+def read_interlocks(w: Wire, range_reader: Optional[RangeReader] = None) -> dict:
+    """Battery voltage (adapter), engine speed and vehicle speed twice in a
+    row (ECM, OBD mode 01), and the range when a reader is given."""
+    out = {"volts": None, "rpm": None, "kph": None, "kph_confirm": None,
+           "range": None}
+    try:
+        out["volts"] = float(w.j.read_vbatt())
+    except Exception:                                         # noqa: BLE001
+        out["volts"] = None
     r = w.ask(ECM_REQ, b"\x01\x0c", ECM_RESP)
     if r and r[:2] == b"\x41\x0c" and len(r) >= 4:
         out["rpm"] = ((r[2] << 8) | r[3]) / 4
-    r = w.ask(ECM_REQ, b"\x01\x0d", ECM_RESP)
-    if r and r[:2] == b"\x41\x0d" and len(r) >= 3:
-        out["kph"] = r[2]
+    out["kph"] = _read_kph(w)
+    out["kph_confirm"] = _read_kph(w)
+    if range_reader is not None:
+        out["range"] = range_reader.read(w)
     return out
 
 
-def interlock_problems(il: dict) -> list:
+def interlock_problems(il: dict, profile) -> list:
+    """Every way the readings miss the entry's interlock_profile (D3)."""
     p = []
+    lo_v, hi_v = profile.voltage_window
+    if il["volts"] is None:
+        p.append("battery voltage unreadable")
+    elif not lo_v <= il["volts"] <= hi_v:
+        p.append(f"battery {il['volts']:.1f} V outside {lo_v:.1f}-{hi_v:.1f} V")
+    lo, hi = profile.rpm_window
     if il["rpm"] is None:
         p.append("engine speed unreadable (ECM did not answer PID 0C)")
-    elif il["rpm"] < 400:
-        p.append(f"engine not running (rpm {il['rpm']:.0f})")
-    if il["kph"] is None:
-        p.append("vehicle speed unreadable (ECM did not answer PID 0D)")
-    elif il["kph"] != 0:
-        p.append(f"vehicle moving ({il['kph']} km/h)")
+    elif profile.koeo and il["rpm"] != 0:
+        p.append(f"engine running (rpm {il['rpm']:.0f}); this control is "
+                 "key-on engine-off")
+    elif not profile.koeo and il["rpm"] < lo:
+        p.append(f"engine not running (rpm {il['rpm']:.0f}, needs {lo}-{hi})")
+    elif not profile.koeo and il["rpm"] > hi:
+        p.append(f"engine speed too high (rpm {il['rpm']:.0f}, needs {lo}-{hi})")
+    for key, label in (("kph", "first"), ("kph_confirm", "second")):
+        if il[key] is None:
+            p.append(f"vehicle speed unreadable on the {label} read "
+                     "(ECM did not answer PID 0D)")
+        elif il[key] > profile.speed_max_kph:
+            p.append(f"vehicle moving ({il[key]} km/h on the {label} read)")
+    if profile.range_signal is not None and il["range"] != profile.range_required:
+        p.append(f"transmission range is {il['range'] or 'unreadable'}, "
+                 f"needs {profile.range_required}")
     return p
 
 
-def confirm_phrase(entry: dict) -> str:
-    return f"ACTUATE {entry['id']} IN NEUTRAL"
+def confirm_phrase(entry) -> str:
+    return f"ACTUATE {entry.id} IN {entry.interlock_profile.range_required}"
 
 
 def tty_confirm(prompt: str, phrase: str) -> bool:
@@ -343,23 +409,39 @@ def tty_confirm(prompt: str, phrase: str) -> bool:
     return typed.strip() == phrase
 
 
-def run_control(j, entry: dict, confirm: Callable[[str, str], bool],
+def run_control(j, entry, catalog, confirm: Callable[[str, str], bool],
                 seconds: Optional[float] = None,
-                clock: Callable[[], float] = time.monotonic) -> dict:
-    """Execute one catalog entry under interlocks + confirmation, ALWAYS
-    returning control ($20) on exit. Returns a result record."""
-    bus = entry.get("bus", "hs")
-    req = int(entry["module"], 16)
+                clock: Callable[[], float] = time.monotonic,
+                range_readers: Optional[dict] = None) -> dict:
+    """Execute one admitted catalog entry (openobd.controls.ControlEntry from
+    `catalog`) under its interlock profile + confirmation, ALWAYS returning
+    control ($20) on exit. Returns a result record. Refuses (Refused, nothing
+    opened) an entry the catalog does not admit or whose range signal has no
+    reader."""
+    why = catalog_schema.ineligibility_reasons(entry, catalog)
+    if why:
+        raise Refused(f"{entry.id} is not admitted for live firing: "
+                      + "; ".join(why))
+    profile = entry.interlock_profile
+    readers = RANGE_READERS if range_readers is None else range_readers
+    range_reader = (None if profile.range_signal is None
+                    else readers.get(profile.range_signal))
+    if profile.range_signal is not None and range_reader is None:
+        raise Refused(f"no reader for range signal {profile.range_signal!r}: "
+                      f"{profile.range_required} must be read from the vehicle, "
+                      "not only attested (D3)")
+    bus = entry.bus
+    req = int(entry.module, 16)
     info = module_info(bus, req)
     if info is None:
-        raise Refused(f"module {entry['module']} on bus {bus} is not a known "
+        raise Refused(f"module {entry.module} on bus {bus} is not a known "
                       "module here")
     resp, uudt, name = info
-    request = bytes.fromhex(entry["request"])
+    request = bytes.fromhex(entry.request)
     if not request or request[0] != SID_DEVCTL:
         raise Refused("catalog entry is not a device-control ($AE) request")
     single_frame(request)                       # refuses multi-frame up front
-    seconds = min(float(seconds or entry.get("max_seconds", 20)), 60.0)
+    seconds = min(float(seconds or entry.max_seconds), 60.0)
     stream = None
     if bus == "hs" and req == 0x7E4:
         from . import tccmprobe
@@ -372,6 +454,8 @@ def run_control(j, entry: dict, confirm: Callable[[str, str], bool],
             return True
         if cid == ECM_REQ and p in (b"\x01\x0c", b"\x01\x0d"):
             return True
+        if range_reader is not None and range_reader.allow(cid, p):
+            return True
         if stream and cid == req and p[:1] == b"\x2c" and \
                 p[1] in stream.DPIDS and \
                 p == stream.define_dpid_request(p[1], stream.DPIDS[p[1]]):
@@ -381,8 +465,8 @@ def run_control(j, entry: dict, confirm: Callable[[str, str], bool],
             return True
         return False
 
-    result = {"id": entry["id"], "bus": bus, "module": name,
-              "request": entry["request"], "sent": False, "outcome": None,
+    result = {"id": entry.id, "bus": bus, "module": name,
+              "request": entry.request, "sent": False, "outcome": None,
               "aborted": None, "samples": [], "interlocks": None,
               "returned_to_normal": False, "frames": [],
               "motion_monitoring": bus == "hs"}
@@ -390,23 +474,33 @@ def run_control(j, entry: dict, confirm: Callable[[str, str], bool],
     # them on HS first, then moves the SAME device session to the body bus;
     # on SW the vehicle speed cannot be re-read during the run.
     first_ids = [resp, uudt, ECM_RESP] if bus == "hs" else [ECM_RESP]
+    if range_reader is not None:
+        first_ids += [i for i in range_reader.response_ids if i not in first_ids]
     w = Wire(j, allow, first_ids, clock=clock, bus="hs")
     with w:
         try:
-            il = read_interlocks(w)
+            il = read_interlocks(w, range_reader)
             result["interlocks"] = il
-            probs = interlock_problems(il)
+            probs = interlock_problems(il, profile)
             if probs:
                 result["aborted"] = "interlock: " + "; ".join(probs)
                 return result
             plan = (f"\nDEVICE CONTROL -- this MOVES hardware.\n"
-                    f"  module   {name} ({entry['module']})\n"
-                    f"  request  {entry['request']}  ({entry.get('name')})\n"
-                    f"  source   {entry.get('source')}  status {entry.get('status')}\n"
-                    f"  engine   {il['rpm']:.0f} rpm, vehicle stopped\n"
+                    f"  control  {entry.admission.decoded_name}\n"
+                    f"  module   {name} ({entry.module})\n"
+                    f"  request  {entry.request}  ({entry.name})\n"
+                    f"  source   {entry.source}  status {entry.status}\n"
+                    f"  engine   {il['rpm']:.0f} rpm, vehicle stopped "
+                    f"(2 reads), range "
+                    + (f"{il['range']} read from {profile.range_signal}"
+                       if profile.range_signal is not None
+                       else "NOT READ (attestation only: "
+                            f"{entry.profile_justification})")
+                    + f", battery {il['volts']:.1f} V\n"
                     f"  limit    {seconds:.0f} s, then control is returned ($20)\n"
-                    f"  YOU confirm the transmission is in NEUTRAL, foot on the "
-                    f"brake, nobody near the driveline.")
+                    f"  YOU confirm the transmission is in "
+                    f"{profile.range_required}, the PARKING BRAKE is applied, "
+                    f"and nobody is near the driveline.")
             if bus == "sw":
                 plan += ("\n  NOTE: body-bus control -- vehicle speed is checked "
                          "before the run but CANNOT be re-read during it.")
@@ -445,9 +539,9 @@ def run_control(j, entry: dict, confirm: Callable[[str, str], bool],
                     w.send(req, b"\x3e")
                     last_tp = now
                 if bus == "hs" and now - last_il >= 1.0:
-                    il = read_interlocks(w)
-                    if il["kph"] is None or il["kph"] != 0:
-                        result["aborted"] = f"interlock during run: speed {il['kph']}"
+                    kph = _read_kph(w)
+                    if kph is None or kph > profile.speed_max_kph:
+                        result["aborted"] = f"interlock during run: speed {kph}"
                         return result
                     last_il = now
             result["aborted"] = result["aborted"] or "time limit reached"
@@ -478,7 +572,7 @@ def main(argv=None) -> int:
     mode.add_argument("--run", metavar="ID")
     ap.add_argument("--seconds", type=float)
     a = ap.parse_args(argv)
-    cat = load_catalog()
+    cat = load_catalog(CATALOG_PATH)
     if a.list:
         if not cat["controls"]:
             print("No device controls captured yet -- record a tool's session "
@@ -508,17 +602,40 @@ def main(argv=None) -> int:
             print(f"  {e['t']:8.3f}s {e['module']} {e['request']} -> "
                   f"{e['response']} ({e['outcome']})")
         new = merge_into_catalog(cat, ex, os.path.basename(a.imp))
+        try:
+            catalog_schema.parse_controls(cat)
+        except catalog_schema.ControlsCatalogError as e:
+            print(f"REFUSED: the merged catalog would not load, nothing "
+                  f"written: {e}")
+            return 2
         with open(CATALOG_PATH, "w", encoding="utf-8") as fh:
             json.dump(cat, fh, indent=1)
         print(f"added {len(new)} new control(s): {new}")
         return 0
+    try:
+        v2 = catalog_schema.load_controls(CATALOG_PATH)
+    except catalog_schema.ControlsCatalogError as e:
+        print(f"REFUSED: the control catalog does not load: {e}")
+        return 2
     sel = a.run.strip()
-    if sel.isdigit() and 1 <= int(sel) <= len(cat["controls"]):
-        entry = cat["controls"][int(sel) - 1]
+    if sel.isdigit() and 1 <= int(sel) <= len(v2):
+        entry = v2.entries[int(sel) - 1]
     else:
-        entry = next((c for c in cat["controls"] if c["id"] == sel), None)
+        entry = v2.get(sel)
     if entry is None:
         print(f"no control {a.run!r} in the catalog (--list)")
+        return 2
+    why = catalog_schema.ineligibility_reasons(entry, v2)
+    if why:
+        print(f"REFUSED: {entry.id} is not admitted for live firing: "
+              + "; ".join(why))
+        return 2
+    signal = entry.interlock_profile.range_signal
+    if signal is not None and RANGE_READERS.get(signal) is None:
+        print(f"REFUSED: no reader for range signal "
+              f"{entry.interlock_profile.range_signal!r}; "
+              f"{entry.interlock_profile.range_required} must be read, not only "
+              "attested (D3)")
         return 2
     from . import j2534 as jt
     try:
@@ -527,11 +644,11 @@ def main(argv=None) -> int:
         print(f"pass-thru driver not available: {e}")
         return 3
     try:
-        res = run_control(j, entry, tty_confirm, a.seconds)
+        res = run_control(j, entry, v2, tty_confirm, a.seconds)
     except Refused as e:
         print(f"REFUSED: {e}")
         return 2
-    outp = f"devctl-{entry['id']}-{time.strftime('%Y%m%dT%H%M%S')}.json"
+    outp = f"devctl-{entry.id}-{time.strftime('%Y%m%dT%H%M%S')}.json"
     with open(outp, "w", encoding="utf-8") as fh:
         json.dump(res, fh, indent=1)
     print(f"sent={res['sent']} outcome={res['outcome']} aborted={res['aborted']} "
