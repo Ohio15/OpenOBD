@@ -36,6 +36,8 @@ import sys
 import time
 from typing import Callable, Optional
 
+from . import controls as catalog_schema
+
 CATALOG_PATH = os.path.join(os.path.dirname(__file__), "data", "controls.json")
 ECM_REQ, ECM_RESP = 0x7E0, 0x7E8
 SID_DEVCTL = 0xAE
@@ -164,11 +166,12 @@ def load_catalog(path: str = CATALOG_PATH) -> dict:
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
     except FileNotFoundError:
-        return {"controls": []}
+        return {"schema_version": catalog_schema.SCHEMA_VERSION, "controls": []}
 
 
 def merge_into_catalog(catalog: dict, exchanges: list, source: str) -> list:
-    """Add each new (module, request) as status 'captured'. Returns new ids."""
+    """Add each new (module, request) as status 'captured', excluded from the
+    live set (schema v2 unclassified fields). Returns new ids."""
     have = {(c.get("bus", "hs"), c["module"], c["request"])
             for c in catalog["controls"]}
     new = []
@@ -191,7 +194,9 @@ def merge_into_catalog(catalog: dict, exchanges: list, source: str) -> list:
             "status": "captured", "source": source,
             "observed_outcome": ex["outcome"], "observed_response": ex["response"],
             "observed_counts": {ex["outcome"]: 1},
-            "max_seconds": 20})
+            "max_seconds": 20,
+            # schema v2: excluded until a person classifies it (D1)
+            **catalog_schema.unclassified_fields()})
         have.add(key)
         new.append(cid)
     return new

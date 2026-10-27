@@ -1,4 +1,5 @@
 {
+ "schema_version": 2,
  "controls": [
   {
    "id": "7E4-AE03-1",
@@ -14,6 +15,30 @@
    "bus": "hs",
    "observed_counts": {
     "negative:E3": 2
+   },
+   "role": "command",
+   "hazard_class": 2,
+   "tier": null,
+   "release_pair": null,
+   "exclusion_reason": "Excluded from the v0.40.0 live set by D1 (d7fedb9f): TCCM learn is a recovery step run only under its own conditions, and both captured attempts were refused (negative E3).",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
    }
   },
   {
@@ -32,7 +57,30 @@
     "positive": 2
    },
    "max_seconds": 20,
-   "autel_time": "15:50:52"
+   "autel_time": "15:50:52",
+   "role": "command",
+   "hazard_class": 1,
+   "tier": 2,
+   "release_pair": "7E4-AE01-3",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "7E4-AE01-3",
@@ -49,7 +97,30 @@
     "positive": 6
    },
    "max_seconds": 20,
-   "autel_time": "15:50:57"
+   "autel_time": "15:50:57",
+   "role": "release",
+   "hazard_class": 1,
+   "tier": 2,
+   "release_pair": null,
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": "TCCM control 01: return control to module",
+    "bench_verified": false
+   }
   },
   {
    "id": "7E4-AE01-4",
@@ -66,7 +137,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:51:21"
+   "autel_time": "15:51:21",
+   "role": "command",
+   "hazard_class": 1,
+   "tier": 2,
+   "release_pair": "7E4-AE01-3",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "7E4-AE01-5",
@@ -83,7 +177,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:51:25"
+   "autel_time": "15:51:25",
+   "role": "command",
+   "hazard_class": 1,
+   "tier": 2,
+   "release_pair": "7E4-AE01-3",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "7E4-AE01-6",
@@ -100,7 +217,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:51:46"
+   "autel_time": "15:51:46",
+   "role": "command",
+   "hazard_class": 1,
+   "tier": 2,
+   "release_pair": "7E4-AE01-3",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "7E4-AE01-7",
@@ -117,7 +257,30 @@
     "positive": 3
    },
    "max_seconds": 20,
-   "autel_time": "15:52:07"
+   "autel_time": "15:52:07",
+   "role": "command",
+   "hazard_class": 1,
+   "tier": 2,
+   "release_pair": "7E4-AE01-3",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "7E4-AE01-8",
@@ -134,7 +297,30 @@
     "positive": 2
    },
    "max_seconds": 20,
-   "autel_time": "15:52:09"
+   "autel_time": "15:52:09",
+   "role": "command",
+   "hazard_class": 1,
+   "tier": 2,
+   "release_pair": "7E4-AE01-3",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "7E4-AE01-9",
@@ -151,7 +337,34 @@
     "positive": 2
    },
    "max_seconds": 20,
-   "autel_time": "15:52:44"
+   "autel_time": "15:52:44",
+   "role": "command",
+   "hazard_class": 2,
+   "tier": 2,
+   "release_pair": "7E4-AE01-3",
+   "recovery": [
+    "7E4-AE01-3",
+    "7E4-AE03-1"
+   ],
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": "TCCM transfer case encoder motor: drive DOWN",
+    "bench_verified": false
+   }
   },
   {
    "id": "7E4-AE01-10",
@@ -168,7 +381,34 @@
     "positive": 2
    },
    "max_seconds": 20,
-   "autel_time": "15:52:50"
+   "autel_time": "15:52:50",
+   "role": "command",
+   "hazard_class": 2,
+   "tier": 2,
+   "release_pair": "7E4-AE01-3",
+   "recovery": [
+    "7E4-AE01-3",
+    "7E4-AE03-1"
+   ],
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": "TCCM transfer case encoder motor: drive UP",
+    "bench_verified": false
+   }
   },
   {
    "id": "7E2-AE30-11",
@@ -185,7 +425,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:53:50"
+   "autel_time": "15:53:50",
+   "role": "command",
+   "hazard_class": 1,
+   "tier": 1,
+   "release_pair": "7E2-AE30-13",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "7E2-AE30-12",
@@ -202,7 +465,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:53:53"
+   "autel_time": "15:53:53",
+   "role": "command",
+   "hazard_class": 1,
+   "tier": 1,
+   "release_pair": "7E2-AE30-13",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "7E2-AE30-13",
@@ -219,7 +505,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:53:56"
+   "autel_time": "15:53:56",
+   "role": "release",
+   "hazard_class": 1,
+   "tier": 1,
+   "release_pair": null,
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": "TCM control 30: return control to module",
+    "bench_verified": false
+   }
   },
   {
    "id": "7E2-AE38-14",
@@ -236,7 +545,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:54:15"
+   "autel_time": "15:54:15",
+   "role": "command",
+   "hazard_class": 1,
+   "tier": 1,
+   "release_pair": "7E2-AE38-16",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "7E2-AE38-15",
@@ -253,7 +585,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:54:18"
+   "autel_time": "15:54:18",
+   "role": "command",
+   "hazard_class": 1,
+   "tier": 1,
+   "release_pair": "7E2-AE38-16",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "7E2-AE38-16",
@@ -270,7 +625,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:54:19"
+   "autel_time": "15:54:19",
+   "role": "release",
+   "hazard_class": 1,
+   "tier": 1,
+   "release_pair": null,
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     400,
+     1200
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": "TCM control 38: return control to module",
+    "bench_verified": false
+   }
   },
   {
    "id": "241-AE13-17",
@@ -287,7 +665,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:54:42"
+   "autel_time": "15:54:42",
+   "role": "command",
+   "hazard_class": 0,
+   "tier": 0,
+   "release_pair": "241-AE00-19",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     0,
+     0
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "241-AE13-18",
@@ -304,7 +705,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:54:46"
+   "autel_time": "15:54:46",
+   "role": "command",
+   "hazard_class": 0,
+   "tier": 0,
+   "release_pair": "241-AE00-19",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     0,
+     0
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "241-AE00-19",
@@ -321,7 +745,30 @@
     "positive": 9
    },
    "max_seconds": 20,
-   "autel_time": "15:54:50"
+   "autel_time": "15:54:50",
+   "role": "release",
+   "hazard_class": 0,
+   "tier": 0,
+   "release_pair": null,
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     0,
+     0
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": "BCM: return all device controls to normal",
+    "bench_verified": false
+   }
   },
   {
    "id": "241-AE12-20",
@@ -338,7 +785,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:55:01"
+   "autel_time": "15:55:01",
+   "role": "command",
+   "hazard_class": 0,
+   "tier": 0,
+   "release_pair": "241-AE00-19",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     0,
+     0
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "241-AE12-21",
@@ -355,7 +825,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:55:04"
+   "autel_time": "15:55:04",
+   "role": "command",
+   "hazard_class": 0,
+   "tier": 0,
+   "release_pair": "241-AE00-19",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     0,
+     0
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "241-AE12-22",
@@ -372,7 +865,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:55:21"
+   "autel_time": "15:55:21",
+   "role": "command",
+   "hazard_class": 0,
+   "tier": 0,
+   "release_pair": "241-AE00-19",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     0,
+     0
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "241-AE12-23",
@@ -389,7 +905,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:55:25"
+   "autel_time": "15:55:25",
+   "role": "command",
+   "hazard_class": 0,
+   "tier": 0,
+   "release_pair": "241-AE00-19",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     0,
+     0
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "241-AE13-24",
@@ -406,7 +945,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:55:44"
+   "autel_time": "15:55:44",
+   "role": "command",
+   "hazard_class": 0,
+   "tier": 0,
+   "release_pair": "241-AE00-19",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     0,
+     0
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "241-AE13-25",
@@ -423,7 +985,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:55:53"
+   "autel_time": "15:55:53",
+   "role": "command",
+   "hazard_class": 0,
+   "tier": 0,
+   "release_pair": "241-AE00-19",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     0,
+     0
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "241-AE10-26",
@@ -440,7 +1025,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:56:25"
+   "autel_time": "15:56:25",
+   "role": "command",
+   "hazard_class": 0,
+   "tier": 0,
+   "release_pair": "241-AE00-19",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     0,
+     0
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   },
   {
    "id": "241-AE10-27",
@@ -457,7 +1065,30 @@
     "positive": 1
    },
    "max_seconds": 20,
-   "autel_time": "15:56:28"
+   "autel_time": "15:56:28",
+   "role": "command",
+   "hazard_class": 0,
+   "tier": 0,
+   "release_pair": "241-AE00-19",
+   "interlock_profile": {
+    "range_required": "PARK",
+    "range_signal": "tcm_prndl",
+    "parking_brake_attested": true,
+    "speed_max_kph": 0,
+    "rpm_window": [
+     0,
+     0
+    ],
+    "voltage_window": [
+     12.0,
+     15.5
+    ]
+   },
+   "drive_capable": false,
+   "admission": {
+    "decoded_name": null,
+    "bench_verified": false
+   }
   }
  ]
 }

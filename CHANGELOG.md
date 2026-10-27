@@ -3,6 +3,30 @@
 Versions before 0.18.0 are recorded in the git history (commit subjects carry
 the version, e.g. `feat(delta): ... (v0.17.0)`).
 
+## 0.40.0 (unreleased)
+
+### Added
+- **Device-control catalog schema v2 (inert data layer for Active Tests).**
+  `openobd/data/controls.json` now carries `"schema_version": 2`, and every
+  captured control records its role (command or release), hazard class
+  (0 body outputs, 1 powertrain stationary, 2 mechanical motion), Phase 1
+  tier, the release that hands it back to the module, recovery steps for the
+  transfer case motor drive, its interlock profile (Park read from the TCM
+  range signal, parking brake, stopped, RPM window, 12.0–15.5 V) and its
+  admission state (decoded output name, bench verified). The TCCM learn is
+  excluded from the live set with its reason.
+- `openobd/controls.py` loads and validates the catalog (schema version,
+  required fields, every release and recovery id resolves, a release is never
+  itself paired) and decides live eligibility in code: a control is offered
+  only when it is decoded to a named output, bench verified, in a tier, not
+  drive capable, and its release is eligible too. Nothing is eligible today:
+  no control has been decoded and bench verified yet. Nothing in this release
+  sends anything to the truck.
+
+### Changed
+- `devctl --import` adds newly captured controls as excluded and unclassified
+  under schema v2, so an import keeps the catalog valid.
+
 ## 0.39.1 — 2026-10-26
 
 ### Fixed
