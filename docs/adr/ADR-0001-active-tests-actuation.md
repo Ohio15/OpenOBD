@@ -5,7 +5,8 @@
 | Status | **Proposed.** Documentation only: nothing in this ADR is wired, and nothing here has touched a vehicle |
 | Date | 2026-10-27 |
 | Decider | Ron |
-| Decision records | D1 control list `d7fedb9f`, **D2 architecture `0f5688ed`**, D3 interlocks `e2c962dd`, D4 truck-mcp landing `b2941096`. Survey: `e4b936a6` |
+| Decision records | D1 control list `d7fedb9f`, **D2 architecture `0f5688ed`**, D3 interlocks `e2c962dd`, D4 truck-mcp landing `b2941096`, **D5 amendments `a56a68b9`** (from the ADR-0001 consistency review). Survey: `e4b936a6` |
+| Revision | r2 (2026-10-27): D5 applied. One schema (controls.py v2), SHA pin, Tier 1/2 admission preconditions, mandatory calibrated cross-check, transport returns correlated replies, T3 safety-chain work package |
 | Repositories | `Ohio15/OpenOBD` (this repo, **public**) and `Ohio15/truck-mcp` (**private**) |
 | Supersedes at flag flip (not before) | README "Active Tests" read-only paragraph, manual test AT-02 (split, see section 9) |
 
@@ -244,21 +245,58 @@ class ControlTransport(Protocol):
     def clock(self) -> float: ...               # monotonic seconds
     def sleep(self, seconds: float) -> None: ...
 
-    # session -- raw CAN, filters admit exactly rx_ids (module USDT/UUDT, ECM, interlock sources)
+class Target(NamedTuple):
+    tx_id: str           # physical request id, e.g. "241", "7E4", or "7E0" for interlock PID reads
+    rx_id: str           # the id whose frames answer it, e.g. "641", "7EC", "7E8"
+
+class Exchange(NamedTuple):
+    target: Target
+    tx: tuple[Frame, ...]           # what went out (SF, or FF + CFs)
+    rx: tuple[Frame, ...]           # frames from target.rx_id captured for THIS request, FCs completed
+    payload: str                    # the definitive reassembled reply payload, "" if none
+    response_pending_count: int     # 7F <sid> 78 seen
+    indeterminate: bool             # module accepted (78) and never reported an outcome
+    unsolicited: tuple[Frame, ...]  # admitted frames from OTHER ids captured meanwhile (e.g. 7F AE E3)
+
+class ControlTransport(Protocol):
+    name: str                                   # "stn-raw" | "j2534"
+    @property
+    def is_open(self) -> bool: ...
+    @property
+    def epoch(self) -> int: ...                 # +1 whenever the link was re-established underneath
+    def clock(self) -> float: ...               # monotonic seconds
+    def sleep(self, seconds: float) -> None: ...
+
+    # session -- raw CAN; filters admit exactly rx_ids: the controlled module's USDT/UUDT,
+    # 7E8 (ECM: RawObdSampler PID 0C/0D/42), 7EA (TCM, when a range signal is configured),
+    # and calibrated wheel-speed broadcast ids when the wheel-speed cross-check is calibrated
     def open_session(self, bus: Bus, rx_ids: tuple[str, ...]) -> None: ...
-    def set_target(self, tx_id: str, rx_id: str) -> None: ...      # "set tx/rx header"
     def close_session(self) -> TeardownReport: ...                  # never raises; always last
 
-    # I/O -- single-shot, never retried, never scheduled
-    def send_payload(self, payload: bytes, *, timeout_s: float) -> list[Frame]: ...
-        # one ISO-TP request (SF, or FF+CF paced by the module's FC); returns tx frames.
+    # I/O -- single-shot, never retried, never scheduled; the TARGET is per request
+    def send_payload(self, target: Target, payload: bytes, *,
+                     capture_s: float, quiet_gap_s: float,
+                     on_pending: Callable[[int], list[Frame]] | None = None) -> Exchange: ...
+        # one ISO-TP request (SF, or FF+CF paced by the module's FC) and the module's
+        # CORRELATED reply capture. on_pending(count) is called between $78 captures and
+        # returns any frames it captured (the lease's heartbeat goes there).
         # Raises ControlIndeterminate(sent=True|False|None) if bytes may have left and the link failed.
     def receive(self, timeout_s: float, *, quiet_gap_s: float) -> list[Frame]: ...
         # every admitted frame, INCLUDING unsolicited ones (UUDT, unsolicited 7F AE E3)
-    def tester_present(self, tx_id: str, payload: bytes, *, capture_s: float) -> list[Frame]: ...
-        # ONE $3E and its capture. Caller-driven. Never a timer, never device-periodic.
-    def battery_voltage(self) -> float | None: ...                 # ATRV / J2534 READ_VBATT
+    def tester_present(self, target: Target, payload: bytes, *, capture_s: float) -> Exchange: ...
+        # ONE $3E and its correlated capture. Caller-driven. Never a timer, never device-periodic.
+    def battery_voltage(self) -> Reading: ...
+        # truck-mcp session.Reading(channel="voltage", ...) with state ok | no_response |
+        # undecoded | error. NEVER float|None: a missing value must not be readable as a value.
 ```
+
+**Why the target is per request, not a `set_target` call.** A stored header is
+shared state that something else can change between a request and its reply.
+truck-mcp already paid for this once. A heartbeat inside a `$78` pending chain
+left `ATSH` on the lease's module, so a probe's owed flow control went to the
+EBCM (`gmlan._settle` docstring). With a per-request `Target`, the transport
+re-addresses for every request and every flow control, and a stale header has
+no state to come from.
 
 `RawFrameControlTransport` implements `send_payload`, `receive` and
 `tester_present` on top of the shared ISO-TP code. Each implementation supplies
@@ -306,7 +344,7 @@ module. OpenOBD runs it against `J2534Transport`.
 
 | Requirement | Value | Source / enforcement |
 |---|---|---|
-| Heartbeat schedule | 1.0 s, send-to-send (`HEARTBEAT_PERIOD_S`) | session.py |
+| Heartbeat schedule | 1.0 s, send-to-send | **Drift today:** `control.py:747 HEARTBEAT_PERIOD_S = 1.2` (nominal) and `session.py:199 HEARTBEAT_PERIOD_S = 1.0` (what the lease schedules). Two constants with one name. T2 collapses them into one constant, `control.HEARTBEAT_PERIOD_S = 1.0`, imported by session.py, plus a test that no second definition exists |
 | Heartbeat deadline | 1.5 s since last beat sent, otherwise `SessionLost` (`HEARTBEAT_DEADLINE_S`) | session.py `_guard` |
 | Module timeout | P3Cnom 5000 / P3Cmax 5100 ms | GMW3110 Table 33. The design holds a 3.5 s margin and does not depend on which value these modules use |
 | Heartbeat capture (P2 budget) | 0.35 s | `HEARTBEAT_CAPTURE_S`. J2534 `ReadMsgs` timeout <= this |
@@ -328,12 +366,13 @@ revisited. Stage 0 measures this at the bench with zero actuation (`$3E` +
 | # | Change |
 |---|---|
 | T-a | `ctltransport.py`: `ControlTransport`, `Frame`, `RawFrameControlTransport`, `StnRawTransport` (wraps `ElmTransport` through the renamed `ElmNoReplayView`). `open_control_session` / `close_control_session` move into `StnRawTransport`. |
-| T-b | `gmlan` ISO-TP on `Frame` objects (single implementation). `RawObdSampler` reads voltage through `transport.battery_voltage()`. |
+| T-b | `gmlan` ISO-TP on `Frame` objects (single implementation). The parsers that read adapter text today move to `Exchange` / `Frame` input with unchanged semantics: `gmlan.isotp_request` / `_transmit` / `_settle` / `parse_isotp_frames`, `control.parse_control_capture`, `control.parse_device_control_response`, `parse_tester_present_response` and `parse_return_to_normal_response`. `RawObdSampler` issues its PID reads as `send_payload(Target("7E0", "7E8"), ...)` and reads voltage through `transport.battery_voltage()`, which returns a state-carrying `Reading`. The two `HEARTBEAT_PERIOD_S` constants collapse to one (section 4.3). |
 | T-c | **Interlock providers**, replacing the hard-wired `RawObdSampler` as the only source: a `SpeedSource` protocol and a `RangeSource` protocol, both injected through `ControlLease(..., speed_source=, range_source=)`. Details below this table. |
-| T-d | **Per-control interlock profile** on `ControlCandidate`, as new trailing fields with defaults so existing construction is unchanged: `rpm_window: tuple[float, float] \| None`, `range_mode: "sensed" \| "attested"`, `drive_capable: bool = False`, `dialect: str`, `max_hold_s: float`. `_prepare_activation` (which runs at **both** arm and fire) enforces the candidate's RPM window from PID `0C`, its range mode, a mandatory parking-brake attestation, and `drive_capable` only for names in `DRIVE_CAPABLE_WHITELIST = ()`, which ships empty per D1. The lease-level `require_engine_off` stays as a floor. |
+| T-d | **Per-control interlock profile** on `ControlCandidate`, mirroring controls.py v2's `interlock_profile` so there is no second vocabulary. New trailing fields with defaults, so existing construction is unchanged: `range_required: str = "PARK"`, `range_signal: str \| None` (`"tcm_prndl"` = sensed, `None` = attestation only), `parking_brake_attested: bool = True`, `speed_max_kph: int = 0`, `rpm_window: tuple[int, int] \| None`, `voltage_window = (12.0, 15.5)`, `drive_capable: bool = False`, `dialect: "gmlan" \| "uds"`, `max_seconds: float`. `_prepare_activation` (which runs at **both** arm and fire) enforces all of these: the RPM window from PID `0C`, the range rule (section 4.4 T-c), the mandatory parking-brake attestation, the voltage window, and `drive_capable` only for names in `DRIVE_CAPABLE_WHITELIST = ()`, which ships empty per D1. The lease-level `require_engine_off` stays as a floor. |
 | T-e | **Registry injection.** `ControlLease(..., registry: tuple[ControlCandidate, ...] = ctl.CONTROL_REGISTRY)`. `lookup_control` / `encode_registered_control` / `encode_registered_release` take the registry. The module-level `CONTROL_REGISTRY` stays `()`, so truck-mcp's CLI, MCP and HTTP behaviour is unchanged. `_assert_candidate_is_honest` still guards every entry. |
 | T-f | **Unsolicited `E3`.** Any frame from the module's rx ids carrying `7F AE E3 <r1> <r2>` (in heartbeat, request, release or sampler captures) does four things. (1) It marks every active control on that module `terminated_by_ecu`. (2) It burns all armed tickets. (3) It journals `ecu_terminated {module, reason: "<r1r2>", raw}`. (4) It leaves the lease open, so the operator still sees and controls the session. `ControlJournal.outstanding()` treats `ecu_terminated` as clearing every `(module, *)` activation. `describe_negative("31", "AE")` guidance gains "or a security-gated CPID (GMW3110)". |
 | T-g | **Cross-process module lock.** `_module_lock` becomes a per-process `threading.Lock` plus an OS lock: `msvcrt.locking` on `%LOCALAPPDATA%\truck-control\locks\<module>.lock`, held for the lease's life. This prevents truck-mcp's CLI on the MX+ and OpenOBD on the GT from holding the same module at once. Today's lock is per-process only. |
+| T-i | **Safety-chain work package (D5 item 5).** Section 4.4.1 lists it. Every item is a defect in truck-mcp `session.py` today that is inert only because `CONTROL_REGISTRY` is empty. |
 | T-h | **Packaging.** `mcp` and `cantools` move to a `[server]` extra (the core needs only `pyserial`). Add `truck_mcp.__version__`. The README install line becomes `pip install -e ".[dev,server]"`. Tag `v0.12.x` (D4). |
 
 **T-c in detail.**
@@ -343,45 +382,142 @@ revisited. Stage 0 measures this at the bench with zero actuation (`$3E` +
 - **Primary:** PID `0D`, **two consecutive decoded reads**, each fresh, from
   distinct frames (different receipt times), both 0. A stale frame cannot
   stand in as a false zero (D3).
-- **Corroborators** (EBCM wheel speeds): **refuse-only**. Any corner above 0
-  refuses. A corroborator whose decode is not `calibrated` reports
-  `not_examined` and never contributes to a pass. `FORBIDDEN_SPEED_SOURCES`
-  still governs the primary.
+- **Wheel-speed cross-check** (EBCM wheel speeds, D3 as amended by D5 item 3):
+  - **Uncalibrated or unavailable:** it never contributes to a pass. The
+    snapshot carries `cross_check: "unavailable"` with the reason, and the UI
+    shows **"wheel-speed cross-check unavailable"** as a warning chip beside
+    the gate result.
+  - **HS bus up and decode `calibrated`:** the cross-check is **mandatory**.
+    Every calibrated corner must read 0, fresh. Any corner above 0, or any
+    disagreement with the PID `0D` primary, **refuses**. The LF corner (C0035)
+    is excluded from the set by calibration data, never by a code default.
+  - Calibration of 0C1/0C5 frame, byte and scale is a **Phase 0 bench item**.
+  - `FORBIDDEN_SPEED_SOURCES` still governs the primary: wheel speed is never
+    the primary.
 - The existing channel-liveness proof.
 
 `RangeSource.sample(now) -> Reading("range", value in {"P","R","N","D","3","2","1"} | None, ...)`
-is judged as follows:
+is judged against the entry's `interlock_profile`:
 
-- When the profile says `range_mode = "sensed"`: the reading must be `ok`,
-  must equal `P`, **and** the operator must attest Park. Any mismatch refuses
-  and shows both values.
-- When the profile says `range_mode = "attested"`: the Park attestation is
-  required, and an available reading may only refuse (contradiction), never
-  pass.
+- **`range_signal = "tcm_prndl"`:** the reading must be `ok`, must equal
+  `range_required` (`PARK`), **and** the operator must attest Park. Any
+  mismatch refuses and shows both values. An `undecoded` / `no_response`
+  reading refuses.
+- **`range_signal = null`:** the Park attestation is required, and an
+  available reading may only refuse (contradiction), never pass.
 
-Battery stays 12.0 to 15.5 V.
+Battery stays within `voltage_window`, which is fixed at 12.0 to 15.5 V (D5).
+
+#### 4.4.1 T3 safety-chain work package (D5 item 5)
+
+Each item lands in truck-mcp T3 with the test named beside it.
+
+| # | Defect today (session.py) | Change | Test |
+|---|---|---|---|
+| S1 | `release()` and `probe_release_all()` go through `_send(gate=True)`, so a precondition failure (truck rolling, voltage sag) **refuses the release** | Every release path sends with `gate=False`. Putting a module back is always allowed, as `recover_indeterminate` already assumes | A gate failing on every channel still lets `release` / `release_all` send |
+| S2 | No auto-release on lease cap, heartbeat loss or `SessionLost`. `_guard` raises and leaves the caller to close | `LeaseWorker` (OpenOBD) and the CLI door call `lease.close()` on **any** `SessionLost` / `LeaseExpired` / `PreconditionFailed` during a hold, and on `max_seconds` expiry, so `_abort` runs. On heartbeat loss the module has already started its P3C timer, and the abort is the courtesy (B), not the property (A) | A fake clock past 120 s, a missed beat and a raised `SessionLost` each produce the full abort order in the transcript |
+| S3 | No `$AE` `E3` handling | T-f (unsolicited and solicited `7F AE E3 r1 r2`) | Unsolicited `E3` in a heartbeat capture yields `ecu_terminated`, tickets burned, `outstanding()` cleared |
+| S4 | `outstanding()` keys on `(module, cpid)`. A `return_to_normal` record has no `cpid`, so it pops `(module, None)` and **never clears** a real activation. OpenOBD `ctljournal._fold` has the same defect (`(module, "None")`) | `return_to_normal`, `ecu_terminated` and a `released` with `cpid == "00"` clear **every** `(module, *)`. Both folds change together | Shared fixture: activate, then `$20`, folds to clean in truck-mcp **and** OpenOBD |
+| S5 | A successful `AE 00` in `_abort` is not journalled | Journal `released {module, cpid: "00", name: "release-all"}` on a positive `EE 00` | Abort transcript plus journal fixture |
+| S6 | A torn journal line drops silently from `outstanding_releases` (`entries()` records an error and continues) | `outstanding_releases` returns a `JournalVerdict` that carries `unknown` whenever `journal.errors` is non-empty. Lease open and arm **refuse** on `unknown`. Recovery still sends the readable releases, then `AE 00` and `$20` | A torn last line yields arm refused plus recovery plan `AE00` / `$20` |
+| S7 | No `release_all` on the lease | `lease.release_all()`: each active entry's exact release (`gate=False`) in reverse order, then `AE 00`. The lease stays open | Two active entries yield two releases plus `AE00`, both `released` |
+| S8 | No Abort path through a `$78` pending chain: `PENDING_CAPTURE_S = 5.0` captures are uninterruptible | A cancel flag (`threading.Event`) set by Abort. The pending loop captures in slices of at most 0.25 s and checks the flag between slices. **Stated maximum latency from the Abort click to the first abort frame: 0.7 s** (0.25 s slice + at most 0.2 s in-flight J2534 write + 0.25 s worker queue tick). The pending request is journalled `indeterminate` | A fake transport answering `78` forever: Abort reaches `_abort` within 0.7 s on a virtual clock |
+| S9 | `$85 01` is sent only if `note_dtc_setting_suspended()` was called in-process | At lease open, `self.dtc_setting_suspended = journal.dtc_setting_suspended()`, so a journal written by any build is honoured by the abort | A fixture journal with `dtc_setting_suspended` puts `8501` before `$20` in the abort |
+| S10 | `activate()` is a one-call fire with **no console challenge** (the CLI door) | Kept for truck-mcp's attended CLI. **Forbidden anywhere under `openobd/`** by the section 9 AST rule | OpenOBD AST test |
 
 ### 4.5 Changes that land in **OpenOBD**
 
 | # | Change |
 |---|---|
 | O-a | **`openobd/ctltransport_j2534.py`: `J2534Transport(RawFrameControlTransport)`.** Raw `CAN` at 500 kbps (HS; every Phase 1 entry is `bus: hs`). `pass_filter` for exactly the `rx_ids`. `LOOPBACK = 0`. `CLEAR_PERIODIC` at open. `READ_VBATT` for voltage. The device is opened once per lease and closed only after `close_session` (the OBDX driver may terminate the process at close, so nothing may be pending by then). It reuses `openobd/j2534.py`. |
-| O-b | **`openobd/controls.py`: schema and registry builder.** It holds the closed-key-set schema for `controls.json` with a hand-written validator: no new dependency, unknown keys refused, types checked. New per-entry fields: `decoded_name` (null), `observed_result` (null), `release_id` (id of the captured release entry), `hazard` (truck-mcp `HAZARD_TIERS`), `tier` (0/1/2), `rpm_window`, `range_mode`, `dialect`, `max_hold_s`, `drive_capable`. **The builder leaves `decoded_name` and `observed_result` null and never invents them.** Names come only from Phase 0 (section 6.6). An entry is admitted to the registry only when every admission rule below holds. Admitted entries go through `control_candidate()` and then `verify_candidate(observed_result)`. The catalog's sha256 is journalled in `lease_open`. **With today's data the builder returns `()`.** |
-| O-c | **Interlock providers.** `Pid0dSpeedSource` (two-sample). `EbcmWheelSpeedCorroborator` (refuse-only; `not_examined` until truck-mcp's `wheelspeed` mapping is calibrated). `TcmRangeSource` (returns `undecoded` until the PRNDL decode is established, so every `sensed` profile refuses). Interlock reads use the lease's own transport (one owner). |
+| O-b | **`openobd/controls.py` schema v2 (the ONE schema, D5 item 4; PR #63 `feat/controls-catalog`) plus a registry builder.** See "O-b in detail" below the table. |
+| O-c | **Interlock providers.** `Pid0dSpeedSource` (two-sample). `EbcmWheelSpeedCrossCheck`, which follows section 4.4 T-c: `unavailable` until calibrated, with the UI chip "wheel-speed cross-check unavailable"; mandatory once calibrated. `TcmRangeSource`, used for `range_signal = "tcm_prndl"`, returns `undecoded` until a PRNDL decoder exists, so every such entry refuses. Interlock reads use the lease's own transport (one owner). |
 | O-d | **`openobd/actuation.py`: the only module that imports `truck_mcp`.** It contains the flag (section 5), `LeaseWorker`, adapter arbitration, the journal path, the startup outstanding check and Recover. It is the only module allowed to call `ControlLease` / `arm` / `fire` / `release` / `activate`. Details below this table. |
 | O-e | **`openobd/actuationui.py`: the Arm/Fire dialog, countdown, Abort and Release-all panel (section 6).** `app.py` composes it beside the unchanged `ActiveTestsPage` only when the flag is on. It uses theme tokens only. Its toolbar `actuationToolbar` joins `theme.TOOLBAR_NAMES` (the v0.39.1 coverage test enforces this). |
 | O-f | `ctljournal.control_root_candidates()` union includes OpenOBD's journal root. Its `_fold` treats `ecu_terminated` exactly as truck-mcp's `outstanding()` does. A shared fixture file proves the two folds agree. |
 | O-g | `openobd.spec`: add `('openobd/data/controls.json', 'openobd/data')` to `datas`, and the `truck_mcp.*` core modules to `hiddenimports` (section 7). |
 
-**O-b admission rules.** All must hold:
+**O-b in detail: schema v2.** `SCHEMA_VERSION = 2`; this ADR adopts its field
+names rather than defining its own. Each entry has:
 
-- (a) `decoded_name` and `observed_result` are non-null.
-- (b) The paired `release_id` is a captured, positive, mask-cleared same-CPID
-  release or `AE00` on the same module. A "commanded OFF" entry with a
-  non-zero mask is **not** a release.
-- (c) `tier` is in `ADMITTED_TIERS = (0,)` at ship.
-- (d) `drive_capable` is false, or the entry is in the empty whitelist.
-- (e) `hazard` and `rpm_window` are set.
+- `id`, `bus`, `module`, `request`, `cpid` and `name`. `name` is the capture
+  label, not a decode.
+- `max_seconds`.
+- `role`: `command` or `release`.
+- `hazard_class`: 0, 1 or 2.
+- `tier`: 0, 1, 2, or `null` (null means excluded, with `exclusion_reason`).
+- `release_pair`: the id of the release entry for a command, `null` for a
+  release.
+- `recovery`: ids of entries that recover the control.
+- `interlock_profile`, an object with:
+  - `range_required` (`"PARK"`);
+  - `range_signal` (`"tcm_prndl"` or `null`);
+  - `parking_brake_attested` (must be `true`);
+  - `speed_max_kph` (0 unless `drive_capable`);
+  - `rpm_window` (`[0,0]` for KOEO, `[400,1200]` for engine running);
+  - `voltage_window`.
+- `drive_capable`.
+- `admission`, an object with `decoded_name` and `bench_verified`.
+
+**Added by PR #63 per D5, and binding on the builder:**
+
+- A **closed key set**. Unknown keys at any level are rejected.
+- **`dialect`** is required and must be `"gmlan"` or `"uds"`. Every current
+  entry is `gmlan`, per the Autel capture (section 1.3).
+- **`admission.observed_result`** is a required evidence string whenever
+  `bench_verified` is true: what Ron saw move.
+- **`voltage_window`** is fixed at `[12.0, 15.5]`. Any other value is rejected,
+  not justified.
+- **Release validation is structural.** A command's `release_pair` must
+  resolve to a captured entry with a positive response on the **same CPID with
+  the enable mask cleared** (`AE<cpid> 00 ..`), or to `AE00` on the same
+  module. A hand-typed `role: release` alone is not enough. A "commanded OFF"
+  entry with a non-zero mask is not a release.
+- **`ADMITTED_TIERS = (0,)` is enforced inside `is_live_eligible`.**
+- The six Autel-label `decoded_name` values go back to `null`. Autel labels
+  are not decodes.
+- `decoded_name` and `observed_result` are never invented. They come only from
+  Phase 0 (section 6.6).
+
+**Registry build.** The builder runs at lease construction. For every entry
+where `is_live_eligible(entry, catalog)` is true:
+
+1. It calls `control_candidate(name=entry.id, module, cpid,
+   control_bytes=request[4:], release_bytes=<release_pair's request after the
+   CPID>, hazard=HAZARD_MAP[hazard_class], source="controls.json@<sha256>",
+   confidence="verified", ...)`.
+2. It then calls `verify_candidate(observed_result)`.
+3. It copies `interlock_profile`, `dialect` and `max_seconds` into the T-d
+   fields.
+
+The catalog's sha256 is journalled in `lease_open`. **With today's data the
+builder returns `()`.**
+
+**Hazard mapping** (`hazard_class` to truck-mcp `HAZARD_TIERS`):
+
+| `hazard_class` | Meaning | truck-mcp hazard |
+|---|---|---|
+| 0 | body output (BCM) | `"body"` |
+| 1 | powertrain (TCM) | `"powertrain"` |
+| 2 | driveline (TCCM) | `"driveline"` |
+
+No class maps to `"cosmetic"`. session.py's
+`candidate.hazard != "cosmetic" and not hazard_ack.strip()` check is therefore
+satisfied, and it **always** demands the typed hazard acknowledgement.
+`"brake-hydraulic"` has no class in v0.40.0.
+
+**Admission** (`is_live_eligible`). All must hold:
+
+- (a) `tier` is in `ADMITTED_TIERS`.
+- (b) The entry is not `drive_capable`.
+- (c) `decoded_name` is set, `bench_verified` is true, and `observed_result` is
+  present.
+- (d) It is a release, or a command whose `release_pair` is itself
+  live-eligible.
+- (e) Every `recovery` id is itself live-eligible. PR #63 adds this rule
+  alongside `ADMITTED_TIERS`. It is the D5
+  fail-closed composition: a control whose mandatory recovery cannot fire is
+  not admissible.
 
 **O-d in detail.**
 
@@ -468,18 +604,23 @@ A live chip shows four values from `LeaseWorker` signals:
 - lease remaining (out of 120 s);
 - ticket remaining (out of 60 s);
 - heartbeat age, which turns to warning above 1.0 s and danger at 1.5 s;
-- per-control hold remaining (out of `max_hold_s`).
+- per-control hold remaining (out of `max_seconds`).
 
 When the hold expires, the worker releases that control automatically.
 
 ### 6.3 Abort and Release-all
 
-- **Abort** is always enabled while a lease exists. It closes the lease, and
-  `close()` runs `_abort`, which never raises.
-- **Release-all** releases every active control and keeps the lease.
+- **Abort** is always enabled while a lease exists. It sets the cancel flag
+  (S8) and then closes the lease, and `close()` runs `_abort`, which never
+  raises. The cancel flag also interrupts a `$78` pending chain. The maximum
+  latency from the click to the first abort frame is **0.7 s**.
+- **Release-all** calls `lease.release_all()` (S7) and keeps the lease.
+  Releases never pass through the precondition gate (S1).
+- **Auto-release.** On lease cap, heartbeat loss, `SessionLost` or a failed
+  in-hold gate, `LeaseWorker` calls `close()` (S2).
 - Both are one click with no confirmation, because stopping must never cost
   more than starting.
-- **Mandatory release after every fire.** When an entry's `max_hold_s`
+- **Mandatory release after every fire.** When an entry's `max_seconds`
   expires, or the operator ends the test, the worker sends the entry's
   captured mask-cleared release (or `AE00`). The control's state returns to
   `released` only on a positive `EE`. If the release fails, the control stays
@@ -527,21 +668,46 @@ The GUI treats `E3` as "the module released every control". It:
 `E3` never requires a key cycle. The operator may re-arm only after the
 interlock gate passes again.
 
+**This guarantee holds fully only on `J2534Transport`.** The J2534 driver
+queues every admitted frame between reads, so an unsolicited `E3` is always
+seen at the next `receive`. An STN adapter reports frames only inside capture
+windows (about 35% duty), so on `StnRawTransport` an unsolicited `E3` can be
+missed (section 4.2 rule 5). The UI then keeps showing a control as held after
+the module has dropped it. That is the safe direction, and the next `$AE` reply
+or the mandatory release reveals the truth. OpenOBD only ever uses
+`J2534Transport`. truck-mcp's CLI documents the caveat.
+
 ### 6.6 Tier recovery and admission
 
-- **Tier 0** (BCM 241, CPID 10/12/13 with `AE00`) is KOEO:
-  `rpm_window = (0, 0)` and `range_mode = "attested"`. The engine cannot drive
-  the wheels with the RPM window enforced at zero, and roll-away is covered by
-  the parking-brake attestation plus two-sample speed. This is the D3 "profile
-  declares no range signal" case.
-- **Tier 1** (TCM 7E2, CPID 30/38) is engine-running: `rpm_window = (400, 1200)`
-  and `range_mode = "sensed"`. It is **blocked until the PRNDL decode is
-  established**, because `TcmRangeSource` returns `undecoded` and the gate
-  refuses.
-- **Tier 2** (TCCM 7E4 motor drive) carries the recovery procedure below. It
-  is **not in `ADMITTED_TIERS` at v0.40.0.**
+All three tiers stay in the Phase 1 plan and in the schema (D1).
+`ADMITTED_TIERS = (0,)` at the v0.40.0 ship is **sequencing, not narrowing**
+(D5 item 2). Each later tier joins `ADMITTED_TIERS` in its own gated PR once its
+preconditions hold.
 
-**Tier 2 recovery procedure.** It is required before Tier 2 can be admitted.
+- **Tier 0** (BCM 241, CPID 10/12/13 with `AE00`) is KOEO:
+  `rpm_window = [0, 0]` and `range_signal = null`. The engine cannot drive the
+  wheels with the RPM window enforced at zero, and roll-away is covered by the
+  parking-brake attestation plus two-sample speed. This is the D3 "profile
+  declares no range signal" case. **Admitted at ship**, once Phase 0 names the
+  entries and they are bench-verified.
+- **Tier 1** (TCM 7E2, CPID 30/38) is engine-running: `rpm_window = [400, 1200]`
+  and `range_signal = "tcm_prndl"`. **Admission preconditions:**
+  1. a PRNDL decoder exists (`TcmRangeSource` returns `ok`, not `undecoded`);
+  2. the TCM entries are decoded (`decoded_name` plus `observed_result` from
+     Phase 0).
+- **Tier 2** (TCCM 7E4 CPID 01 bits and motor drive). **Admission
+  preconditions:**
+  1. the conditions for the `7E4 AE03` learn are decoded (Phase 0 Autel
+     session; both captured attempts drew `E3` with non-public reason codes);
+  2. the in-catalog recovery (release plus learn, listed in each entry's
+     `recovery`) is **itself live-eligible** (admission rule (e)).
+
+  Until both hold, the motor-drive entries **cannot fire from OpenOBD**, and
+  the **documented fallback** for any TCCM recovery is the Autel's own learn,
+  run by Ron.
+
+**Tier 2 recovery procedure.** Both admission preconditions above must hold
+before Tier 2 is admitted, and this procedure must be implemented.
 
 1. Before any drive, read and journal the actuator position and the selector
    position through `$22` DIDs proven readable
@@ -550,16 +716,14 @@ interlock gate passes again.
    is refused.
 2. Send each drive command as the captured triple: drive
    (`AE01 0000 01B2 00` / `..0132..` per direction), then the enable-cleared
-   form, then `AE01 00..00`. Each pulse is held for at most `max_hold_s`, which
-   must not exceed the duration observed in the capture.
+   form, then `AE01 00..00`. Each pulse is held for at most `max_seconds`,
+   which must not exceed the duration observed in the capture.
 3. After the release, read the position back. If it is not within tolerance
    of the pre-drive baseline, the panel shows "TCCM actuator not at baseline"
    and refuses further TCCM fires for the session.
-4. The re-learn (`7E4 AE03`) is excluded from v0.40.0 (D1). Both captured
-   attempts answered `E3` with non-public reason codes, so the learn conditions
-   are unknown. Establishing them in an Autel session is a Tier 2 admission
-   prerequisite. Until then, recovery from a not-at-baseline actuator is the
-   Autel's own learn, run by Ron.
+4. If the actuator is not at baseline, run the in-catalog learn (`7E4 AE03`)
+   under its decoded conditions. It is live-eligible by precondition 2. Until
+   it is, the fallback is the Autel's learn, run by Ron.
 
 **Phase 0** (prerequisite for any `decoded_name`): a listen-only `canrec`
 capture while the Autel drives each menu item. Ron records the Autel menu label
@@ -595,9 +759,13 @@ Refusal records are best-effort (`append`). Records that precede a frame use
 
 **Mechanism.**
 
-- truck-mcp is pinned by **commit SHA**, with its tag in a comment
+- truck-mcp is pinned to the **immutable commit SHA of the release tag**, with
+  the tag named beside it
   (`truck-mcp @ git+https://github.com/Ohio15/truck-mcp@<40-hex>  # v0.12.x`).
-  A tag is mutable and a SHA is not (SC-30).
+  Per **D5 item 1** this is how D2/D4's "pin the tag" is implemented, not a
+  reversal of it: the pin is the tagged commit. A tag can be moved and a SHA
+  cannot (SLSA / OpenSSF practice; SC-30). A CI check asserts the SHA is what
+  the named tag dereferences to.
 - The pin lives in **`firstparty.txt`**, not `requirements.txt`. It is
   installed with `pip install --no-deps -r firstparty.txt` after
   `requirements.txt`. The core's only runtime dependency, `pyserial==3.5`, is
@@ -659,13 +827,13 @@ path, and an empty registry.
 |---|---|---|---|---|
 | T1 | truck-mcp | Land `feat/control-foundation` (PR #5) to main, then tag (D4) | v0.12.0 | Existing suite green, CI, security-gate pass |
 | T2 | truck-mcp | T-a + T-b: `ControlTransport`, `RawFrameControlTransport`, `StnRawTransport`, `ElmNoReplayView` rename, ISO-TP on `Frame` | v0.12.1 | **Golden transcript:** lease open / heartbeat / abort / recover produce byte-identical STN command and frame sequences before and after the refactor. Exported `transport_conformance.py` passes against `StnRawTransport` and a fake frame bus. MF TX with FC/WAIT/STmin fixtures |
-| T3 | truck-mcp | T-c to T-g: providers, per-control profile, registry injection, `E3`, cross-process lock, `arm_refused` / `lease_refused` journalling | v0.12.2 | Pure gate truth tables: two-sample speed with a stale or identical frame, refuse-only corroborator, `sensed`/`attested` range, RPM windows, drive-capable whitelist empty. Mutation tests on each refusal. `E3` unsolicited in heartbeat capture leads to `ecu_terminated` and `outstanding()` clearing. A second process cannot take the module lock. `CONTROL_REGISTRY == ()` |
+| T3 | truck-mcp | T-c to T-g plus **T-i, the safety-chain package S1 to S10 (section 4.4.1)**: providers, per-control profile, registry injection, `E3`, cross-process lock, gate-free releases, auto-release via `close()`, the `$20` / `AE00` fold, the torn-line verdict, `release_all`, the Abort cancel flag through `$78`, `$85 01` from the journal, `arm_refused` / `lease_refused` journalling | v0.12.2 | The section 4.4.1 test column, plus pure gate truth tables: two-sample speed with a stale or identical frame; cross-check `unavailable` never passes and calibrated disagreement refuses; `tcm_prndl` / `null` range; RPM windows; voltage window; drive-capable whitelist empty. Mutation tests on each refusal. A second process cannot take the module lock. `CONTROL_REGISTRY == ()` |
 | T4 | truck-mcp | T-h packaging (`[server]` extra, `__version__`) | **tag v0.12.3** | CI job: clean venv, `pip install --no-deps .`, `pip install pyserial==3.5`, then `import truck_mcp.session, truck_mcp.ctltransport` |
 | O0 | OpenOBD | **This ADR** (docs only, no version bump, matching #49/#50/#51) | none | CI green |
 | O1 | OpenOBD | `firstparty.txt` pin, RELEASE.md step, spec `hiddenimports` + `datas`. **Blocked on section 7** | 0.39.2 | Installed truck-mcp commit equals the pin. The frozen-build smoke imports the core. `security-audit.yml` stays green (pin outside its glob) |
-| O2 | OpenOBD | `openobd/controls.py` schema, validator and admission. `controls.json` gains null `decoded_name` / `observed_result` plus a profile with no names invented | 0.39.3 | Every current entry is non-admissible and the builder returns `()`. Admission truth table on fixtures. A "commanded OFF" non-zero-mask entry is rejected as a release. Unknown key or type is refused. sha256 is stable |
+| O2 | OpenOBD | **PR #63 (`feat/controls-catalog`):** `controls.py` schema v2 plus the D5 additions (`ADMITTED_TIERS` in `is_live_eligible`, required `dialect`, `observed_result` evidence, closed key set, fixed `voltage_window`, structural release validation, recovery-eligibility rule (e), six Autel-label `decoded_name` values reset to null). Registry builder and `HAZARD_MAP` follow in O5 | per PR #63 | Every current entry is non-eligible. `ADMITTED_TIERS` excludes tier 1/2 even when fully verified. A "commanded OFF" non-zero-mask release is rejected. An unknown key at any level is rejected. `voltage_window != [12.0, 15.5]` is rejected. `bench_verified` without `observed_result` is rejected. A command whose recovery is not eligible is not eligible |
 | O3 | OpenOBD | `J2534Transport` (O-a) | 0.39.4 | truck-mcp `transport_conformance.py` against a fake J2534 DLL. AST test: no `PassThruStartPeriodicMsg`. `CLEAR_PERIODIC` at open, `LOOPBACK = 0`. Any write error after send raises `ControlIndeterminate`. **Bench step (Ron present, zero actuation):** Stage 0 `$3E` + `$20` on 241 / 7E2 / 7E4 to measure heartbeat round trip against the 0.35 s / 1.5 s budget (the D2 revisit trigger) |
-| O4 | OpenOBD | Interlock providers (O-c) and `ctljournal` union + `E3` fold (O-f) | 0.39.5 | Fold parity against a shared fixture with truck-mcp. Corroborator `not_examined` never passes. `undecoded` range refuses `sensed` |
+| O4 | OpenOBD | Interlock providers (O-c) and `ctljournal` union + `E3` fold (O-f) | 0.39.5 | Fold parity against a shared fixture with truck-mcp (including `$20` and `AE00` clearing `(module, *)`). An `unavailable` cross-check never passes and shows the "wheel-speed cross-check unavailable" chip. A calibrated disagreement refuses. An `undecoded` range refuses `tcm_prndl` |
 | O5 | OpenOBD | `actuation.py` (O-d): flag, `LeaseWorker`, arbitration, journal path, Recover | 0.39.6 | Flag off leaves `truck_mcp` absent from `sys.modules`. A settings read error reads as off. An environment variable cannot enable it. No `ControlJournal()` without `path=`. Arbitration refuses while polling, a job or a recording is active. Worker heartbeat survives a blocked GUI thread. Recover is operator-initiated only |
 | O6 | OpenOBD | `actuationui.py` (O-e): Arm/Fire dialog, countdown, Abort / Release-all, Recover | 0.39.7 | See section 9. Theme raw-colour grep. `actuationToolbar` in `TOOLBAR_NAMES`. The challenge is absent from the report, clipboard, logs and journal. Abort is enabled in every lease state. Manual test script via test-script-scribe |
 | O7 | OpenOBD | **Flag flip:** `ACTUATION_BUILD_ENABLED = True`, README + CHANGELOG, AT-02a/b | **0.40.0** | Gate per section 5: security-gate, `/security-audit`, bench firing of Tier 0 with Ron present, `observed_result` recorded |
@@ -690,9 +858,15 @@ is also the safety verdict, cannot actuate.
 
 What changes behind the flag:
 
-1. **New AST test:** `ControlLease` / `arm` / `fire` / `activate` / `release` /
-   `recover_indeterminate` calls and `truck_mcp` imports appear **only** in
-   `openobd/actuation.py`. This is an allow-list of one module.
+1. **New AST test**, over every `.py` file under `openobd/`:
+   - **`activate()` is forbidden anywhere under `openobd/`**, `actuation.py`
+     included (D5 item 5). It is truck-mcp's one-call attended CLI door with no
+     challenge, so the only fire path in OpenOBD is `arm` then `fire`.
+   - `getattr` with a non-literal name on a lease object is refused, as
+     `_RO_BANNED_CALLS` already does.
+   - `ControlLease` / `arm` / `fire` / `release` / `release_all` /
+     `recover_indeterminate` calls and `truck_mcp` imports appear **only** in
+     `openobd/actuation.py`. This is an allow-list of one module.
 2. **New test, flag off:** `MainWindow` has no `ActuationPanel` and
    `truck_mcp not in sys.modules`. **Flag on:** the panel exists, and its
    actions are exactly Arm, Fire, Release all, Abort and Recover.
@@ -732,7 +906,8 @@ trust domain and out of scope. It could equally drive the Autel.
 - the settings store, where a read error means off.
 
 **Sensor interlocks fail closed.** Unknown is never clean (SC-07). An
-unestablished decode refuses. A corroborator can only refuse.
+unestablished decode refuses. An uncalibrated cross-check never contributes to
+a pass and is shown as unavailable. A calibrated cross-check is mandatory.
 
 **Journal integrity.**
 
@@ -781,9 +956,11 @@ seat.
 3. **PRNDL signal source and decode**, which gates Tier 1. *Why open:* no
    decoder exists in either repository, and finding the frame needs a
    listen-only capture while the selector is cycled at standstill.
-4. **EBCM wheel-speed calibration**, which gates the corroborator. *Why open:*
-   truck-mcp `wheelspeed.py` keeps frame, byte and scale as hypotheses until a
-   reference drive regresses them. C0035 means the LF corner never counts.
+4. **EBCM wheel-speed calibration**, a **Phase 0 bench item** (D5 item 3).
+   Until it is done, the cross-check is "unavailable" and never passes. Once it
+   is done, the cross-check is mandatory. *Why open:* truck-mcp `wheelspeed.py`
+   keeps frame, byte and scale as hypotheses until a reference drive regresses
+   them. C0035 means the LF corner never counts.
 5. **CPID bit meanings** (`decoded_name` / `observed_result`). *Why open:* GM
    does not publish them (`824fafa5`). Phase 0 capture with Ron observing is
    the only source.
