@@ -5,6 +5,7 @@
    "id": "7E4-AE03-1",
    "module": "7E4",
    "request": "AE0302020000",
+   "dialect": "gmlan",
    "cpid": "03",
    "name": "Autel TCCM learn (transfer case motor/actuator learn), captured 2026-10-04",
    "status": "captured",
@@ -38,7 +39,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -46,6 +48,7 @@
    "bus": "hs",
    "module": "7E4",
    "request": "AE014040000000",
+   "dialect": "gmlan",
    "cpid": "01",
    "name": "transfer case module control 01: output bit 40 commanded ON -- Autel test at 15:50:52",
    "status": "captured",
@@ -79,7 +82,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -87,6 +91,7 @@
    "bus": "hs",
    "module": "7E4",
    "request": "AE010000000000",
+   "dialect": "gmlan",
    "cpid": "01",
    "name": "transfer case module control 01: release (hand back to module) -- Autel test at 15:50:57",
    "status": "captured",
@@ -118,8 +123,9 @@
    },
    "drive_capable": false,
    "admission": {
-    "decoded_name": "TCCM control 01: return control to module",
-    "bench_verified": false
+    "decoded_name": null,
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -127,6 +133,7 @@
    "bus": "hs",
    "module": "7E4",
    "request": "AE018080000000",
+   "dialect": "gmlan",
    "cpid": "01",
    "name": "transfer case module control 01: output bit 80 commanded ON -- Autel test at 15:51:21",
    "status": "captured",
@@ -159,7 +166,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -167,6 +175,7 @@
    "bus": "hs",
    "module": "7E4",
    "request": "AE018000000000",
+   "dialect": "gmlan",
    "cpid": "01",
    "name": "transfer case module control 01: output bit 80 commanded OFF -- Autel test at 15:51:25",
    "status": "captured",
@@ -199,7 +208,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -207,6 +217,7 @@
    "bus": "hs",
    "module": "7E4",
    "request": "AE014000000000",
+   "dialect": "gmlan",
    "cpid": "01",
    "name": "transfer case module control 01: output bit 40 commanded OFF -- Autel test at 15:51:46",
    "status": "captured",
@@ -239,7 +250,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -247,6 +259,7 @@
    "bus": "hs",
    "module": "7E4",
    "request": "AE010202000000",
+   "dialect": "gmlan",
    "cpid": "01",
    "name": "transfer case module control 01: output bit 02 commanded ON -- Autel test at 15:52:07",
    "status": "captured",
@@ -279,7 +292,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -287,6 +301,7 @@
    "bus": "hs",
    "module": "7E4",
    "request": "AE010200000000",
+   "dialect": "gmlan",
    "cpid": "01",
    "name": "transfer case module control 01: output bit 02 commanded OFF -- Autel test at 15:52:09",
    "status": "captured",
@@ -319,7 +334,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -327,6 +343,7 @@
    "bus": "hs",
    "module": "7E4",
    "request": "AE01000001B200",
+   "dialect": "gmlan",
    "cpid": "01",
    "name": "TCCM motor drive DOWN (actuator went ~371 -> ~120) -- Autel test at 15:52:44",
    "status": "captured",
@@ -362,8 +379,9 @@
    },
    "drive_capable": false,
    "admission": {
-    "decoded_name": "TCCM transfer case encoder motor: drive DOWN",
-    "bench_verified": false
+    "decoded_name": null,
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -371,6 +389,7 @@
    "bus": "hs",
    "module": "7E4",
    "request": "AE010000013200",
+   "dialect": "gmlan",
    "cpid": "01",
    "name": "TCCM motor drive UP (actuator went ~120 -> ~610, stalled short of AUTO) -- Autel test at 15:52:50",
    "status": "captured",
@@ -406,8 +425,9 @@
    },
    "drive_capable": false,
    "admission": {
-    "decoded_name": "TCCM transfer case encoder motor: drive UP",
-    "bench_verified": false
+    "decoded_name": null,
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -415,6 +435,7 @@
    "bus": "hs",
    "module": "7E2",
    "request": "AE300600000000",
+   "dialect": "gmlan",
    "cpid": "30",
    "name": "transmission module control 30: data [0600000000] (meaning not decoded yet -- name it from the Autel test) -- Autel test at 15:53:50",
    "status": "captured",
@@ -447,7 +468,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -455,6 +477,7 @@
    "bus": "hs",
    "module": "7E2",
    "request": "AE300400000000",
+   "dialect": "gmlan",
    "cpid": "30",
    "name": "transmission module control 30: data [0400000000] (meaning not decoded yet -- name it from the Autel test) -- Autel test at 15:53:53",
    "status": "captured",
@@ -487,7 +510,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -495,6 +519,7 @@
    "bus": "hs",
    "module": "7E2",
    "request": "AE300000000000",
+   "dialect": "gmlan",
    "cpid": "30",
    "name": "transmission module control 30: release (hand back to module) -- Autel test at 15:53:56",
    "status": "captured",
@@ -526,8 +551,9 @@
    },
    "drive_capable": false,
    "admission": {
-    "decoded_name": "TCM control 30: return control to module",
-    "bench_verified": false
+    "decoded_name": null,
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -535,6 +561,7 @@
    "bus": "hs",
    "module": "7E2",
    "request": "AE384000001900",
+   "dialect": "gmlan",
    "cpid": "38",
    "name": "transmission module control 38: data [4000001900] (meaning not decoded yet -- name it from the Autel test) -- Autel test at 15:54:15",
    "status": "captured",
@@ -567,7 +594,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -575,6 +603,7 @@
    "bus": "hs",
    "module": "7E2",
    "request": "AE384000000C80",
+   "dialect": "gmlan",
    "cpid": "38",
    "name": "transmission module control 38: data [4000000C80] (meaning not decoded yet -- name it from the Autel test) -- Autel test at 15:54:18",
    "status": "captured",
@@ -607,7 +636,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -615,6 +645,7 @@
    "bus": "hs",
    "module": "7E2",
    "request": "AE380000000000",
+   "dialect": "gmlan",
    "cpid": "38",
    "name": "transmission module control 38: release (hand back to module) -- Autel test at 15:54:19",
    "status": "captured",
@@ -646,8 +677,9 @@
    },
    "drive_capable": false,
    "admission": {
-    "decoded_name": "TCM control 38: return control to module",
-    "bench_verified": false
+    "decoded_name": null,
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -655,6 +687,7 @@
    "bus": "hs",
    "module": "241",
    "request": "AE130101000000",
+   "dialect": "gmlan",
    "cpid": "13",
    "name": "body control module control 13: output bit 01 commanded ON -- Autel test at 15:54:42",
    "status": "captured",
@@ -687,7 +720,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -695,6 +729,7 @@
    "bus": "hs",
    "module": "241",
    "request": "AE130100000000",
+   "dialect": "gmlan",
    "cpid": "13",
    "name": "body control module control 13: output bit 01 commanded OFF -- Autel test at 15:54:46",
    "status": "captured",
@@ -727,7 +762,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -735,6 +771,7 @@
    "bus": "hs",
    "module": "241",
    "request": "AE00",
+   "dialect": "gmlan",
    "cpid": "00",
    "name": "BCM: return all controls to normal (sent after each BCM test) -- Autel test at 15:54:50",
    "status": "captured",
@@ -766,8 +803,9 @@
    },
    "drive_capable": false,
    "admission": {
-    "decoded_name": "BCM: return all device controls to normal",
-    "bench_verified": false
+    "decoded_name": null,
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -775,6 +813,7 @@
    "bus": "hs",
    "module": "241",
    "request": "AE122020000000",
+   "dialect": "gmlan",
    "cpid": "12",
    "name": "body control module control 12: output bit 20 commanded ON -- Autel test at 15:55:01",
    "status": "captured",
@@ -807,7 +846,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -815,6 +855,7 @@
    "bus": "hs",
    "module": "241",
    "request": "AE122000000000",
+   "dialect": "gmlan",
    "cpid": "12",
    "name": "body control module control 12: output bit 20 commanded OFF -- Autel test at 15:55:04",
    "status": "captured",
@@ -847,7 +888,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -855,6 +897,7 @@
    "bus": "hs",
    "module": "241",
    "request": "AE121010000000",
+   "dialect": "gmlan",
    "cpid": "12",
    "name": "body control module control 12: output bit 10 commanded ON -- Autel test at 15:55:21",
    "status": "captured",
@@ -887,7 +930,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -895,6 +939,7 @@
    "bus": "hs",
    "module": "241",
    "request": "AE121000000000",
+   "dialect": "gmlan",
    "cpid": "12",
    "name": "body control module control 12: output bit 10 commanded OFF -- Autel test at 15:55:25",
    "status": "captured",
@@ -927,7 +972,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -935,6 +981,7 @@
    "bus": "hs",
    "module": "241",
    "request": "AE131010000000",
+   "dialect": "gmlan",
    "cpid": "13",
    "name": "body control module control 13: output bit 10 commanded ON -- Autel test at 15:55:44",
    "status": "captured",
@@ -967,7 +1014,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -975,6 +1023,7 @@
    "bus": "hs",
    "module": "241",
    "request": "AE131000000000",
+   "dialect": "gmlan",
    "cpid": "13",
    "name": "body control module control 13: output bit 10 commanded OFF -- Autel test at 15:55:53",
    "status": "captured",
@@ -1007,7 +1056,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -1015,6 +1065,7 @@
    "bus": "hs",
    "module": "241",
    "request": "AE100404000000",
+   "dialect": "gmlan",
    "cpid": "10",
    "name": "body control module control 10: output bit 04 commanded ON -- Autel test at 15:56:25",
    "status": "captured",
@@ -1047,7 +1098,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   },
   {
@@ -1055,6 +1107,7 @@
    "bus": "hs",
    "module": "241",
    "request": "AE100400000000",
+   "dialect": "gmlan",
    "cpid": "10",
    "name": "body control module control 10: output bit 04 commanded OFF -- Autel test at 15:56:28",
    "status": "captured",
@@ -1087,7 +1140,8 @@
    "drive_capable": false,
    "admission": {
     "decoded_name": null,
-    "bench_verified": false
+    "bench_verified": false,
+    "observed_result": null
    }
   }
  ]

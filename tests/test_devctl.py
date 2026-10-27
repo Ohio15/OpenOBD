@@ -91,22 +91,27 @@ PARK = {"tcm_prndl": reader("PARK")}
 
 def admitted(entry, rpm=(400, 1200), **fields):
     """Wrap a test entry as an ADMITTED schema-v2 control: decoded, bench
-    verified, tier 1, paired to a decoded+verified release on the same module.
+    verified, tier 0, paired to a decoded+verified AE00 release on the same
+    module.
     `fields` patch the command entry. Returns (ControlEntry, ControlsCatalog)."""
     profile = {"range_required": "PARK", "range_signal": "tcm_prndl",
                "parking_brake_attested": True, "speed_max_kph": 0,
                "rpm_window": list(rpm), "voltage_window": [12.0, 15.5]}
     common = {"bus": entry.get("bus", "hs"), "module": entry["module"],
-              "max_seconds": entry.get("max_seconds", 20), "hazard_class": 1,
-              "tier": 1, "interlock_profile": profile, "drive_capable": False,
+              "max_seconds": entry.get("max_seconds", 20), "hazard_class": 0,
+              "tier": 0, "interlock_profile": profile, "drive_capable": False,
+              "dialect": "gmlan", "observed_outcome": "positive",
               "profile_justification": "test fixture"}
-    release = {**common, "id": "REL", "request": "AEFF", "cpid": "FF",
-               "name": "release", "role": "release", "release_pair": None,
+    release = {**common, "id": "REL", "request": "AE00", "cpid": "00",
+               "name": "return path", "role": "release", "release_pair": None,
                "admission": {"decoded_name": "return to normal",
-                             "bench_verified": True}}
+                             "bench_verified": True,
+                             "observed_result": "output returned to normal"}}
     command = {**common, **entry, "role": "command", "release_pair": "REL",
                "admission": {"decoded_name": "test output",
-                             "bench_verified": True}}
+                             "bench_verified": True,
+                             "observed_result": "output actuated"}}
+    command.setdefault("status", "captured")
     command.update(fields)
     cat = cc.parse_controls({"schema_version": 2, "controls": [release, command]})
     return cat[entry["id"]], cat
@@ -189,7 +194,8 @@ def test_non_devctl_entry_and_unknown_module_refused():
     with pytest.raises(dc.Refused):
         run(FakeTruck(), {**ENTRY, "module": "7E7"}, yes)
     with pytest.raises(dc.Refused):
-        run(FakeTruck(), {**ENTRY, "request": "AE" + "00" * 8}, yes)
+        dc.run_control(FakeTruck(), dataclasses.replace(e, request="AE03" + "00" * 7),
+                       cat, yes, range_readers=PARK)
 
 
 def test_tty_confirm_refuses_without_a_terminal(monkeypatch):
@@ -340,6 +346,22 @@ def test_list_is_numbered_and_named(capsys):
     assert "TCCM (transfer case)" in out and "Enter the NUMBER" in out
 
 
+def _admit_bcm_pair(doc):
+    """Pretend 241-AE13-17 and its release were decoded and bench-verified
+    (names rewritten off their capture labels, evidence recorded)."""
+    for c in doc["controls"]:
+        if c["id"] == "241-AE00-19":
+            c["name"] = "BCM return all device controls to normal"
+            c["admission"] = {"decoded_name": "return all to normal",
+                              "bench_verified": True,
+                              "observed_result": "test lamp went out"}
+        if c["id"] == "241-AE13-17":
+            c["name"] = "BCM test lamp ON"
+            c["admission"] = {"decoded_name": "test lamp",
+                              "bench_verified": True,
+                              "observed_result": "test lamp lit"}
+
+
 def test_run_accepts_the_list_number(monkeypatch, tmp_path):
     seen = {}
 
@@ -352,12 +374,7 @@ def test_run_accepts_the_list_number(monkeypatch, tmp_path):
         pass
     with open(cc.DEFAULT_PATH, encoding="utf-8") as fh:
         doc = json.load(fh)
-    for c in doc["controls"]:
-        if c["id"] in ("241-AE00-19", "241-AE13-17"):
-            c["admission"]["bench_verified"] = True
-        if c["id"] == "241-AE13-17":
-            c["name"] = "body control module control 13: test lamp ON"
-            c["admission"]["decoded_name"] = "test lamp"
+    _admit_bcm_pair(doc)
     p = tmp_path / "controls.json"
     p.write_text(json.dumps(doc), encoding="utf-8")
     monkeypatch.setattr(dc, "CATALOG_PATH", str(p))
@@ -375,6 +392,7 @@ def test_run_accepts_the_list_number(monkeypatch, tmp_path):
     ("7E4-AE03-1", "excluded (tier null)"),
     ("241-AE10-26", "not decoded to a named physical output"),
     ("7E4-AE01-10", "recovery step 7E4-AE03-1 is not eligible"),
+    ("7E2-AE30-11", "tier 1 is not admitted"),
 ])
 def test_run_refuses_unadmitted_entry_before_opening_the_adapter(
         monkeypatch, capsys, cid, why):
@@ -393,12 +411,7 @@ def test_run_refuses_without_a_range_reader_before_opening(monkeypatch, capsys,
                                                            tmp_path):
     with open(cc.DEFAULT_PATH, encoding="utf-8") as fh:
         doc = json.load(fh)
-    for c in doc["controls"]:
-        if c["id"] in ("241-AE00-19", "241-AE13-17"):
-            c["admission"]["bench_verified"] = True
-        if c["id"] == "241-AE13-17":
-            c["name"] = "body control module control 13: test lamp ON"
-            c["admission"]["decoded_name"] = "test lamp"
+    _admit_bcm_pair(doc)
     p = tmp_path / "controls.json"
     p.write_text(json.dumps(doc), encoding="utf-8")
     monkeypatch.setattr(dc, "CATALOG_PATH", str(p))
@@ -414,7 +427,8 @@ def test_run_refuses_without_a_range_reader_before_opening(monkeypatch, capsys,
 def test_run_control_refuses_unadmitted_entry_itself():
     fake = FakeTruck()
     e, cat = admitted(ENTRY, admission={"decoded_name": "x",
-                                        "bench_verified": False})
+                                        "bench_verified": False,
+                                        "observed_result": None})
     with pytest.raises(dc.Refused, match="not bench-verified"):
         dc.run_control(fake, e, cat, yes, range_readers=PARK)
     assert "open" not in fake.calls
@@ -517,3 +531,20 @@ def test_shipped_catalog_has_the_captured_tccm_control():
     ids = {c["id"]: c for c in cat["controls"]}
     assert ids["7E4-AE03-1"]["request"] == "AE0302020000"
     assert ids["7E4-AE03-1"]["status"] == "captured"
+
+
+def test_attestation_only_profile_runs_without_a_reader():
+    # Only a catalog entry that declares no range signal, with a written
+    # justification, runs on attestation; the plan says the range was not read.
+    seen = {}
+
+    def capture(plan, phrase):
+        seen["plan"] = plan
+        return False
+    e, cat = admitted(ENTRY)
+    profile = dataclasses.replace(e.interlock_profile, range_signal=None)
+    e = dataclasses.replace(e, interlock_profile=profile)
+    res = dc.run_control(FakeTruck(), e, cat, capture, range_readers={},
+                         clock=clock_ticks())
+    assert res["aborted"] == "not confirmed"
+    assert "NOT READ (attestation only: test fixture)" in seen["plan"]

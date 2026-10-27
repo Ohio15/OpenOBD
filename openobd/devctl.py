@@ -20,8 +20,10 @@ the entry's interlock_profile:
   * vehicle speed (ECM PID 0D) is at most speed_max_kph on TWO consecutive
     reads, so one stale frame cannot pass as a stop;
   * the range (PARK) is READ from range_signal by a registered RangeReader --
-    with no reader for the signal the run is refused, never attested only --
-    and the operator also attests PARK and the parking brake;
+    with no reader for the signal the run is refused, never attested only;
+    only a profile that declares no range signal (with a written
+    profile_justification in the catalog) runs on attestation alone -- and
+    the operator attests PARK and the parking brake in every case;
   * the operator types an exact confirmation phrase at an interactive terminal
     (refused when stdin is not a TTY -- no script can approve an actuation).
 While it runs: TesterPresent every 1 s, vehicle speed re-read every 1 s (any
@@ -385,7 +387,7 @@ def interlock_problems(il: dict, profile) -> list:
                      "(ECM did not answer PID 0D)")
         elif il[key] > profile.speed_max_kph:
             p.append(f"vehicle moving ({il[key]} km/h on the {label} read)")
-    if il["range"] != profile.range_required:
+    if profile.range_signal is not None and il["range"] != profile.range_required:
         p.append(f"transmission range is {il['range'] or 'unreadable'}, "
                  f"needs {profile.range_required}")
     return p
@@ -422,8 +424,9 @@ def run_control(j, entry, catalog, confirm: Callable[[str, str], bool],
                       + "; ".join(why))
     profile = entry.interlock_profile
     readers = RANGE_READERS if range_readers is None else range_readers
-    range_reader = readers.get(profile.range_signal)
-    if range_reader is None:
+    range_reader = (None if profile.range_signal is None
+                    else readers.get(profile.range_signal))
+    if profile.range_signal is not None and range_reader is None:
         raise Refused(f"no reader for range signal {profile.range_signal!r}: "
                       f"{profile.range_required} must be read from the vehicle, "
                       "not only attested (D3)")
@@ -451,7 +454,7 @@ def run_control(j, entry, catalog, confirm: Callable[[str, str], bool],
             return True
         if cid == ECM_REQ and p in (b"\x01\x0c", b"\x01\x0d"):
             return True
-        if range_reader.allow(cid, p):
+        if range_reader is not None and range_reader.allow(cid, p):
             return True
         if stream and cid == req and p[:1] == b"\x2c" and \
                 p[1] in stream.DPIDS and \
@@ -471,7 +474,8 @@ def run_control(j, entry, catalog, confirm: Callable[[str, str], bool],
     # them on HS first, then moves the SAME device session to the body bus;
     # on SW the vehicle speed cannot be re-read during the run.
     first_ids = [resp, uudt, ECM_RESP] if bus == "hs" else [ECM_RESP]
-    first_ids += [i for i in range_reader.response_ids if i not in first_ids]
+    if range_reader is not None:
+        first_ids += [i for i in range_reader.response_ids if i not in first_ids]
     w = Wire(j, allow, first_ids, clock=clock, bus="hs")
     with w:
         try:
@@ -487,8 +491,12 @@ def run_control(j, entry, catalog, confirm: Callable[[str, str], bool],
                     f"  request  {entry.request}  ({entry.name})\n"
                     f"  source   {entry.source}  status {entry.status}\n"
                     f"  engine   {il['rpm']:.0f} rpm, vehicle stopped "
-                    f"(2 reads), range {il['range']} read from "
-                    f"{profile.range_signal}, battery {il['volts']:.1f} V\n"
+                    f"(2 reads), range "
+                    + (f"{il['range']} read from {profile.range_signal}"
+                       if profile.range_signal is not None
+                       else "NOT READ (attestation only: "
+                            f"{entry.profile_justification})")
+                    + f", battery {il['volts']:.1f} V\n"
                     f"  limit    {seconds:.0f} s, then control is returned ($20)\n"
                     f"  YOU confirm the transmission is in "
                     f"{profile.range_required}, the PARKING BRAKE is applied, "
@@ -622,7 +630,8 @@ def main(argv=None) -> int:
         print(f"REFUSED: {entry.id} is not admitted for live firing: "
               + "; ".join(why))
         return 2
-    if RANGE_READERS.get(entry.interlock_profile.range_signal) is None:
+    signal = entry.interlock_profile.range_signal
+    if signal is not None and RANGE_READERS.get(signal) is None:
         print(f"REFUSED: no reader for range signal "
               f"{entry.interlock_profile.range_signal!r}; "
               f"{entry.interlock_profile.range_required} must be read, not only "

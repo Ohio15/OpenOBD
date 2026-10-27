@@ -5,36 +5,48 @@ live set. INERT: nothing here talks to a vehicle, opens a transport, or imports
 Qt. It decides which captured controls MAY be offered for firing; firing
 itself belongs to the control core (decision D2, 0f5688ed).
 
-Schema version 2 (decisions D1 d7fedb9f, D3 e2c962dd). Top level:
+Schema version 2 (decisions D1 d7fedb9f, D3 e2c962dd, D5 a56a68b9). Top level:
     {"schema_version": 2, "controls": [entry, ...]}
 Each entry keeps the capture fields devctl writes (id, module, request, cpid,
-name, bus, status, source, observed_*, max_seconds, ...) and adds:
+name, bus, status, source, observed_*, max_seconds, autel_time) and adds the
+fields below. The key set is CLOSED at every level (top, entry,
+interlock_profile, admission): an unknown or misspelled key fails the load.
+    dialect           "gmlan" | "uds": the diagnostic dialect the request is
+                      spoken in. Every Autel capture so far is GMLAN.
     role              "command" | "release". A release hands control back to
                       the module (GMLAN $AE return-to-normal); it is never
-                      itself paired.
+                      itself paired, and it must be a captured POSITIVE
+                      exchange that is either AE00 (return all) or the same
+                      CPID as its commands with every byte after the CPID
+                      cleared -- a "commanded OFF" (non-zero mask) is never
+                      a release.
     hazard_class      0 body outputs, 1 powertrain stationary, 2 mechanical
                       motion or a state that can be left indeterminate.
     tier              0 / 1 / 2 (D1 Phase 1 sequencing), or null when the
-                      entry is excluded from the live set.
+                      entry is excluded from the live set. Only tiers in
+                      ADMITTED_TIERS can be live at all (D5: Tier 0 at ship).
     exclusion_reason  required, non-empty, exactly when tier is null.
     release_pair      id of the release that undoes this command; required for
                       every non-excluded command, null for a release.
     recovery          optional list of ids to run if the release alone does
                       not restore the actuator (TCCM motor drive).
-    interlock_profile range_required ("PARK"), range_signal ("tcm_prndl";
-                      PRNDL is readable on this truck, so null is refused),
+    interlock_profile range_required ("PARK"), range_signal ("tcm_prndl"),
                       parking_brake_attested (true), speed_max_kph (0),
                       rpm_window [lo, hi] ([0, 0] = KOEO), voltage_window
-                      [lo, hi]. rpm_window and voltage_window must equal the
-                      module's D3 default (MODULE_RPM_DEFAULTS,
-                      DEFAULT_VOLTAGE_WINDOW) unless the entry carries
-    profile_justification  a non-empty reason for the deviation.
+                      exactly DEFAULT_VOLTAGE_WINDOW (no deviation, D5).
+                      rpm_window must equal the module's D3 default
+                      (MODULE_RPM_DEFAULTS) and range_signal must be set
+                      (PRNDL is readable on this truck) unless the entry
+                      carries
+    profile_justification  a non-empty reason for that deviation.
     drive_capable     false for every entry at v0.40.0 (D1 empty whitelist).
     admission         decoded_name (the physical output, once decoded; null
-                      while it is still "output bit"/"data [...]" -- the
-                      Autel-derived `name` is NOT a decode, and the loader
-                      refuses a decoded_name on an entry whose `name` still
-                      reads as undecoded) and bench_verified.
+                      while `name` is still a capture label -- Autel labels
+                      and observed actuator travel are NOT decodes, and the
+                      loader refuses a decoded_name on an entry whose `name`
+                      still reads as one), bench_verified, and
+                      observed_result (the bench evidence; required, non-
+                      blank, whenever bench_verified is true).
 
 `live_eligible` is deliberately NOT stored in the JSON: it is computed by
 is_live_eligible() so a hand edit can never claim eligibility the rule does not
@@ -53,8 +65,13 @@ SCHEMA_VERSION = 2
 DEFAULT_PATH = os.path.join(os.path.dirname(__file__), "data", "controls.json")
 
 ROLES = ("command", "release")
+DIALECTS = ("gmlan", "uds")
 HAZARD_CLASSES = (0, 1, 2)
 TIERS = (0, 1, 2)
+#: Tiers that may be live in this release (D5 a56a68b9): Tier 1 joins when a
+#: PRNDL decoder exists and the TCM entries are decoded; Tier 2 only when the
+#: TCCM learn's conditions are decoded and its recovery is itself eligible.
+ADMITTED_TIERS = (0,)
 RANGES = ("PARK",)
 RANGE_SIGNALS = ("tcm_prndl",)
 
@@ -68,8 +85,30 @@ MODULE_RPM_DEFAULTS: dict[tuple[str, str], tuple[int, int]] = {
 }
 DEFAULT_VOLTAGE_WINDOW = (12.0, 15.5)
 
-#: Phrases capture names carry while the physical output is still unknown.
-UNDECODED_NAME_MARKERS = ("output bit", "data [", "meaning not decoded")
+#: Phrases a capture label carries while the physical output is still
+#: unknown. Every Autel capture is labelled "... Autel test at ..." and devctl
+#: imports "(unnamed ...)"; releases and motor-drive entries carry protocol or
+#: observed-travel labels, which are not decodes either (D5).
+UNDECODED_NAME_MARKERS = ("output bit", "data [", "meaning not decoded",
+                          "autel", "(unnamed", "hand back to module",
+                          "return all controls", "return control to module",
+                          "motor drive", "drive down", "drive up")
+
+#: The closed key sets (D5): anything else is a typo or an unreviewed field.
+TOP_KEYS = frozenset({"schema_version", "controls"})
+ENTRY_KEYS = frozenset({
+    # capture fields (devctl --import)
+    "id", "bus", "module", "request", "cpid", "name", "status", "source",
+    "observed_outcome", "observed_response", "observed_counts", "max_seconds",
+    "autel_time",
+    # schema v2
+    "dialect", "role", "hazard_class", "tier", "release_pair", "recovery",
+    "exclusion_reason", "interlock_profile", "profile_justification",
+    "drive_capable", "admission"})
+PROFILE_KEYS = frozenset({"range_required", "range_signal",
+                          "parking_brake_attested", "speed_max_kph",
+                          "rpm_window", "voltage_window"})
+ADMISSION_KEYS = frozenset({"decoded_name", "bench_verified", "observed_result"})
 
 _HEX = re.compile(r"(?:[0-9A-F]{2})+")
 
@@ -97,6 +136,7 @@ class InterlockProfile:
 class Admission:
     decoded_name: Optional[str]
     bench_verified: bool
+    observed_result: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -110,6 +150,8 @@ class ControlEntry:
     max_seconds: float
     status: Optional[str]
     source: Optional[str]
+    observed_outcome: Optional[str]
+    dialect: str
     role: str
     hazard_class: int
     tier: Optional[int]
@@ -169,6 +211,15 @@ def _req(obj: Mapping[str, Any], key: str, where: str) -> Any:
     return obj[key]
 
 
+def _closed(obj: Mapping[str, Any], allowed: frozenset, where: str) -> None:
+    if "live_eligible" in obj:
+        raise _fail(where, "'live_eligible' is computed by is_live_eligible() "
+                    "and must not be stored in the catalog")
+    unknown = sorted(set(obj) - allowed)
+    if unknown:
+        raise _fail(where, f"unknown key(s) {unknown}; allowed: {sorted(allowed)}")
+
+
 def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
@@ -200,13 +251,13 @@ def _profile(raw: Any, where: str, drive_capable: bool) -> InterlockProfile:
     where = f"{where}.interlock_profile"
     if not isinstance(raw, dict):
         raise _fail(where, "must be an object")
+    _closed(raw, PROFILE_KEYS, where)
     rng = _req(raw, "range_required", where)
     if rng not in RANGES:
         raise _fail(where, f"range_required must be one of {RANGES} (D3), got {rng!r}")
     sig = _req(raw, "range_signal", where)
-    if sig not in RANGE_SIGNALS:
-        raise _fail(where, f"range_signal must be one of {RANGE_SIGNALS} (D3: PRNDL is "
-                    f"readable on this truck, so attestation alone is refused), got {sig!r}")
+    if sig is not None and sig not in RANGE_SIGNALS:
+        raise _fail(where, f"range_signal must be one of {RANGE_SIGNALS} or null, got {sig!r}")
     brake = _req(raw, "parking_brake_attested", where)
     if brake is not True:
         raise _fail(where, "parking_brake_attested must be true (D3)")
@@ -218,8 +269,9 @@ def _profile(raw: Any, where: str, drive_capable: bool) -> InterlockProfile:
     rpm = _window(_req(raw, "rpm_window", where), "rpm_window", where, integer=True)
     volts = _window(_req(raw, "voltage_window", where), "voltage_window", where,
                     integer=False)
-    if volts[0] == volts[1]:
-        raise _fail(where, "voltage_window must have lo < hi")
+    if (float(volts[0]), float(volts[1])) != DEFAULT_VOLTAGE_WINDOW:
+        raise _fail(where, f"voltage_window must be exactly {list(DEFAULT_VOLTAGE_WINDOW)} "
+                    f"(D3/D5; no deviation is accepted), got {list(volts)}")
     return InterlockProfile(rng, sig, True, speed, rpm, (float(volts[0]), float(volts[1])))
 
 
@@ -227,14 +279,18 @@ def _admission(raw: Any, where: str) -> Admission:
     where = f"{where}.admission"
     if not isinstance(raw, dict):
         raise _fail(where, "must be an object")
-    if "live_eligible" in raw:
-        raise _fail(where, "'live_eligible' is computed by is_live_eligible() "
-                    "and must not be stored in the catalog")
+    _closed(raw, ADMISSION_KEYS, where)
     name = _text(_req(raw, "decoded_name", where), "decoded_name", where, nullable=True)
     verified = _req(raw, "bench_verified", where)
     if not isinstance(verified, bool):
         raise _fail(where, "bench_verified must be true or false")
-    return Admission(name, verified)
+    result = _req(raw, "observed_result", where)
+    if result is not None and not isinstance(result, str):
+        raise _fail(where, "observed_result must be a string or null")
+    if verified and (result is None or not result.strip()):
+        raise _fail(where, "bench_verified is true but observed_result is empty; "
+                    "record what the bench run showed")
+    return Admission(name, verified, result)
 
 
 def _entry(raw: Any, index: int) -> ControlEntry:
@@ -243,6 +299,7 @@ def _entry(raw: Any, index: int) -> ControlEntry:
         raise _fail(where, "must be an object")
     cid = _text(_req(raw, "id", where), "id", where)
     where = f"control {cid}"
+    _closed(raw, ENTRY_KEYS, where)
     module = _text(_req(raw, "module", where), "module", where)
     bus = raw.get("bus", "hs")
     if bus not in ("hs", "sw"):
@@ -251,6 +308,14 @@ def _entry(raw: Any, index: int) -> ControlEntry:
     if not _HEX.fullmatch(request) or not request.startswith("AE"):
         raise _fail(where, f"request must be uppercase hex bytes starting AE, got {request!r}")
     cpid = _text(_req(raw, "cpid", where), "cpid", where)
+    if cpid != request[2:4]:
+        raise _fail(where, f"cpid {cpid!r} does not match the request's CPID {request[2:4]!r}")
+    dialect = _req(raw, "dialect", where)
+    if dialect not in DIALECTS:
+        raise _fail(where, f"dialect must be one of {DIALECTS}, got {dialect!r}")
+    outcome = raw.get("observed_outcome")
+    if outcome is not None and not isinstance(outcome, str):
+        raise _fail(where, "observed_outcome must be a string or null")
     name = _text(_req(raw, "name", where), "name", where)
     max_seconds = _req(raw, "max_seconds", where)
     if not _is_num(max_seconds) or max_seconds <= 0:
@@ -259,6 +324,15 @@ def _entry(raw: Any, index: int) -> ControlEntry:
     role = _req(raw, "role", where)
     if role not in ROLES:
         raise _fail(where, f"role must be one of {ROLES}, got {role!r}")
+    if role == "release":
+        cleared = set(request[4:]) <= {"0"}
+        if not (request == "AE00" or cleared):
+            raise _fail(where, f"request {request} cannot be a release: a release is AE00 "
+                        "or its CPID with every following byte cleared (a 'commanded "
+                        "OFF' with a non-zero mask is a command)")
+        if outcome != "positive":
+            raise _fail(where, "a release must be a captured positive exchange "
+                        f"(observed_outcome {outcome!r})")
     hazard = _req(raw, "hazard_class", where)
     if not _is_int(hazard) or hazard not in HAZARD_CLASSES:
         raise _fail(where, f"hazard_class must be one of {HAZARD_CLASSES}, got {hazard!r}")
@@ -300,20 +374,16 @@ def _entry(raw: Any, index: int) -> ControlEntry:
             raise _fail(where, f"interlock_profile.rpm_window {list(profile.rpm_window)} "
                         f"differs from the module default {list(default_rpm)} without a "
                         "profile_justification")
-        if profile.voltage_window != DEFAULT_VOLTAGE_WINDOW:
-            raise _fail(where, f"interlock_profile.voltage_window "
-                        f"{list(profile.voltage_window)} differs from the default "
-                        f"{list(DEFAULT_VOLTAGE_WINDOW)} without a profile_justification")
-    if "live_eligible" in raw:
-        raise _fail(where, "'live_eligible' is computed by is_live_eligible() "
-                    "and must not be stored in the catalog")
+        if profile.range_signal is None:
+            raise _fail(where, "interlock_profile.range_signal is null (attestation only) "
+                        "without a profile_justification; PRNDL is readable on this truck")
 
     return ControlEntry(
         id=cid, module=module, bus=bus, request=request, cpid=cpid, name=name,
         max_seconds=max_seconds,
         status=raw.get("status") if isinstance(raw.get("status"), str) else None,
         source=raw.get("source") if isinstance(raw.get("source"), str) else None,
-        role=role, hazard_class=hazard, tier=tier,
+        observed_outcome=outcome, dialect=dialect, role=role, hazard_class=hazard, tier=tier,
         release_pair=pair, recovery=tuple(recovery), exclusion_reason=reason,
         interlock_profile=profile, profile_justification=justification,
         drive_capable=drive, admission=admission)
@@ -346,6 +416,9 @@ def _cross_check(entries: list[ControlEntry]) -> None:
                 raise _fail(where, f"release_pair {e.release_pair!r} is not a release entry")
             if (target.bus, target.module) != (e.bus, e.module):
                 raise _fail(where, f"release_pair {e.release_pair!r} is on a different module")
+            if target.request != "AE00" and target.cpid != e.cpid:
+                raise _fail(where, f"release_pair {e.release_pair!r} is CPID {target.cpid}, "
+                            f"this command is CPID {e.cpid}; only AE00 releases any CPID")
         for r in e.recovery:
             target = by_id.get(r)
             if target is None:
@@ -365,6 +438,7 @@ def parse_controls(data: Any) -> ControlsCatalog:
     """Validate an already-decoded controls.json document."""
     if not isinstance(data, dict):
         raise ControlsCatalogError("catalog: top level must be an object")
+    _closed(data, TOP_KEYS, "catalog")
     version = data.get("schema_version")
     if not _is_int(version) or version != SCHEMA_VERSION:
         raise ControlsCatalogError(
@@ -411,10 +485,10 @@ def ineligibility_reasons(entry: ControlEntry, catalog: ControlsCatalog,
                           _seen: frozenset = frozenset()) -> list[str]:
     """Why `entry` may NOT be offered for live firing in v0.40.0; empty when it
     may. The rule (D1 d7fedb9f), all of:
-      * not excluded (tier is not None);
+      * not excluded (tier is not None) and the tier is in ADMITTED_TIERS;
       * not drive_capable (the v0.40.0 drive-capable whitelist is empty);
       * decoded to a named physical output (admission.decoded_name);
-      * bench_verified;
+      * bench_verified, with the observed_result recorded;
       * a release with no pair, OR a command whose release_pair resolves in
         `catalog` to a release entry that is itself eligible (a command is
         never offered when its return-to-normal could not be sent);
@@ -427,12 +501,17 @@ def ineligibility_reasons(entry: ControlEntry, catalog: ControlsCatalog,
     why: list[str] = []
     if entry.tier is None:
         why.append(f"excluded (tier null): {entry.exclusion_reason}")
+    elif entry.tier not in ADMITTED_TIERS:
+        why.append(f"tier {entry.tier} is not admitted in this release "
+                   f"(admitted: {list(ADMITTED_TIERS)})")
     if entry.drive_capable:
         why.append("drive-capable controls are not admitted in v0.40.0")
     if not entry.admission.decoded_name:
         why.append("not decoded to a named physical output")
     if not entry.admission.bench_verified:
         why.append("not bench-verified")
+    elif not (entry.admission.observed_result or "").strip():
+        why.append("bench-verified without an observed_result")
     if entry.is_release:
         if entry.release_pair is not None:
             why.append("a release must not itself be paired")
@@ -482,6 +561,7 @@ def unclassified_fields(module: str, bus: str = "hs") -> dict:
     module with no default gets KOEO plus a profile_justification saying so."""
     default_rpm = MODULE_RPM_DEFAULTS.get((bus, module.upper()))
     fields = {
+        "dialect": "gmlan",                     # $AE is a GMLAN service
         "role": "command",
         "hazard_class": 2,
         "tier": None,
@@ -494,7 +574,8 @@ def unclassified_fields(module: str, bus: str = "hs") -> dict:
             "rpm_window": list(default_rpm or (0, 0)),
             "voltage_window": list(DEFAULT_VOLTAGE_WINDOW)},
         "drive_capable": False,
-        "admission": {"decoded_name": None, "bench_verified": False},
+        "admission": {"decoded_name": None, "bench_verified": False,
+                      "observed_result": None},
     }
     if default_rpm is None:
         fields["profile_justification"] = (

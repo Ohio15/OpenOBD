@@ -15,21 +15,24 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   range signal, parking brake, stopped, RPM window, 12.0–15.5 V) and its
   admission state (decoded output name, bench verified). The TCCM learn is
   excluded from the live set with its reason.
-- `openobd/controls.py` loads and validates the catalog (schema version,
-  required fields, every release and recovery id resolves, a release is never
-  itself paired) and decides live eligibility in code: a control is offered
-  only when it is decoded to a named output, bench verified, in a tier, not
-  drive capable, and its release is eligible too. Nothing is eligible today:
-  no control has been decoded and bench verified yet. Nothing in this release
-  sends anything to the truck.
-
-  A control whose recovery steps are not eligible is not eligible either, so
-  the transfer case motor drive stays out while the TCCM learn is excluded.
-- The loader also refuses: a decoded name on an entry still named "output
-  bit"/"data [...]"; a missing range signal; an RPM or voltage window that
-  differs from the module default (BCM 0 rpm, TCM/TCCM 400–1200 rpm,
-  12.0–15.5 V) without a written justification; duplicate JSON keys; two
-  entries with the same bus, module and request; nested recovery steps.
+- `openobd/controls.py` loads and validates the catalog and decides live
+  eligibility in code. A control is offered only when it is in an admitted
+  tier (Tier 0, the BCM, at this release), decoded to a named output, bench
+  verified with the observed result written down, not drive capable, and its
+  release and every recovery step are eligible too. Nothing is eligible
+  today: no control has been decoded or bench verified yet, so the transfer
+  case motor drive in particular stays out while the TCCM learn is excluded.
+- Every entry records its diagnostic dialect (`gmlan` for every capture so
+  far). The six names that were filled in from Autel labels and observed
+  actuator travel are back to undecoded: those are not decodes.
+- The loader refuses: an unknown or misspelled key at any level; duplicate
+  JSON keys; two entries with the same bus, module and request; a decoded
+  name on an entry still carrying a capture label; bench verified without an
+  observed result; an RPM window other than the module default (BCM 0 rpm,
+  TCM/TCCM 400–1200 rpm) or no range signal without a written justification;
+  any battery window other than 12.0–15.5 V; a release that is not a
+  captured positive AE00, or its CPID with every following byte cleared (a
+  "commanded OFF" is never a release); nested recovery steps.
 
 ### Changed
 - **`devctl --run` only fires admitted controls.** It loads the schema-v2
