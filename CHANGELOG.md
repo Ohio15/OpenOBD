@@ -23,9 +23,27 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
   no control has been decoded and bench verified yet. Nothing in this release
   sends anything to the truck.
 
+  A control whose recovery steps are not eligible is not eligible either, so
+  the transfer case motor drive stays out while the TCCM learn is excluded.
+- The loader also refuses: a decoded name on an entry still named "output
+  bit"/"data [...]"; a missing range signal; an RPM or voltage window that
+  differs from the module default (BCM 0 rpm, TCM/TCCM 400–1200 rpm,
+  12.0–15.5 V) without a written justification; duplicate JSON keys; two
+  entries with the same bus, module and request; nested recovery steps.
+
 ### Changed
+- **`devctl --run` only fires admitted controls.** It loads the schema-v2
+  catalog and refuses, with the reasons, any control that is not eligible,
+  before the adapter is opened. Today that is every control.
+- **`devctl` interlocks follow the control's profile (D3).** RPM window per
+  control (BCM controls now run engine off instead of being refused), battery
+  12.0–15.5 V, vehicle speed 0 on two reads in a row, the range read as PARK
+  from the TCM (refused while no PRNDL request has been captured, never taken
+  on attestation alone), and the prompt asks for PARK and the parking brake.
+  The phrase is now "ACTUATE <id> IN PARK". Neutral is gone.
 - `devctl --import` adds newly captured controls as excluded and unclassified
-  under schema v2, so an import keeps the catalog valid.
+  under schema v2 with the module's RPM default, and refuses to write a
+  catalog that would not load.
 
 ## 0.39.1 — 2026-10-26
 

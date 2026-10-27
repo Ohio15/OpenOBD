@@ -58,12 +58,21 @@ def test_release_pairs_match_d1(cat):
     assert releases == {"241-AE00-19", "7E2-AE30-13", "7E2-AE38-16", "7E4-AE01-3"}
 
 
-def test_motor_drive_carries_recovery(cat):
+def test_motor_drive_is_not_eligible_while_its_recovery_step_is_not(raw):
+    # Everything the motor drive needs is decoded and bench-verified EXCEPT
+    # the excluded TCCM learn in its recovery: it must stay ineligible.
+    doc = copy.deepcopy(raw)
+    for c in doc["controls"]:
+        if c["id"] in ("7E4-AE01-3", "7E4-AE01-9", "7E4-AE01-10"):
+            c["admission"]["bench_verified"] = True
+    cat = cc.parse_controls(doc)
+    assert cc.is_live_eligible(cat["7E4-AE01-3"], cat)
     for cid in ("7E4-AE01-9", "7E4-AE01-10"):
         e = cat[cid]
-        assert e.recovery == ("7E4-AE01-3", "7E4-AE03-1")
         assert e.hazard_class == 2 and e.tier == 2
-        assert e.interlock_profile.rpm_window == (400, 1200)
+        assert not cc.is_live_eligible(e, cat)
+        assert cc.ineligibility_reasons(e, cat) == [
+            "recovery step 7E4-AE03-1 is not eligible"]
 
 
 def test_exactly_one_entry_excluded(cat):
@@ -224,9 +233,11 @@ def test_rule_refuses_unresolved_pair_on_unvalidated_catalog():
     (lambda d: d["controls"][1]["interlock_profile"].update(voltage_window=[12.0]), "voltage_window"),
     (lambda d: d["controls"].append(copy.deepcopy(d["controls"][1])), "duplicate"),
     (lambda d: d["controls"][1].update(release_pair="C2") or d["controls"].append(
-        dict(copy.deepcopy(d["controls"][1]), id="C2", release_pair="R")),
+        dict(copy.deepcopy(d["controls"][1]), id="C2", release_pair="R",
+             request="AE100808000000")),
      "is not a release entry"),
-    (lambda d: d["controls"][0].update(module="7E4"), "different module"),
+    (lambda d: d["controls"][0].update(module="7E4", profile_justification="test"),
+     "different module"),
     (lambda d: d["controls"][1].update(request="ae10"), "request"),
 ])
 def test_loader_rejects(mutate, message):
@@ -270,3 +281,141 @@ def test_devctl_import_writes_schema_v2_entries(raw):
 def test_devctl_empty_catalog_is_schema_v2(tmp_path):
     doc = dc.load_catalog(str(tmp_path / "absent.json"))
     assert cc.parse_controls(doc).entries == ()
+
+
+# -- review round 1: tightened loader and rule ------------------------------ #
+def test_recovery_step_must_be_eligible():
+    doc = _doc()
+    learn = copy.deepcopy(doc["controls"][1])
+    learn.update(id="L", request="AE0302020000", cpid="03", tier=None,
+                 release_pair=None, exclusion_reason="conditions undecoded")
+    doc["controls"].append(learn)
+    doc["controls"][1]["recovery"] = ["L"]
+    cat = cc.parse_controls(doc)
+    assert not cc.is_live_eligible(cat["C"], cat)
+    assert "recovery step L is not eligible" in cc.ineligibility_reasons(cat["C"], cat)
+    doc["controls"][2].update(tier=0, release_pair="R")
+    doc["controls"][2].pop("exclusion_reason")
+    cat = cc.parse_controls(doc)
+    assert cc.is_live_eligible(cat["C"], cat)
+
+
+@pytest.mark.parametrize("name", [
+    "body control module control 13: output bit 01 commanded ON",
+    "transmission module control 30: data [0600000000]",
+    "something (meaning not decoded yet)",
+])
+def test_decoded_name_refused_on_an_undecoded_name(name):
+    doc = _doc()
+    doc["controls"][1]["name"] = name
+    with pytest.raises(cc.ControlsCatalogError, match="still reads as undecoded"):
+        cc.parse_controls(doc)
+    doc["controls"][1]["admission"]["decoded_name"] = None
+    cc.parse_controls(doc)                       # null is fine on such a name
+
+
+def _bcm_without_justification():
+    doc = _doc()
+    for c in doc["controls"]:
+        assert "profile_justification" not in c
+    return doc
+
+
+def test_range_signal_null_is_refused():
+    doc = _bcm_without_justification()
+    doc["controls"][1]["interlock_profile"]["range_signal"] = None
+    with pytest.raises(cc.ControlsCatalogError, match="range_signal"):
+        cc.parse_controls(doc)
+
+
+@pytest.mark.parametrize("field, value", [
+    ("rpm_window", [400, 1200]),        # BCM is KOEO: engine-running is a downgrade
+    ("voltage_window", [11.0, 15.5]),
+])
+def test_silent_profile_deviation_refused_justified_accepted(field, value):
+    doc = _bcm_without_justification()
+    doc["controls"][1]["interlock_profile"][field] = value
+    with pytest.raises(cc.ControlsCatalogError, match="profile_justification"):
+        cc.parse_controls(doc)
+    doc["controls"][1]["profile_justification"] = "OEM procedure for this output says so"
+    cat = cc.parse_controls(doc)
+    assert getattr(cat["C"].interlock_profile, field) == tuple(value)
+    doc["controls"][1]["profile_justification"] = "  "
+    with pytest.raises(cc.ControlsCatalogError, match="profile_justification"):
+        cc.parse_controls(doc)
+
+
+def test_module_defaults_bind_tcm_and_tccm():
+    doc = _doc()
+    for c in doc["controls"]:
+        c["module"] = "7E2"
+    with pytest.raises(cc.ControlsCatalogError, match="module default"):
+        cc.parse_controls(doc)                   # [0,0] is not the TCM default
+    for c in doc["controls"]:
+        c["interlock_profile"]["rpm_window"] = [400, 1200]
+    cc.parse_controls(doc)
+
+
+def test_unknown_module_needs_justification():
+    doc = _doc()
+    for c in doc["controls"]:
+        c["module"] = "7E0"
+    with pytest.raises(cc.ControlsCatalogError, match="no D3 default"):
+        cc.parse_controls(doc)
+
+
+def test_duplicate_json_keys_refused(tmp_path):
+    p = tmp_path / "controls.json"
+    p.write_text('{"schema_version": 2, "schema_version": 2, "controls": []}',
+                 encoding="utf-8")
+    with pytest.raises(cc.ControlsCatalogError, match="duplicate JSON key"):
+        cc.load_controls(str(p))
+    body = json.dumps(_doc()["controls"][1])
+    dup = body[:-1] + ', "tier": 0}'
+    p.write_text('{"schema_version": 2, "controls": [%s, %s]}'
+                 % (json.dumps(_doc()["controls"][0]), dup), encoding="utf-8")
+    with pytest.raises(cc.ControlsCatalogError, match="duplicate JSON key 'tier'"):
+        cc.load_controls(str(p))
+
+
+def test_duplicate_wire_request_refused():
+    doc = _doc()
+    twin = copy.deepcopy(doc["controls"][1])
+    twin["id"] = "C-TWIN"
+    doc["controls"].append(twin)
+    with pytest.raises(cc.ControlsCatalogError, match=r"duplicate \(bus, module, request\)"):
+        cc.parse_controls(doc)
+    twin["bus"] = "sw"
+    twin["profile_justification"] = "body bus twin"
+    twin["release_pair"] = None
+    twin["tier"] = None
+    twin["exclusion_reason"] = "test"
+    cc.parse_controls(doc)                       # same bytes on another bus is fine
+
+
+def test_recovery_is_one_level_and_never_on_a_release():
+    doc = _doc()
+    doc["controls"][0]["recovery"] = ["C"]
+    with pytest.raises(cc.ControlsCatalogError):
+        cc.parse_controls(doc)
+
+
+def test_deep_nesting_is_a_catalog_error(tmp_path):
+    p = tmp_path / "controls.json"
+    p.write_text("[" * 200000 + "]" * 200000, encoding="utf-8")
+    with pytest.raises(cc.ControlsCatalogError):
+        cc.load_controls(str(p))
+
+
+@pytest.mark.parametrize("module, rpm", [("241", [0, 0]), ("7E2", [400, 1200]),
+                                         ("7E4", [400, 1200])])
+def test_unclassified_fields_use_the_module_default(module, rpm):
+    f = cc.unclassified_fields(module)
+    assert f["interlock_profile"]["rpm_window"] == rpm
+    assert "profile_justification" not in f
+
+
+def test_unclassified_fields_for_unknown_module_are_justified_koeo():
+    f = cc.unclassified_fields("7E0")
+    assert f["interlock_profile"]["rpm_window"] == [0, 0]
+    assert f["profile_justification"]
