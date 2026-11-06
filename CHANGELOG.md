@@ -5,6 +5,17 @@ the version, e.g. `feat(delta): ... (v0.17.0)`).
 
 ## 0.40.0 (unreleased)
 
+### Fixed
+- **Splitter drags no longer sync the INI on every mouse move.** The
+  Diagnostics (map, codes) and Live Data splitters saved their position
+  through `save_pref()` on every `splitterMoved`, and each save is a full
+  write-and-replace with retries, so a transient antivirus hold on the INI
+  stalled the drag for up to ~0.4 s per move (PR #61 review). They now go
+  through `appsettings.DeferredPref`: one write 300 ms after the drag stops,
+  read at write time so it carries the final position. The page's
+  `save_state()` / `shutdown()` flush a pending drag at once, so a close
+  right after a drag still persists it.
+
 ### Added
 - **Device-control catalog schema v2 (inert data layer for Active Tests).**
   `openobd/data/controls.json` now carries `"schema_version": 2`, and every

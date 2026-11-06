@@ -59,7 +59,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtWidgets import QFileDialog
 
 from . import chanlayout, theme, tmstore
-from .appsettings import app_settings, save_pref
+from .appsettings import DeferredPref, app_settings, save_pref
 from .chanlayout import ChannelLayout
 from .stripchart import ChartPane, channel_mime, chartable_names, fmt_value
 from .tmstore import TmSessionReader, TmSessionError
@@ -484,7 +484,10 @@ class LiveDataPage(QWidget):
         self._split.setStretchFactor(1, 2)
         if not self._restore_split(self._settings.value(SPLIT_KEY)):
             self._split.setSizes([250, 430])
-        self._split.splitterMoved.connect(lambda *_a: self.save_state())
+        # One disk sync per drag, not per mouse move (DeferredPref).
+        self._split_saver = DeferredPref(self._settings, SPLIT_KEY,
+                                         self._split.saveState, self._split)
+        self._split.splitterMoved.connect(self._split_saver.touch)
         body.addWidget(self._split, 1)
         root.addLayout(body, 1)
 
@@ -728,7 +731,8 @@ class LiveDataPage(QWidget):
         self._rescan.stop()
 
     def save_state(self):
-        save_pref(self._settings, SPLIT_KEY, self._split.saveState())
+        """Write the splitter position now (flushes a pending drag)."""
+        self._split_saver.flush()
 
     def _restore_split(self, state) -> bool:
         """Restore the splitter from a QSettings value. The INI is user-
@@ -740,6 +744,7 @@ class LiveDataPage(QWidget):
         self._active = False
         self._poll.stop()
         self._rescan.stop()
+        self._split_saver.flush()       # a drag just before close is kept
         self._close_reader()
 
     def closeEvent(self, event):   # noqa: N802
