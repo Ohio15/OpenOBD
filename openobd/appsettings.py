@@ -60,6 +60,14 @@ anyway (status() is sticky).
 A failed preference write (save_pref) is surfaced through ONE hook,
 set_on_pref_write_failed(), rate-limited per key, so every call site reports
 it without checking the return value.
+
+A preference that a drag updates continuously (a splitter position fires
+splitterMoved on every mouse move) goes through DeferredPref: one disk sync
+PREF_DEBOUNCE_MS after the last touch instead of one per event. Each sync is
+a full write-and-replace with retries (above), so per-event syncing stalled
+the drag for up to ~0.4 s whenever an antivirus hold hit the INI (v0.38.2
+review). The owning page flushes the pending value when it saves its state
+or shuts down, so a close right after a drag loses nothing.
 """
 from __future__ import annotations
 
@@ -67,7 +75,7 @@ import logging
 import time
 from typing import Callable, Optional, TypeVar
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QObject, QSettings, QTimer
 
 ORGANIZATION = "OpenOBD"
 APPLICATION = "OpenOBD"
@@ -264,6 +272,50 @@ def _notify_pref_failure(key: str, reason: str) -> None:
         handler(key, reason)
     except Exception:               # a notice must never raise into a Qt slot
         _log.exception("preference-failure handler failed for %s", key)
+
+
+#: A drag-driven preference is written this long after the last change.
+PREF_DEBOUNCE_MS = 300
+
+
+class DeferredPref(QObject):
+    """Coalesce a burst of changes to one preference into a single
+    save_pref() call PREF_DEBOUNCE_MS after the last touch(). value_of is
+    read at write time, so the write always carries the latest state.
+    flush() writes now and cancels the pending write; the page calls it from
+    save_state()/shutdown(). Parent it to the widget whose state it saves so
+    the timer cannot outlive the widget."""
+
+    def __init__(self, settings: Optional[QSettings], key: str,
+                 value_of: Callable[[], object], parent: Optional[QObject],
+                 delay_ms: int = PREF_DEBOUNCE_MS) -> None:
+        super().__init__(parent)
+        self._settings = settings
+        self._key = key
+        self._value_of = value_of
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(int(delay_ms))
+        self._timer.timeout.connect(self.flush)
+
+    @property
+    def key(self) -> str:
+        return self._key
+
+    @property
+    def pending(self) -> bool:
+        """True while a touch() is waiting to be written."""
+        return self._timer.isActive()
+
+    def touch(self, *_ignored) -> None:
+        """Note a change; (re)starts the debounce window. Accepts and
+        ignores signal arguments so it can be connected directly."""
+        self._timer.start()
+
+    def flush(self) -> bool:
+        """Write the current value now; returns save_pref's result."""
+        self._timer.stop()
+        return save_pref(self._settings, self._key, self._value_of())
 
 
 def save_pref(settings: Optional[QSettings], key: str, value) -> bool:

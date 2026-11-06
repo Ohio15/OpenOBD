@@ -52,6 +52,14 @@ def ini(tmp_path, name="diag.ini"):
     return QSettings(str(tmp_path / name), QSettings.IniFormat)
 
 
+def wait_ms(ms):
+    """Run the event loop for ms so single-shot timers can fire."""
+    from PySide6.QtCore import QEventLoop, QTimer
+    loop = QEventLoop()
+    QTimer.singleShot(ms, loop.quit)
+    loop.exec()
+
+
 class Recorder:
     def __init__(self):
         self.fns = []
@@ -602,6 +610,7 @@ def test_minimum_width_stays_narrow(page, qapp):
 
 
 def test_splitter_state_persists(qapp, tmp_path):
+    from openobd.appsettings import PREF_DEBOUNCE_MS
     from openobd.diagui import CODES_SPLIT_KEY, MAP_SPLIT_KEY, DiagnosticsPage
     settings = ini(tmp_path, "split.ini")
     p = DiagnosticsPage(None, settings)
@@ -610,7 +619,9 @@ def test_splitter_state_persists(qapp, tmp_path):
     qapp.processEvents()
     p.map_split.setSizes([700, 500])
     p.map_split.splitterMoved.emit(700, 1)               # a user drag
-    assert settings.value(MAP_SPLIT_KEY) is not None
+    assert settings.value(MAP_SPLIT_KEY) is None          # not per move...
+    wait_ms(PREF_DEBOUNCE_MS + 150)
+    assert settings.value(MAP_SPLIT_KEY) is not None      # ...once it stops
     p.tabs.setCurrentIndex(1)
     qapp.processEvents()
     p.codes_split.setSizes([600, 600])
@@ -631,6 +642,36 @@ def test_splitter_state_persists(qapp, tmp_path):
     q.close()
     # only diag/ keys were written
     assert all(k.startswith("diag/") for k in settings.allKeys())
+
+
+def test_save_state_flushes_a_pending_drag_without_waiting(qapp, tmp_path,
+                                                           monkeypatch):
+    """closeEvent -> _shutdown_pages -> diag.save_state() must not depend
+    on the debounce timer: a drag right before close is written at once."""
+    from openobd import appsettings as aps
+    from openobd.diagui import MAP_SPLIT_KEY, DiagnosticsPage
+    writes = []
+    real = aps.save_pref
+    monkeypatch.setattr(aps, "save_pref",
+                        lambda st, k, v: writes.append(k) or real(st, k, v))
+    settings = ini(tmp_path, "flush.ini")
+    p = DiagnosticsPage(None, settings)
+    p.resize(1366, 700)
+    p.show()
+    qapp.processEvents()
+    p.map_split.setSizes([700, 500])
+    for pos in (650, 680, 700):                           # one drag, 3 moves
+        p.map_split.splitterMoved.emit(pos, 1)
+    assert writes == []
+    saver = next(s for _sp, s in p._splits if s.key == MAP_SPLIT_KEY)
+    assert saver.pending
+    p.save_state()
+    assert writes.count(MAP_SPLIT_KEY) == 1
+    assert not saver.pending
+    assert settings.value(MAP_SPLIT_KEY) is not None
+    wait_ms(aps.PREF_DEBOUNCE_MS + 150)
+    assert writes.count(MAP_SPLIT_KEY) == 1               # timer was cancelled
+    p.close()
 
 
 def test_f5_and_ctrl_f_routing(win, qapp):

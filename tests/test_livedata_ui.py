@@ -526,8 +526,39 @@ def test_min_width_budget(env):
     assert pg.minimumSizeHint().width() <= 700
 
 
-def test_span_and_splitter_persist(env):
+def _wait_ms(ms):
+    from PySide6.QtCore import QEventLoop, QTimer
+    loop = QEventLoop()
+    QTimer.singleShot(ms, loop.quit)
+    loop.exec()
+
+
+def test_shutdown_flushes_a_pending_splitter_drag(env, monkeypatch):
+    """The main window's closeEvent calls shutdown(); a drag just before it
+    must reach disk without waiting for the debounce timer."""
+    from openobd import appsettings as aps
     from openobd.appsettings import app_settings
+    from openobd.livedata import SPLIT_KEY
+    writes = []
+    real = aps.save_pref
+    monkeypatch.setattr(aps, "save_pref",
+                        lambda st, k, v: writes.append(k) or real(st, k, v))
+    pg = env.make()
+    pg._split.setSizes([120, 520])
+    for pos in (200, 150, 120):
+        pg._split.splitterMoved.emit(pos, 1)
+    assert SPLIT_KEY not in writes
+    assert pg._split_saver.pending
+    pg.shutdown()
+    assert writes.count(SPLIT_KEY) == 1
+    assert not pg._split_saver.pending
+    assert app_settings().value(SPLIT_KEY) is not None
+    _wait_ms(aps.PREF_DEBOUNCE_MS + 150)
+    assert writes.count(SPLIT_KEY) == 1
+
+
+def test_span_and_splitter_persist(env):
+    from openobd.appsettings import PREF_DEBOUNCE_MS, app_settings
     from openobd.livedata import SPAN_KEY, SPLIT_KEY
     _live(env)
     pg = env.make()
@@ -539,8 +570,10 @@ def test_span_and_splitter_persist(env):
     assert app_settings().value(SPAN_KEY) == "5 min"
     pg._split.setSizes([120, 520])
     pg._split.splitterMoved.emit(120, 1)
+    assert app_settings().value(SPLIT_KEY) is None        # not per move
+    _wait_ms(PREF_DEBOUNCE_MS + 150)
     saved = app_settings().value(SPLIT_KEY)
-    assert saved is not None
+    assert saved is not None                              # once it stops
     pg2 = env.make()
     assert pg2._chart.span_text() == "5 min"
     assert pg2._split.saveState() == saved

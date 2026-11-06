@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme, vehnet
-from .appsettings import save_pref
+from .appsettings import DeferredPref, save_pref
 from .gt import DTC_DESCRIPTIONS
 from .tuningui import (
     CHIP_KIND_ROLE, Breadcrumb, ChipDelegate, CollapsiblePanel,
@@ -737,15 +737,16 @@ class DiagnosticsPage(QWidget):
     def _restore_split(self, split: QSplitter, key: str, default: list[int]):
         if not restore_splitter_state(split, self.settings.value(key)):
             split.setSizes(default)
-        split.splitterMoved.connect(
-            lambda *_a, s=split, k=key: save_pref(self.settings, k,
-                                                  s.saveState()))
-        self._splits.append((split, key))
+        # One disk sync per drag, not per mouse move (DeferredPref).
+        saver = DeferredPref(self.settings, key, split.saveState, split)
+        split.splitterMoved.connect(saver.touch)
+        self._splits.append((split, saver))
 
     def save_state(self) -> None:
-        """Persist the splitter positions (also saved on every drag)."""
-        for split, key in self._splits:
-            save_pref(self.settings, key, split.saveState())
+        """Persist the splitter positions now (a drag writes them on its
+        own PREF_DEBOUNCE_MS after it stops; this flushes a pending one)."""
+        for _split, saver in self._splits:
+            saver.flush()
 
     def busy(self) -> Optional[str]:
         """The running job: 'scan' | 'read' | 'clear', or None."""
