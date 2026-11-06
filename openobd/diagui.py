@@ -681,7 +681,7 @@ class DiagnosticsPage(QWidget):
         self._ready: Optional[dict] = None
         self._read_at: Optional[str] = None
         self._read_error: Optional[str] = None   # why the last read failed
-        self._splits: list[tuple[QSplitter, str]] = []
+        self._splits: list[tuple[QSplitter, DeferredPref]] = []
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
